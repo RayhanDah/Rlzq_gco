@@ -4,8 +4,11 @@ Généré par `scripts/kaggle_probe.py`, qui remplace EMBEDDED par le source de 
 RocketGPU) et COMMIT par le commit git local. Aucune donnée privée, aucun secret. Sortie : <WORK>/probe.json et
 les rapports JSON du benchmark dans <WORK>/bench/, avec WORK = /kaggle/working sur Kaggle, /content sur Colab,
 sinon le dossier courant. Le même fichier s'exécute tel quel dans une cellule Colab : `!python rlgco_probe.py`.
-Étapes requises (verdict `ok`) : installation, meshes, benchmark RocketSim. Étapes RocketGPU (CPU, puis CUDA si un GPU
-est visible) : rapportées dans `ok_rocketgpu`, sans bloquer le verdict.
+Parties (`--parts`, ordre conservé) : `rg_cuda` (build + bench RocketGPU CUDA), `rocketsim` (bench RocketSim),
+`rg_cpu` (build + bench RocketGPU CPU). Défaut : `rg_cuda,rocketsim,rg_cpu` si un GPU est visible, sinon
+`rocketsim,rg_cpu`. Exemples Colab : T4 → `!python rlgco_probe.py --parts rg_cuda` ;
+TPU v5e-1 → `!python rlgco_probe.py --parts rocketsim,rg_cpu`.
+Verdict `ok` : installation et meshes, plus le benchmark RocketSim s'il est demandé. RocketGPU : `ok_rocketgpu`.
 """
 
 from __future__ import annotations
@@ -79,7 +82,32 @@ def py_versions() -> dict[str, str]:
     return out
 
 
+PARTS = ("rg_cuda", "rocketsim", "rg_cpu")
+
+
+def parse_parts(argv: list[str], has_gpu: bool) -> tuple[list[str], int]:
+    """`--parts a,b` (ordre conservé) et `--budget-min N`. Par défaut : la partie GPU d'abord quand un GPU est
+    visible (sinon elle passe après les étapes CPU et peut manquer de budget sur une machine à 2 cœurs)."""
+    import argparse
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--parts", default="auto", help=f"auto ou liste parmi {','.join(PARTS)}")
+    ap.add_argument("--budget-min", type=int, default=40)
+    a = ap.parse_args(argv)
+    if a.parts == "auto":
+        parts = list(PARTS) if has_gpu else ["rocketsim", "rg_cpu"]
+    else:
+        parts = [p.strip() for p in a.parts.split(",") if p.strip()]
+        unknown = [p for p in parts if p not in PARTS]
+        if unknown:
+            raise SystemExit(f"parties inconnues : {unknown} (choix : {PARTS})")
+    return parts, a.budget_min * 60
+
+
 def main() -> int:
+    global BUDGET_S
+    has_gpu = run("nvidia-smi -L")["code"] == 0
+    parts, BUDGET_S = parse_parts(sys.argv[1:], has_gpu)
     start = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     report: dict[str, object] = {"commit": COMMIT, "accelerator": ACCELERATOR, "platform": PLATFORM, "start": start}
     try:
@@ -87,7 +115,6 @@ def main() -> int:
     except AttributeError:
         affinity = os.cpu_count() or 1
     gpu = sh("nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv")
-    has_gpu = run("nvidia-smi -L")["code"] == 0
     report["system"] = {
         "platform": platform.platform(),
         "python": platform.python_version(),
@@ -120,7 +147,8 @@ def main() -> int:
     def save() -> None:
         """Écrit probe.json après chaque étape : un kernel tué par Kaggle laisse quand même ses résultats partiels."""
         report["steps"] = steps
-        report["ok"] = all(steps.get(n, {}).get("code") == 0 for n in REQUIRED)
+        required = REQUIRED if "rocketsim" in parts else REQUIRED[:2]
+        report["ok"] = all(steps.get(n, {}).get("code") == 0 for n in required)
         report["ok_rocketgpu"] = rg_ok
         report["elapsed_s"] = round(time.time() - T0, 1)
         (WORK / "probe.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -134,33 +162,42 @@ def main() -> int:
         save()
         return steps[name]["code"] == 0
 
+    report["parts"] = parts
     ok = step("pip_install", f"{py} -m pip install -q rocketsim==2.2.1 cmake ninja pybind11", 600)
     report["versions_after"] = py_versions()
     ok = step("meshes", f"{py} {scripts / 'fetch_meshes.py'} --dest {meshes}", 120) and ok
-    procs = ",".join(map(str, sorted({1, 2, 4, max(1, affinity // 2), affinity, affinity * 2})))
-    if ok:
+    build = f"{py} {scripts / 'build_rocketgpu.py'} --src {APP / 'vendor/src/RocketGPU'} --out {APP / 'vendor/build'}"
+
+    def part_rocketsim() -> None:
+        procs = ",".join(map(str, sorted({1, 2, 4, max(1, affinity // 2), affinity, affinity * 2})))
         step("bench_rocketsim", f"{bench} --procs {procs}", 600)
         step("bench_rocketsim_multistep", f"{bench} --procs 1 --arenas 256 --engine multi_step", 120)
 
-    build = f"{py} {scripts / 'build_rocketgpu.py'} --src {APP / 'vendor/src/RocketGPU'} --out {APP / 'vendor/build'}"
-    if ok and step("build_rocketgpu_cpu", f"{build} --variant cpu", 1200):
-        env = f"ROCKETGPU_PY_DIR={APP / 'vendor/build/rocketgpu-cpu/python'}"
-        rg_ok["cpu"] = all(
-            step(f"bench_rocketgpu_cpu_{n}", f"{env} {bench} --procs 1 --arenas {n} --engine rocketgpu", 120)
-            for n in (1024, 4096)
-        )
-    elif ok:
+    def part_rg_cpu() -> None:
         rg_ok["cpu"] = False
-    if not has_gpu:
-        rg_ok["cuda"] = "pas de GPU"
-    elif ok:
+        if step("build_rocketgpu_cpu", f"{build} --variant cpu", remaining()):
+            env = f"ROCKETGPU_PY_DIR={APP / 'vendor/build/rocketgpu-cpu/python'}"
+            rg_ok["cpu"] = all(
+                step(f"bench_rocketgpu_cpu_{n}", f"{env} {bench} --procs 1 --arenas {n} --engine rocketgpu", 120)
+                for n in (1024, 4096)
+            )
+
+    def part_rg_cuda() -> None:
+        if not has_gpu:
+            rg_ok["cuda"] = "pas de GPU"
+            return
         rg_ok["cuda"] = False
-        if step("build_rocketgpu_cuda", f"{build} --variant cuda", 1500):
+        if step("build_rocketgpu_cuda", f"{build} --variant cuda", remaining()):
             env = f"ROCKETGPU_PY_DIR={APP / 'vendor/build/rocketgpu-cuda/python'}"
             rg_ok["cuda"] = all(
-                step(f"bench_rocketgpu_cuda_{n}", f"{env} {bench} --procs 1 --arenas {n} --engine rocketgpu", 120)
+                step(f"bench_rocketgpu_cuda_{n}", f"{env} {bench} --procs 1 --arenas {n} --engine rocketgpu", 180)
                 for n in (4096, 16384)
             )
+
+    runners = {"rg_cuda": part_rg_cuda, "rocketsim": part_rocketsim, "rg_cpu": part_rg_cpu}
+    if ok:
+        for name in parts:
+            runners[name]()
 
     save()
     summary = {"ok": report["ok"], "ok_rocketgpu": rg_ok, "accelerator": ACCELERATOR, "elapsed_s": report["elapsed_s"]}

@@ -186,3 +186,14 @@ def test_probe_colab_variant_compiles_and_detects_work_dir() -> None:
     compile(src, "rlgco_probe.py", "exec")
     assert 'Path("/content")' in src and 'Path("/kaggle/working")' in src
     assert '"colab"' in src
+
+
+def test_probe_parts_put_gpu_first_and_validate() -> None:
+    ns: dict[str, object] = {"__name__": "probe_under_test"}
+    exec(compile(probe.render_kernel("abc1234", "colab"), "rlgco_probe.py", "exec"), ns)
+    parse = ns["parse_parts"]
+    assert parse([], True) == (["rg_cuda", "rocketsim", "rg_cpu"], 40 * 60)  # type: ignore[operator]
+    assert parse([], False) == (["rocketsim", "rg_cpu"], 40 * 60)  # type: ignore[operator]
+    assert parse(["--parts", "rg_cuda", "--budget-min", "55"], True) == (["rg_cuda"], 55 * 60)  # type: ignore[operator]
+    with pytest.raises(SystemExit):
+        parse(["--parts", "gpu"], True)  # type: ignore[operator]
