@@ -14,13 +14,18 @@ dev = [
     "kaggle==2.2.5",
     "six>=1.17.0",
 ]
+native = [
+    "cmake>=3.25",
+    "ninja>=1.13.2",
+    "pybind11>=3.1.0",
+]
 sim = [
     "numpy>=2,<3",
     "rocketsim==2.2.1",
 ]
 
 [tool.uv]
-default-groups = ["dev", "sim"]
+default-groups = ["dev", "sim", "native"]
 
 [tool.ruff]
 line-length = 120

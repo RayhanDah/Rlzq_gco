@@ -31,7 +31,10 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MESHES = ROOT / "vendor" / "collision_meshes"
 _BARRIER: Any = None
 _RS_INIT_DIR: str | None = None
-ENGINES = ("step", "multi_step")
+ENGINES = ("step", "multi_step", "rocketgpu")
+# RocketGPU (build local, non versionné) : dossier du module et dossier des DLL du compilateur (MinGW sous Windows).
+RG_PY_DIR = os.environ.get("ROCKETGPU_PY_DIR", str(ROOT / "vendor" / "build" / "rocketgpu-gcc" / "python"))
+RG_DLL_DIR = os.environ.get("ROCKETGPU_DLL_DIR", r"C:\ProgramData\mingw64\mingw64\bin")
 
 
 def _init_worker(barrier: Any) -> None:
@@ -43,6 +46,8 @@ def worker(args: tuple[int, float, int, int, float, str, str]) -> dict[str, floa
     seed, seconds, n_arenas, tick_skip, episode_s, mesh_dir, engine = args
     if engine not in ENGINES:
         raise ValueError(f"engine inconnu : {engine}")
+    if engine == "rocketgpu":
+        return worker_rocketgpu(seed, seconds, n_arenas, tick_skip, episode_s, mesh_dir)
     import numpy as np
     import RocketSim as rs
 
@@ -106,6 +111,84 @@ def worker(args: tuple[int, float, int, int, float, str, str]) -> dict[str, floa
         "goals": goals,
         "resets": resets,
         "min_car_z": min_z,
+    }
+
+
+def _import_rocketgpu() -> tuple[Any, Any]:
+    if os.name == "nt" and Path(RG_DLL_DIR).is_dir():
+        os.add_dll_directory(RG_DLL_DIR)
+    if RG_PY_DIR not in sys.path:
+        sys.path.insert(0, RG_PY_DIR)
+    import rocketgpu_py as rg
+    import rocketgpu_py_cuda as views
+
+    return rg, views
+
+
+def worker_rocketgpu(
+    seed: int, seconds: float, n_envs: int, tick_skip: int, episode_s: float, mesh_dir: str
+) -> dict[str, float]:
+    """Même charge que `worker` (1v1, contrôles aléatoires tenus `tick_skip` ticks, reset au but ou au timeout),
+    mais en un appel batché : contrôles en tableau numpy, états lus par vue numpy, sans objet Python par voiture."""
+    import numpy as np
+
+    os.environ["ROCKETGPU_COLLISION_MESH_DIR"] = str(Path(mesh_dir).resolve())
+    rg, views = _import_rocketgpu()
+    if rg.is_cuda_build:
+        raise RuntimeError("benchmark CPU : build CUDA non géré ici")
+    cfg = rg.SimConfig()
+    cfg.env_count = n_envs
+    cfg.max_cars_per_env = 2
+    sim = rg.BatchSim(cfg)
+    sim.set_env_car_count([2] * n_envs)
+    sim.set_teams([rg.Team.Blue, rg.Team.Orange] * n_envs)
+    sim.reset_to_kickoff(seed + 1)
+    ctrl = np.zeros(sim.car_capacity(), dtype=views.state_dtype("controls"))
+    env = views.host_struct_array(sim, "env_states")
+    cars = views.host_struct_array(sim, "car_states")
+    commands = [rg.EnvCommand() for _ in range(n_envs)]
+    rng = np.random.default_rng(seed)
+    max_ticks = int(episode_s * 120)
+    ep_ticks = np.zeros(n_envs, dtype=np.int64)
+    scores = env["blue_score"].astype(np.int64) + env["orange_score"]
+    steps = goals = resets = 0
+    axes = ("throttle", "steer", "pitch", "yaw", "roll")
+    bits = ("jump", "boost", "handbrake")
+    t_start = time.time()
+    t0 = time.perf_counter()
+    deadline = t0 + seconds
+    while time.perf_counter() < deadline:
+        for _ in range(16):
+            for name in axes:
+                ctrl[name] = rng.uniform(-1.0, 1.0, ctrl.shape[0])
+            for name in bits:
+                ctrl[name] = rng.random(ctrl.shape[0]) < 0.5
+            sim.step_with_device_controls(ctrl.ctypes.data, tick_skip, 0)  # stride 0 : mêmes contrôles à chaque tick
+            ep_ticks += tick_skip
+            s = env["blue_score"].astype(np.int64) + env["orange_score"]
+            scored = s != scores
+            done = np.flatnonzero(scored | (ep_ticks >= max_ticks))
+            if done.size:
+                goals += int(scored.sum())
+                for i in done:
+                    commands[i].reset_to_kickoff = 1
+                sim.apply_env_commands(commands)
+                for i in done:
+                    commands[i].reset_to_kickoff = 0
+                ep_ticks[done] = 0
+                resets += int(done.size)
+                scores = env["blue_score"].astype(np.int64) + env["orange_score"]
+            steps += n_envs
+    elapsed = time.perf_counter() - t0
+    t_end = time.time()
+    return {
+        "env_steps": steps,
+        "elapsed_s": elapsed,
+        "t_start": t_start,
+        "t_end": t_end,
+        "goals": goals,
+        "resets": resets,
+        "min_car_z": float(cars["pos"][:, 2].min()),
     }
 
 

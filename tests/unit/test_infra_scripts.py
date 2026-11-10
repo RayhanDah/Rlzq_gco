@@ -63,7 +63,7 @@ def test_aggregate_uses_union_window_when_workers_are_staggered() -> None:
 @pytest.mark.skipif(not (ROOT / "vendor/collision_meshes/soccar").is_dir(), reason="meshes absents")
 def test_worker_runs_and_cars_stay_above_floor() -> None:
     pytest.importorskip("RocketSim")
-    for engine in bench.ENGINES:
+    for engine in ("step", "multi_step"):
         r = bench.worker((0, 0.5, 2, 8, 300.0, str(ROOT / "vendor/collision_meshes"), engine))
         assert r["env_steps"] > 0
         assert r["min_car_z"] > 0  # sous le sol ⇒ meshes non chargés
@@ -101,3 +101,13 @@ def test_probe_kernel_has_no_secret_reference() -> None:
     src = probe.render_kernel("abc1234", "NvidiaTeslaT4").lower()
     for needle in ("access_token", "kaggle.json", "kaggle_api_token", "kaggle_key"):
         assert needle not in src
+
+
+@pytest.mark.skipif(
+    not (Path(bench.RG_PY_DIR).is_dir() and (ROOT / "vendor/collision_meshes/soccar").is_dir()),
+    reason="build RocketGPU local ou meshes absents",
+)
+def test_rocketgpu_worker_runs_and_cars_stay_above_floor() -> None:
+    r = bench.worker((0, 0.5, 8, 8, 300.0, str(ROOT / "vendor/collision_meshes"), "rocketgpu"))
+    assert r["env_steps"] > 0 and r["env_steps"] % 8 == 0
+    assert r["min_car_z"] > 0
