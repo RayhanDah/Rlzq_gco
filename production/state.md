@@ -28,6 +28,9 @@ Mis à jour : 2026-11-10 (G1 validé, Phase 1 terminée).
    pas donné le feu vert (ses propres sessions tournent ; « ce soir » au plus tôt).
 2. Décision A1 (rlgym-learn + RLGym `main`, build à autoriser) vs A2 (env maison sur rocketsim PyPI), puis bench
    bout-en-bout (M3) et bench laptop ≥ 30 min (throttling) → ADR-infra → G2.
+3. Relais entre membres : `scripts/kaggle_run.py` (init/start/status/finish/release, à blanc par défaut) écrit et
+   testé hors ligne, **jamais exécuté contre Kaggle**. Tester les mécanismes non vérifiés de
+   `docs/research/kaggle_relay.md` §4 sur un dataset jetable, après le gel et avec l'accord de l'utilisateur.
 
 ## Risques ouverts
 - **R1** : amorçage de l'exploration en GCO à petit budget (aucune preuve publique sous 0,35B steps).
