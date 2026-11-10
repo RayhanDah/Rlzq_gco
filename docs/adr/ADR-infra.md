@@ -133,6 +133,26 @@ Lecture :
 - Ordre de grandeur RocketGPU CPU sur ce laptop : **≈ 130–215k env-steps/s**, contre ≈ 65–78k pour RocketSim (M1, M1b,
   mêmes réserves de variance).
 
+### M2a — Sonde Colab, session GPU T4 (exécutée par l'utilisateur)
+Fichier `build/colab/rlgco_probe.py` du commit **c110603**, lancé dans Colab le 2026-11-10 à 15:02 UTC
+(`!python rlgco_probe.py`), durée 283 s. Résultats rapatriés (`probe.json` + `bench/`), non versionnés.
+
+Machine relevée : 2 vCPU (Intel Xeon @ 2,00 GHz, 1 cœur physique × 2 threads), 12 Go de RAM, Tesla T4 15 Go
+(compute capability 7.5), nvcc CUDA 13.0, g++ 13.3, Python 3.13.16, torch 2.14.1+cu130, jax 0.11.1 (CudaDevice).
+
+| Étape | Résultat |
+|---|---|
+| RocketSim 2.2.1, step par arène, 1 / 2 / 4 processus | 14 607 / 17 553 / 16 973 env-steps/s |
+| RocketSim `multi_step`, 1 processus × 256 arènes | 2 180 env-steps/s (threads C++ en sursouscription sur 2 vCPU) |
+| Build RocketGPU CPU (`-march=native`) | réussi, 140 s |
+| RocketGPU CPU, 1 024 / 4 096 arènes | 26 413 / 29 189 env-steps/s |
+| Build RocketGPU **CUDA** | **échec** après 28 s ; l'erreur du compilateur a été tronquée par le journal |
+
+Lecture :
+- Avec 2 vCPU, une session Colab T4 ne vaut que par son GPU : la collecte CPU y plafonne vers 29k env-steps/s.
+- L'échec CUDA reste à diagnostiquer. Depuis 3e41d8a, la sonde garde le journal complet de chaque étape
+  (`<WORK>/logs/`) et les lignes d'erreur dans `probe.json`. Relance prévue : `--parts rg_cuda`.
+
 ### M2 — Sonde Kaggle T4 / TPU
 _À faire_ : `python scripts/kaggle_probe.py --user <pseudo> --acc t4,tpu --push` (jeton de l'utilisateur requis).
 Build à blanc vérifié sur 54a10a6 (`--user test-user`, sans `--push`) : métadonnées T4 et TPU générées, kernel compilé.
