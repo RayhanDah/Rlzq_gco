@@ -111,3 +111,71 @@ def test_rocketgpu_worker_runs_and_cars_stay_above_floor() -> None:
     r = bench.worker((0, 0.5, 8, 8, 300.0, str(ROOT / "vendor/collision_meshes"), "rocketgpu"))
     assert r["env_steps"] > 0 and r["env_steps"] % 8 == 0
     assert r["min_car_z"] > 0
+
+
+build_rg = load("scripts/build_rocketgpu.py")
+
+
+def test_rocketgpu_cmake_args_cpu_pgo_windows() -> None:
+    args = build_rg.cmake_args(
+        Path("src"), Path("b"), variant="cpu", pgo="USE", profile=Path("p/q"), portable=False, python="py", windows=True
+    )
+    assert "-DROCKETGPU_USE_CUDA=OFF" in args and "-DROCKETGPU_NATIVE_ARCH=ON" in args
+    assert "-DCMAKE_CXX_COMPILER=g++" in args
+    assert "-DROCKETGPU_PGO=USE" in args and "-DROCKETGPU_PGO_PROFILE=p/q" in args
+    assert "-DROCKETGPU_BUILD_PYTHON=ON" in args and "-DPython_EXECUTABLE=py" in args
+
+
+def test_rocketgpu_cmake_args_cuda_linux_portable() -> None:
+    args = build_rg.cmake_args(
+        Path("src"), Path("b"), variant="cuda", pgo="OFF", profile=None, portable=True, python="py", windows=False
+    )
+    assert "-DROCKETGPU_USE_CUDA=ON" in args and "-DROCKETGPU_NATIVE_ARCH=OFF" in args
+    assert not any(a.startswith("-DROCKETGPU_PGO") for a in args)
+    assert "-DCMAKE_CXX_COMPILER=g++" not in args
+
+
+@pytest.mark.parametrize(
+    ("variant", "pgo", "profile"),
+    [("gpu", "OFF", None), ("cuda", "USE", Path("p")), ("cpu", "GENERATE", None), ("cpu", "ON", Path("p"))],
+)
+def test_rocketgpu_cmake_args_rejects_bad_combinations(variant: str, pgo: str, profile: Path | None) -> None:
+    with pytest.raises(ValueError):
+        build_rg.cmake_args(
+            Path("s"), Path("b"), variant=variant, pgo=pgo, profile=profile, portable=False, python="py", windows=False
+        )
+
+
+def test_pinned_shas_are_full_length() -> None:
+    assert len(build_rg.PINNED_SHA) == 40 and len(fetch.PINNED_SHA) == 40
+
+
+def test_rocketgpu_cmake_args_cuda_compiler_only_for_cuda() -> None:
+    kw = {
+        "pgo": "OFF",
+        "profile": None,
+        "portable": False,
+        "python": "py",
+        "windows": False,
+        "cuda_compiler": "/c/nvcc",
+    }
+    assert "-DCMAKE_CUDA_COMPILER=/c/nvcc" in build_rg.cmake_args(Path("s"), Path("b"), variant="cuda", **kw)
+    assert not any("CUDA_COMPILER" in a for a in build_rg.cmake_args(Path("s"), Path("b"), variant="cpu", **kw))
+
+
+def test_has_profile_data_requires_non_empty_file(tmp_path: Path) -> None:
+    assert not build_rg.has_profile_data(tmp_path)
+    (tmp_path / "a.gcda").write_bytes(b"")
+    assert not build_rg.has_profile_data(tmp_path)
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "b.gcda").write_bytes(b"x")
+    assert build_rg.has_profile_data(tmp_path)
+
+
+@pytest.mark.skipif(not Path(bench.RG_PY_DIR).is_dir(), reason="build RocketGPU local absent")
+def test_rocketgpu_controls_layout_matches_cuda_path() -> None:
+    # Détecte un changement de layout CarControls en amont, dont dépend le chemin CUDA (vue float32/uint8).
+    _, views = bench._import_rocketgpu()
+    dt = views.state_dtype("controls")
+    assert dt.itemsize == 24
+    assert {n: dt.fields[n][1] for n in dt.names} == bench.CONTROL_OFFSETS

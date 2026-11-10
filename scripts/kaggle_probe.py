@@ -21,9 +21,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = ROOT / "kaggle" / "probe" / "probe_kernel.py"
-EMBED = ("scripts/benchmark_sim.py", "scripts/fetch_meshes.py")
+EMBED = ("scripts/benchmark_sim.py", "scripts/fetch_meshes.py", "scripts/build_rocketgpu.py")
 ACCELERATORS = {"t4": "NvidiaTeslaT4", "tpu": "TpuV5E8"}
-TIMEOUT_S = 20 * 60
+TIMEOUT_S = 50 * 60  # budget interne du kernel : 40 min
 
 
 def git(*args: str) -> str:

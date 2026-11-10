@@ -134,8 +134,6 @@ def worker_rocketgpu(
 
     os.environ["ROCKETGPU_COLLISION_MESH_DIR"] = str(Path(mesh_dir).resolve())
     rg, views = _import_rocketgpu()
-    if rg.is_cuda_build:
-        raise RuntimeError("benchmark CPU : build CUDA non géré ici")
     cfg = rg.SimConfig()
     cfg.env_count = n_envs
     cfg.max_cars_per_env = 2
@@ -143,12 +141,14 @@ def worker_rocketgpu(
     sim.set_env_car_count([2] * n_envs)
     sim.set_teams([rg.Team.Blue, rg.Team.Orange] * n_envs)
     sim.reset_to_kickoff(seed + 1)
+    commands = [rg.EnvCommand() for _ in range(n_envs)]
+    max_ticks = int(episode_s * 120)
+    if rg.is_cuda_build:
+        return _rocketgpu_cuda_loop(rg, views, sim, seed, seconds, n_envs, tick_skip, max_ticks, commands)
     ctrl = np.zeros(sim.car_capacity(), dtype=views.state_dtype("controls"))
     env = views.host_struct_array(sim, "env_states")
     cars = views.host_struct_array(sim, "car_states")
-    commands = [rg.EnvCommand() for _ in range(n_envs)]
     rng = np.random.default_rng(seed)
-    max_ticks = int(episode_s * 120)
     ep_ticks = np.zeros(n_envs, dtype=np.int64)
     scores = env["blue_score"].astype(np.int64) + env["orange_score"]
     steps = goals = resets = 0
@@ -189,6 +189,104 @@ def worker_rocketgpu(
         "goals": goals,
         "resets": resets,
         "min_car_z": float(cars["pos"][:, 2].min()),
+    }
+
+
+class _CudaArray:
+    """Expose un pointeur device au protocole `__cuda_array_interface__` (lu par torch.as_tensor)."""
+
+    def __init__(self, cai: dict[str, Any]) -> None:
+        self.__cuda_array_interface__ = cai
+
+
+CONTROL_OFFSETS = {
+    "throttle": 0,
+    "steer": 4,
+    "pitch": 8,
+    "yaw": 12,
+    "roll": 16,
+    "jump": 20,
+    "boost": 21,
+    "handbrake": 22,
+}
+
+
+def _rocketgpu_cuda_loop(
+    rg: Any,
+    views: Any,
+    sim: Any,
+    seed: int,
+    seconds: float,
+    n_envs: int,
+    tick_skip: int,
+    max_ticks: int,
+    commands: list[Any],
+) -> dict[str, float]:
+    """Build CUDA : contrôles tirés sur le GPU (torch), scores lus sur le GPU, seuls les indices de reset passent
+    par l'hôte. NON TESTÉ en local (pas de CUDA sur le laptop) : première exécution prévue dans la sonde Kaggle T4.
+    Le débit obtenu est une borne basse : synchronisation hôte à chaque step (indices de reset) et liste complète
+    d'EnvCommand reconvertie à chaque reset."""
+    import torch
+
+    dt = views.state_dtype("controls")
+    offsets = {n: dt.fields[n][1] for n in dt.names}
+    if dt.itemsize != 24 or offsets != CONTROL_OFFSETS:
+        raise RuntimeError(f"layout CarControls inattendu : {offsets}, itemsize {dt.itemsize}")
+    dev = torch.device("cuda")
+    cap = sim.car_capacity()
+    ctrl = torch.zeros((cap, 6), dtype=torch.float32, device=dev)  # 24 octets par voiture, comme CarControls
+    raw = ctrl.view(torch.uint8)
+    gen = torch.Generator(device=dev)
+    gen.manual_seed(seed)
+    fields = views.field_arrays(sim, "env_states")
+
+    def as_i32(name: str) -> Any:
+        cai = dict(fields[name].__cuda_array_interface__)
+        cai["typestr"] = "<i4"  # scores < 2**31 ; torch ne lit pas toujours uint32
+        return torch.as_tensor(_CudaArray(cai), device=dev)
+
+    blue, orange = as_i32("blue_score"), as_i32("orange_score")
+    ep = torch.zeros(n_envs, dtype=torch.int64, device=dev)
+    scores = blue.long() + orange.long()
+    steps = goals = resets = 0
+    torch.cuda.synchronize()
+    t_start = time.time()
+    t0 = time.perf_counter()
+    deadline = t0 + seconds
+    while time.perf_counter() < deadline:
+        for _ in range(16):
+            ctrl[:, :5].uniform_(-1.0, 1.0, generator=gen)
+            raw[:, 20:23] = (torch.rand((cap, 3), device=dev, generator=gen) < 0.5).to(torch.uint8)
+            sim.step_with_device_controls(ctrl.data_ptr(), tick_skip, 0)
+            ep += tick_skip
+            s = blue.long() + orange.long()
+            scored = s != scores
+            mask = scored | (ep >= max_ticks)
+            done = mask.nonzero().flatten().cpu().tolist()  # synchronise à chaque step
+            if done:
+                goals += int(scored.sum().item())
+                for i in done:
+                    commands[i].reset_to_kickoff = 1
+                sim.apply_env_commands(commands)
+                for i in done:
+                    commands[i].reset_to_kickoff = 0
+                ep[mask] = 0
+                resets += len(done)
+                scores = blue.long() + orange.long()
+            steps += n_envs
+    sim.synchronize()
+    torch.cuda.synchronize()
+    elapsed = time.perf_counter() - t0
+    t_end = time.time()
+    min_z = min(float(c.pos.z) for c in sim.download_car_states(min(cap, 64)))
+    return {
+        "env_steps": steps,
+        "elapsed_s": elapsed,
+        "t_start": t_start,
+        "t_end": t_end,
+        "goals": goals,
+        "resets": resets,
+        "min_car_z": min_z,
     }
 
 

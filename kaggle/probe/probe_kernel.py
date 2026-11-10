@@ -1,7 +1,10 @@
-"""Kernel Kaggle « sonde » (≤ 15 min) : matériel réel de la session + débit brut RocketSim.
+"""Kernel Kaggle « sonde » (≤ 40 min) : matériel réel de la session, débit RocketSim, build et débit RocketGPU.
 
-Généré par `scripts/kaggle_probe.py`, qui remplace EMBEDDED par le source de nos scripts (benchmark, meshes) et
-COMMIT par le commit git local. Aucune donnée privée, aucun secret. Sortie : /kaggle/working/probe.json.
+Généré par `scripts/kaggle_probe.py`, qui remplace EMBEDDED par le source de nos scripts (benchmark, meshes, build
+RocketGPU) et COMMIT par le commit git local. Aucune donnée privée, aucun secret. Sortie : /kaggle/working/probe.json
+et les rapports JSON du benchmark dans /kaggle/working/bench/.
+Étapes requises (verdict `ok`) : installation, meshes, benchmark RocketSim. Étapes RocketGPU (CPU, puis CUDA si un GPU
+est visible) : rapportées dans `ok_rocketgpu`, sans bloquer le verdict.
 """
 
 from __future__ import annotations
@@ -9,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import signal
 import subprocess
 import sys
 import time
@@ -18,28 +22,45 @@ EMBEDDED: dict[str, str] = {}  # remplacé au build : {"scripts/benchmark_sim.py
 COMMIT = "__COMMIT__"
 ACCELERATOR = "__ACCELERATOR__"
 WORK = Path("/kaggle/working")
-APP = Path("/tmp/rlgco")  # hors de /kaggle/working : les meshes ne font pas partie des sorties
+APP = Path("/tmp/rlgco")  # hors de /kaggle/working : meshes, sources et binaires tiers ne font pas partie des sorties
 T0 = time.time()
-BUDGET_S = 14 * 60
+BUDGET_S = 40 * 60
+BENCH_S = 15
+REQUIRED = ("pip_install", "meshes", "bench_rocketsim")
 
 
 def run(cmd: str, timeout: int = 120) -> dict[str, object]:
+    """Commande shell dans son propre groupe de processus : au timeout, tout le groupe est tué (cmake, ninja, nvcc
+    gardent sinon le pipe ouvert et bloquent bien au-delà du timeout)."""
+    t = time.time()
+    proc = subprocess.Popen(
+        cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True
+    )
     try:
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
-        return {"code": r.returncode, "out": (r.stdout + r.stderr).strip()[-4000:]}
+        stdout, _ = proc.communicate(timeout=timeout)
+        out: dict[str, object] = {"code": proc.returncode, "out": (stdout or "").strip()[-6000:]}
     except subprocess.TimeoutExpired:
-        return {"code": -1, "out": f"timeout {timeout}s"}
+        os.killpg(proc.pid, signal.SIGKILL)
+        stdout, _ = proc.communicate()
+        out = {"code": -1, "out": f"timeout {timeout}s\n" + (stdout or "").strip()[-3000:]}
+    out["seconds"] = round(time.time() - t, 1)
+    out["cmd"] = cmd
+    return out
 
 
 def sh(cmd: str, timeout: int = 120) -> str:
     return str(run(cmd, timeout)["out"])
 
 
+def remaining() -> int:
+    return int(BUDGET_S - (time.time() - T0))
+
+
 def py_versions() -> dict[str, str]:
     from importlib.metadata import PackageNotFoundError, version
 
     out = {}
-    for name in ("numpy", "torch", "jax", "jaxlib", "torch_xla", "libtpu", "rocketsim"):
+    for name in ("numpy", "torch", "jax", "jaxlib", "torch_xla", "libtpu", "rocketsim", "cmake", "ninja", "pybind11"):
         try:
             out[name] = version(name)
         except PackageNotFoundError:
@@ -54,6 +75,8 @@ def main() -> int:
         affinity = len(os.sched_getaffinity(0))
     except AttributeError:
         affinity = os.cpu_count() or 1
+    gpu = sh("nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv")
+    has_gpu = run("nvidia-smi -L")["code"] == 0
     report["system"] = {
         "platform": platform.platform(),
         "python": platform.python_version(),
@@ -63,7 +86,9 @@ def main() -> int:
         "lscpu": sh("lscpu"),
         "free_g": sh("free -g"),
         "df_working": sh("df -h /kaggle/working"),
-        "nvidia_smi": sh("nvidia-smi --query-gpu=name,memory.total --format=csv"),
+        "nvidia_smi": gpu,
+        "nvcc": sh("nvcc --version || ls /usr/local/cuda*/bin/nvcc"),
+        "gcc": sh("g++ --version | head -1"),
         "cgroup_cpu_max": sh("cat /sys/fs/cgroup/cpu.max"),
     }
     report["versions_before"] = py_versions()
@@ -73,26 +98,61 @@ def main() -> int:
         p = APP / rel
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(src, encoding="utf-8")
+    py = sys.executable
+    scripts = APP / "scripts"
+    meshes = APP / "vendor" / "collision_meshes"
+    bench = f"{py} {scripts / 'benchmark_sim.py'} --meshes {meshes} --out {WORK / 'bench'} --seconds {BENCH_S}"
     steps: dict[str, dict[str, object]] = {}
-    steps["pip_install"] = run(f"{sys.executable} -m pip install -q rocketsim==2.2.1", timeout=300)
-    report["versions_after"] = py_versions()
-    steps["meshes"] = run(f"{sys.executable} {APP / 'scripts/fetch_meshes.py'}", timeout=120)
+    rg_ok: dict[str, object] = {"cpu": "non tenté", "cuda": "non tenté"}
 
-    procs = sorted({1, 2, 4, max(1, affinity // 2), affinity, affinity * 2})
-    remaining = BUDGET_S - (time.time() - T0)
-    seconds = max(5, min(20, int(remaining / (len(procs) + 2)) - 5))
-    bench_cmd = (
-        f"{sys.executable} {APP / 'scripts/benchmark_sim.py'} --procs {','.join(map(str, procs))} "
-        f"--seconds {seconds} --meshes {APP / 'vendor/collision_meshes'} --out {WORK / 'bench'}"
-    )
-    report["bench_cmd"] = bench_cmd
-    if all(st["code"] == 0 for st in steps.values()):
-        steps["bench"] = run(bench_cmd, timeout=max(60, int(remaining)))
-    report["steps"] = steps
-    report["ok"] = all(st["code"] == 0 for st in steps.values()) and "bench" in steps
-    report["elapsed_s"] = round(time.time() - T0, 1)
-    (WORK / "probe.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(json.dumps({"ok": report["ok"], "accelerator": ACCELERATOR, "elapsed_s": report["elapsed_s"]}))
+    def save() -> None:
+        """Écrit probe.json après chaque étape : un kernel tué par Kaggle laisse quand même ses résultats partiels."""
+        report["steps"] = steps
+        report["ok"] = all(steps.get(n, {}).get("code") == 0 for n in REQUIRED)
+        report["ok_rocketgpu"] = rg_ok
+        report["elapsed_s"] = round(time.time() - T0, 1)
+        (WORK / "probe.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def step(name: str, cmd: str, timeout: int) -> bool:
+        if remaining() < 60:
+            steps[name] = {"code": -2, "out": "budget épuisé, étape sautée", "cmd": cmd}
+        else:
+            steps[name] = run(cmd, timeout=min(timeout, remaining()))
+        print(f"== {name} (code {steps[name]['code']}, {steps[name].get('seconds')} s)", flush=True)
+        save()
+        return steps[name]["code"] == 0
+
+    ok = step("pip_install", f"{py} -m pip install -q rocketsim==2.2.1 cmake ninja pybind11", 600)
+    report["versions_after"] = py_versions()
+    ok = step("meshes", f"{py} {scripts / 'fetch_meshes.py'} --dest {meshes}", 120) and ok
+    procs = ",".join(map(str, sorted({1, 2, 4, max(1, affinity // 2), affinity, affinity * 2})))
+    if ok:
+        step("bench_rocketsim", f"{bench} --procs {procs}", 600)
+        step("bench_rocketsim_multistep", f"{bench} --procs 1 --arenas 256 --engine multi_step", 120)
+
+    build = f"{py} {scripts / 'build_rocketgpu.py'} --src {APP / 'vendor/src/RocketGPU'} --out {APP / 'vendor/build'}"
+    if ok and step("build_rocketgpu_cpu", f"{build} --variant cpu", 1200):
+        env = f"ROCKETGPU_PY_DIR={APP / 'vendor/build/rocketgpu-cpu/python'}"
+        rg_ok["cpu"] = all(
+            step(f"bench_rocketgpu_cpu_{n}", f"{env} {bench} --procs 1 --arenas {n} --engine rocketgpu", 120)
+            for n in (1024, 4096)
+        )
+    elif ok:
+        rg_ok["cpu"] = False
+    if not has_gpu:
+        rg_ok["cuda"] = "pas de GPU"
+    elif ok:
+        rg_ok["cuda"] = False
+        if step("build_rocketgpu_cuda", f"{build} --variant cuda", 1500):
+            env = f"ROCKETGPU_PY_DIR={APP / 'vendor/build/rocketgpu-cuda/python'}"
+            rg_ok["cuda"] = all(
+                step(f"bench_rocketgpu_cuda_{n}", f"{env} {bench} --procs 1 --arenas {n} --engine rocketgpu", 120)
+                for n in (4096, 16384)
+            )
+
+    save()
+    summary = {"ok": report["ok"], "ok_rocketgpu": rg_ok, "accelerator": ACCELERATOR, "elapsed_s": report["elapsed_s"]}
+    print(json.dumps(summary))
     for name, st in steps.items():
         print(f"== {name} (code {st['code']})")
         print(st["out"])
