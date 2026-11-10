@@ -21,7 +21,8 @@ Mis à jour : 2026-11-10 (G1 validé, Phase 1 terminée).
 
 ## Prochaines actions
 1. Sonde Kaggle T4 + TPU (`python scripts/kaggle_probe.py --user <pseudo> --acc t4,tpu --push`).
-   Prérequis utilisateur : jeton installé (`.venv/Scripts/kaggle auth login`), téléphone vérifié (internet/GPU).
+   Jeton installé par l'utilisateur (2026-11-10). **Gel Kaggle** : aucune commande `kaggle` tant que l'utilisateur n'a
+   pas donné le feu vert (ses propres sessions tournent ; « ce soir » au plus tôt).
 2. Décision A1 (rlgym-learn + RLGym `main`, build à autoriser) vs A2 (env maison sur rocketsim PyPI), puis bench
    bout-en-bout (M3) et bench laptop ≥ 30 min (throttling) → ADR-infra → G2.
 

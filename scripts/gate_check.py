@@ -33,6 +33,29 @@ def contains(rel: str, pattern: str, label: str) -> Callable[[], tuple[str, str]
     return f
 
 
+PLACEHOLDER_RE = re.compile(r"^\s*_(?:À|à) (?:faire|remplir|produire|compléter)|_Estimation à produire", re.M)
+
+
+def section(rel: str, heading: str, pattern: str, label: str) -> Callable[[], tuple[str, str]]:
+    """La section `## heading` existe, contient `pattern` et n'est pas un gabarit (« _À faire… », etc.)."""
+
+    def f() -> tuple[str, str]:
+        p = ROOT / rel
+        if not p.exists():
+            return "FAIL", f"absent : {rel}"
+        m = re.search(rf"^## {re.escape(heading)}\s*$(.*?)(?=^## |\Z)", p.read_text(encoding="utf-8"), re.M | re.S)
+        if not m:
+            return "FAIL", f"{rel} : section « {heading} » absente"
+        body = m.group(1)
+        if PLACEHOLDER_RE.search(body):
+            return "FAIL", f"{rel} : section « {heading} » encore à l'état de gabarit"
+        if not re.search(pattern, body, re.S):
+            return "FAIL", f"{rel} : manque {label}"
+        return "PASS", f"{rel} : {label}"
+
+    return f
+
+
 def venv_cmd(args: list[str], label: str) -> Callable[[], tuple[str, str]]:
     def f() -> tuple[str, str]:
         py = ROOT / ".venv" / "Scripts" / "python.exe"
@@ -67,11 +90,17 @@ GATES: dict[str, list[Check]] = {
         ("ADR infra", exists("docs/adr/ADR-infra.md")),
         (
             "mesures dans l'ADR",
-            contains(
-                "docs/adr/ADR-infra.md", r"## Mesures.*(commit|Commit).*SPS", "section Mesures avec commit et SPS"
+            section(
+                "docs/adr/ADR-infra.md",
+                "Mesures",
+                r"(?=.*[Cc]ommit)(?=.*(?:SPS|steps/s))",
+                "commit et débit (SPS ou steps/s)",
             ),
         ),
-        ("estimation du temps de calcul", contains("docs/adr/ADR-infra.md", r"[Tt]emps de calcul", "estimation")),
+        (
+            "estimation du temps de calcul",
+            section("docs/adr/ADR-infra.md", "Temps de calcul", r"\d", "estimation chiffrée"),
+        ),
         ("GO humain", manual("l'utilisateur valide la décision d'infra")),
     ],
     "G3": [
