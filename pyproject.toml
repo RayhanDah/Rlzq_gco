@@ -7,7 +7,20 @@ requires-python = ">=3.11,<3.13"
 dependencies = []
 
 [dependency-groups]
-dev = ["ruff", "mypy", "pytest"]
+dev = [
+    "ruff",
+    "mypy",
+    "pytest",
+    "kaggle==2.2.5",
+    "six>=1.17.0",
+]
+sim = [
+    "numpy>=2,<3",
+    "rocketsim==2.2.1",
+]
+
+[tool.uv]
+default-groups = ["dev", "sim"]
 
 [tool.ruff]
 line-length = 120

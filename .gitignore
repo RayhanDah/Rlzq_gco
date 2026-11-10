@@ -31,6 +31,10 @@ __pycache__/
 .ruff_cache/
 
 # Claude Code local
+# Dépendances et données tierces construites ou téléchargées localement (meshes de collision, wheels)
+/vendor/
+/build/
+
 .claude/settings.local.json
 .claude/agent-memory/
 .claude/worktrees/
