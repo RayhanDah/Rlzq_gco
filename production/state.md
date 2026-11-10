@@ -11,7 +11,10 @@ Mis à jour : 2026-11-10 (G1 validé, Phase 1 terminée).
   commit 54a10a6, `docs/adr/ADR-infra.md` M1), kernel sonde prêt (`scripts/kaggle_probe.py`). RocketGPU @f0508a1
   compilé en local (gcc, PGO) : ≈ 130–215k env-steps/s en 1 processus selon l'état thermique, ≈ 2–2,5× RocketSim
   (M1c, M1d). Build scripté : `scripts/build_rocketgpu.py` ; la sonde Kaggle le construit (CPU, puis CUDA si GPU).
-  Gate G2 à la sortie.
+  Bout-en-bout prototype (M3, c110603) : ≈ 16,5k ts/s CPU, ≈ 52–58k ts/s avec learner sur GPU intégré Arc (torch XPU,
+  `vendor/venv-xpu`). Sonde portable Colab prête (`--colab`). Gate G2 à la sortie (manque M2 : sonde Kaggle ou Colab).
+- **Branches en attente du GO G2** : `claude/phase3-gco-reward-fd3080` (récompense GCO + tests §7 + ADR-002, Phase 3
+  anticipée, revue APPROVE) ; `claude/phase2-kaggle-relay-954373` (lanceur de relais, aucun appel Kaggle, en revue).
 - Livrables :
   - `docs/private/00_inventory.md` (local, non versionné : machine, contenu du dossier) ;
   - `docs/01_papers.md` (papiers et config PPO v0) ;

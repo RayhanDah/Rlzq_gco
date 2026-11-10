@@ -141,11 +141,58 @@ Depuis 2a49494, la sonde construit aussi RocketGPU CPU (`build_rocketgpu.py --va
 4 096 arènes, puis, si `nvidia-smi -L` réussit, le build CUDA à 4 096 et 16 384 arènes (chemin CUDA **jamais exécuté**
 avant cette sonde). Budget interne 40 min, `probe.json` écrit après chaque étape.
 
-### M3 — Bout-en-bout (obs + politique + PPO)
-_À faire_ après le choix A1/A2.
+### M3 — Learner seul et bout-en-bout, laptop (CPU vs GPU intégré Arc en XPU)
+Commit **c110603**, arbre propre, 2026-11-10 ≈ 15:30, secteur, seed 0. Deux sessions Claude parallèles étaient au repos
+(revues en lecture seule possibles). torch 2.15.0+cpu (`.venv`, 14 threads) et torch 2.15.0+xpu (`vendor/venv-xpu`,
+Intel Arc Graphics, pilote 32.0.101.8860). Réseaux PPO v0 : π 3×256 → 90 logits, V 3×512, Adam, grad clip 0,5.
+Contournement XPU : `x[idx]` lève `UR_RESULT_ERROR_OUT_OF_RESOURCES`, d'où `index_select` (identique sur CPU).
+
+**Learner seul** (`scripts/bench_learner.py --device <d> --batch 50000 --minibatch 25000 --epochs 2`, obs 107 dims,
+données synthétiques) :
+
+| | CPU | XPU | Ratio |
+|---|---:|---:|---:|
+| Inférence, lot 1 024 (obs/s) | 81 015 | 184 263 | 2,3× |
+| Inférence, lot 8 192 (obs/s) | 87 182 | 1 802 107 | 20,7× |
+| Update PPO (timesteps/s) | 9 040 | 136 358 | 15,1× |
+
+**Bout-en-bout** (`scripts/bench_e2e.py --device <d> --envs <E> --steps <T> --iters 5`, 4 itérations après
+échauffement, ≈ 51–57k timesteps agents par itération, RocketGPU CPU build simple `rocketgpu-gcc`, obs provisoire de
+89 dims en numpy, politique aléatoire initiale, synchrone sans recouvrement collecte/update) :
+
+| Config | Collecte (ts/s) | Apprentissage (ts/s) | **Bout-en-bout (ts/s)** |
+|---|---:|---:|---:|
+| CPU, 1 024 arènes × 25 steps | 105 163 | 19 511 | **16 455** |
+| XPU, 1 024 arènes × 25 steps | 107 330 | 100 216 | **51 530** |
+| XPU, 4 096 arènes × 7 steps | 141 510 | 98 168 | **57 868** |
+
+Lecture :
+- Sur CPU, **l'apprentissage est le goulot** (≈ 84 % du temps). Le GPU intégré Arc le multiplie par ≈ 5 dans la boucle
+  réelle et rééquilibre collecte et apprentissage : bout-en-bout ×3,1 à ×3,5.
+- Écart non expliqué : l'update CPU vaut 9,0k ts/s dans `bench_learner` mais ≈ 19,5k dans `bench_e2e` (obs 107 vs 89
+  dimensions, données et charge différentes). À investiguer avant d'utiliser le chiffre CPU isolé.
+- Décomposition XPU 4 096 arènes, par itération : obs numpy 0,15 s, inférence 0,08 s, sim 0,16 s, update 0,58 s.
+  Prochains leviers, à mesurer : recouvrement collecte/update (double buffer, staleness ≤ 1), obs en natif ou sur
+  le device.
+- Limites : politique aléatoire (presque aucun but, peu de resets), ≈ 30 s par point, une seule série, pas de
+  throttling mesuré, pas de critiques d'exploration GCO-std (surcoût de ≈ 5 % à ≈ ×0,5 selon la spec §6.2).
 
 ## Temps de calcul
-_Estimation à produire à partir de M1–M3 et du budget de `docs/GCO_SPEC.md` §6._
+Estimation **dérivée de M3, non mesurée sur un run réel** : débit bout-en-bout ≈ 55k timesteps/s (laptop, XPU), sans
+dégradation, puis avec un facteur prudent ×0,5 (throttling soutenu, critiques d'exploration, évaluation ; facteurs de
+`docs/GCO_SPEC.md` §6.2, non mesurés).
+
+| Steps (jalon médian, spec §6.1) | À 55k ts/s | À 27k ts/s (×0,5) |
+|---|---:|---:|
+| 1B (≈ S1 amorçage, médiane 0,7B) | 5,1 h | 10 h |
+| 3B (≈ S2 bat ATBA, médiane 2B) | 15 h | 1,3 jour |
+| 10B (≈ S3 bot faible, médiane 8B) | 2,1 jours | 4,3 jours |
+| 40B (≈ S4 Nexto, médiane 40B) | 8,4 jours | 17 jours |
+| 100B | 21 jours | 43 jours |
+
+Par rapport à la spec §6.2 (scénarios 5k / 20k / 60k SPS en CPU seul), le laptop se place près du scénario optimiste,
+grâce à RocketGPU et au GPU intégré. Kaggle (M2) et Colab restent à mesurer : la sonde est prête
+(`scripts/kaggle_probe.py`, `--colab`).
 
 ## Décision
 _En attente des mesures M2–M3._ Orientation proposée après M1c (non actée) : **RocketGPU comme simulateur principal**
