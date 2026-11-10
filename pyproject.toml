@@ -14,6 +14,9 @@ dev = [
     "kaggle==2.2.5",
     "six>=1.17.0",
 ]
+learn = [
+    "torch==2.15.0",
+]
 native = [
     "cmake>=3.25",
     "ninja>=1.13.2",
@@ -25,7 +28,7 @@ sim = [
 ]
 
 [tool.uv]
-default-groups = ["dev", "sim", "native"]
+default-groups = ["dev", "sim", "native", "learn"]
 
 [tool.ruff]
 line-length = 120
