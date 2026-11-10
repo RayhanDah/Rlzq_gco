@@ -1,0 +1,38 @@
+# Données tierces ou privées : jamais versionnées (code sans licence, exports Discord, analyses dérivées, machine perso)
+/repos/
+/threads/
+/docs/private/
+/ANALYSE.md
+
+# Artefacts d'entraînement (protégés par hooks, stockés hors git)
+/checkpoints/
+/runs/
+/data/
+/exports/
+/kaggle_out/
+*.pt
+*.pth
+*.onnx
+*.ckpt
+
+# Secrets
+.kaggle/
+kaggle.json
+access_token
+.env
+.env.*
+
+# Python / outils
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Claude Code local
+.claude/settings.local.json
+.claude/agent-memory/
+.claude/worktrees/
+CLAUDE.local.md
+production/run_log.jsonl

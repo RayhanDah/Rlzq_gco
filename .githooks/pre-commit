@@ -1,0 +1,3 @@
+#!/bin/sh
+# Hook git RL-GCO : lint, format, types, regle "pas de commit sans tests".
+exec python "$(git rev-parse --show-toplevel)/scripts/precommit.py"

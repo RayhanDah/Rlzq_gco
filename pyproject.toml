@@ -1,0 +1,28 @@
+[project]
+name = "rl-gco"
+version = "0.0.1"
+description = "Agent PPO Rocket League sous récompense Goal/Concede Only, déployé via RLBot v5"
+requires-python = ">=3.11,<3.13"
+# Dépendances runtime (rlgym, rocketsim, torch/jax, rlbot...) ajoutées en Phase 2 après vérification des versions (ADR-infra).
+dependencies = []
+
+[dependency-groups]
+dev = ["ruff", "mypy", "pytest"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["repos", "threads", "checkpoints", "runs", "data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "NPY", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003"]  # caractères français (é, «, ’) dans chaînes et commentaires
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
