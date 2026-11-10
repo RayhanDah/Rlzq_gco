@@ -1,8 +1,9 @@
 """Kernel Kaggle « sonde » (≤ 40 min) : matériel réel de la session, débit RocketSim, build et débit RocketGPU.
 
 Généré par `scripts/kaggle_probe.py`, qui remplace EMBEDDED par le source de nos scripts (benchmark, meshes, build
-RocketGPU) et COMMIT par le commit git local. Aucune donnée privée, aucun secret. Sortie : /kaggle/working/probe.json
-et les rapports JSON du benchmark dans /kaggle/working/bench/.
+RocketGPU) et COMMIT par le commit git local. Aucune donnée privée, aucun secret. Sortie : <WORK>/probe.json et
+les rapports JSON du benchmark dans <WORK>/bench/, avec WORK = /kaggle/working sur Kaggle, /content sur Colab,
+sinon le dossier courant. Le même fichier s'exécute tel quel dans une cellule Colab : `!python rlgco_probe.py`.
 Étapes requises (verdict `ok`) : installation, meshes, benchmark RocketSim. Étapes RocketGPU (CPU, puis CUDA si un GPU
 est visible) : rapportées dans `ok_rocketgpu`, sans bloquer le verdict.
 """
@@ -21,8 +22,18 @@ from pathlib import Path
 EMBEDDED: dict[str, str] = {}  # remplacé au build : {"scripts/benchmark_sim.py": "...", ...}
 COMMIT = "__COMMIT__"
 ACCELERATOR = "__ACCELERATOR__"
-WORK = Path("/kaggle/working")
-APP = Path("/tmp/rlgco")  # hors de /kaggle/working : meshes, sources et binaires tiers ne font pas partie des sorties
+
+
+def _work_dir() -> Path:
+    for cand in (Path("/kaggle/working"), Path("/content")):
+        if cand.is_dir():
+            return cand
+    return Path.cwd()
+
+
+WORK = _work_dir()
+PLATFORM = "kaggle" if str(WORK).startswith("/kaggle") else "colab" if str(WORK) == "/content" else "autre"
+APP = Path("/tmp/rlgco")  # hors de WORK : meshes, sources et binaires tiers ne font pas partie des sorties
 T0 = time.time()
 BUDGET_S = 40 * 60
 BENCH_S = 15
@@ -70,7 +81,7 @@ def py_versions() -> dict[str, str]:
 
 def main() -> int:
     start = time.strftime("%Y-%m-%dT%H:%M:%S%z")
-    report: dict[str, object] = {"commit": COMMIT, "accelerator": ACCELERATOR, "start": start}
+    report: dict[str, object] = {"commit": COMMIT, "accelerator": ACCELERATOR, "platform": PLATFORM, "start": start}
     try:
         affinity = len(os.sched_getaffinity(0))
     except AttributeError:
@@ -85,7 +96,8 @@ def main() -> int:
         "nproc": sh("nproc"),
         "lscpu": sh("lscpu"),
         "free_g": sh("free -g"),
-        "df_working": sh("df -h /kaggle/working"),
+        "df_working": sh(f"df -h {WORK}"),
+        "tpu_env": sh("env | grep -i -E '^(TPU|COLAB_TPU|XRT)' | cut -c1-120"),
         "nvidia_smi": gpu,
         "nvcc": sh("nvcc --version || ls /usr/local/cuda*/bin/nvcc"),
         "gcc": sh("g++ --version | head -1"),

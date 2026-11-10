@@ -179,3 +179,10 @@ def test_rocketgpu_controls_layout_matches_cuda_path() -> None:
     dt = views.state_dtype("controls")
     assert dt.itemsize == 24
     assert {n: dt.fields[n][1] for n in dt.names} == bench.CONTROL_OFFSETS
+
+
+def test_probe_colab_variant_compiles_and_detects_work_dir() -> None:
+    src = probe.render_kernel("abc1234", "colab")
+    compile(src, "rlgco_probe.py", "exec")
+    assert 'Path("/content")' in src and 'Path("/kaggle/working")' in src
+    assert '"colab"' in src

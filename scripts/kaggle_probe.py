@@ -7,6 +7,9 @@ Usage :
   .venv/Scripts/kaggle kernels status <pseudo>/rlgco-probe-t4                   # suivi
   .venv/Scripts/kaggle kernels output <pseudo>/rlgco-probe-t4 -p kaggle_out/probe-t4
 Pousser deux accélérateurs à la suite teste aussi la concurrence GPU + TPU sur un même compte.
+Colab (aucun appel Kaggle) :
+  python scripts/kaggle_probe.py --colab      # écrit build/colab/rlgco_probe.py, à téléverser dans Colab
+  puis, dans une cellule Colab : !python rlgco_probe.py   (résultats : /content/probe.json, /content/bench/)
 """
 
 from __future__ import annotations
@@ -66,7 +69,8 @@ def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser()
-    ap.add_argument("--user", required=True, help="pseudo Kaggle (minuscules)")
+    ap.add_argument("--user", help="pseudo Kaggle (minuscules) ; requis sauf avec --colab")
+    ap.add_argument("--colab", action="store_true", help="fichier unique pour Colab, sans métadonnées ni push")
     ap.add_argument("--acc", default="t4", help="liste parmi t4,tpu")
     ap.add_argument("--push", action="store_true")
     args = ap.parse_args()
@@ -75,6 +79,19 @@ def main() -> int:
         print("arbre git modifié : commiter avant de lancer une sonde (traçabilité du commit)", file=sys.stderr)
         return 1
     commit = git("rev-parse", "--short", "HEAD")
+    if args.colab:
+        if args.push:
+            print("--push est réservé à Kaggle", file=sys.stderr)
+            return 2
+        out = ROOT / "build" / "colab"
+        out.mkdir(parents=True, exist_ok=True)
+        path = out / "rlgco_probe.py"
+        path.write_text(render_kernel(commit, "colab"), encoding="utf-8")
+        print(f"construit : {path} (commit {commit}) ; dans Colab : !python rlgco_probe.py")
+        return 0
+    if not args.user:
+        print("--user requis (ou --colab)", file=sys.stderr)
+        return 2
     keys = [k.strip() for k in args.acc.split(",")]
     for key in keys:
         if key not in ACCELERATORS:

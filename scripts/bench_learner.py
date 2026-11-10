@@ -81,21 +81,23 @@ def ppo_update(
         perm = torch.randperm(n, device=data["obs"].device)
         for i in range(0, n, minibatch):
             idx = perm[i : i + minibatch]
-            obs, act = data["obs"][idx], data["act"][idx]
-            adv = data["adv"][idx]
-            adv = (adv - adv.mean()) / (adv.std() + 1e-8)
+            # index_select plutôt que x[idx] : sur XPU (Arc, torch 2.15.0+xpu), x[idx] lève
+            # UR_RESULT_ERROR_OUT_OF_RESOURCES (constaté le 2026-11-10) ; résultat identique sur CPU.
+            mb = {k: v.index_select(0, idx) for k, v in data.items()}
+            obs, act = mb["obs"], mb["act"]
+            adv = (mb["adv"] - mb["adv"].mean()) / (mb["adv"].std() + 1e-8)
             dist = torch.distributions.Categorical(logits=policy(obs))
             logp = dist.log_prob(act)
-            ratio = torch.exp(logp - data["logp"][idx])
+            ratio = torch.exp(logp - mb["logp"])
             pg = -torch.min(ratio * adv, torch.clamp(ratio, 1 - clip, 1 + clip) * adv).mean()
-            v_loss = 0.5 * (value(obs).squeeze(-1) - data["ret"][idx]).pow(2).mean()
+            v_loss = 0.5 * (value(obs).squeeze(-1) - mb["ret"]).pow(2).mean()
             loss = pg + v_loss - 0.01 * dist.entropy().mean()
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_([*policy.parameters(), *value.parameters()], 0.5)
             opt.step()
             stats["loss"] = float(loss.detach())
-            stats["kl"] = float((data["logp"][idx] - logp).mean().detach())
+            stats["kl"] = float((mb["logp"] - logp).mean().detach())
     return stats
 
 
