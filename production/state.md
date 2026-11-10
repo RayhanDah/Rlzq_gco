@@ -8,7 +8,8 @@ Mis à jour : 2026-11-10 (G1 validé, Phase 1 terminée).
 - **Phase 1 (studio) terminée** : `CLAUDE.md`, 17 agents, 10 skills, 7 rules, hooks testés (`tests/hooks`), ADR-000, dépôt git (remote privé `origin`).
 - **Phase 2 (infra) en cours** (début 2026-11-10). Fait : rocketsim 2.2.1 + numpy 2.5.4 dans le venv, meshes soccar
   vérifiés (`scripts/fetch_meshes.py`), plafond sim laptop mesuré (21k env-steps/s à 1 proc, ≈ 72k à 14 procs, 20 s,
-  commit 54a10a6, `docs/adr/ADR-infra.md` M1), kernel sonde prêt (`scripts/kaggle_probe.py`). Gate G2 à la sortie.
+  commit 54a10a6, `docs/adr/ADR-infra.md` M1), kernel sonde prêt (`scripts/kaggle_probe.py`). RocketGPU @f0508a1
+  compilé en local (gcc, PGO) : ≈ 198k env-steps/s en 1 processus, ≈ 2,5× RocketSim (M1c). Gate G2 à la sortie.
 - Livrables :
   - `docs/private/00_inventory.md` (local, non versionné : machine, contenu du dossier) ;
   - `docs/01_papers.md` (papiers et config PPO v0) ;

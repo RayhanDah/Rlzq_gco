@@ -71,6 +71,45 @@ Lecture :
 - Comparaison avec les chiffres de A3 **impossible en l'état** : autre CPU (9800X3D), autre charge (mix 1v1/2v2/3v3,
   contrôles rejoués). À re-mesurer sur ce laptop, même charge, avant toute décision.
 
+### M1c — RocketGPU CPU, build local (autorisé par l'utilisateur le 2026-11-10)
+Source : `github.com/thecosmicskye/RocketGPU` @ **f0508a1** (MIT, dérivé non officiel de RocketSim), cloné dans
+`vendor/src/` (non versionné). Build inspecté avant exécution : aucun téléchargement ; `execute_process` limité à
+`nvidia-smi`, `ispc --help`, `python -m pybind11`.
+Toolchain : MinGW-w64 gcc 13.2.0, CMake 4.4.4, Ninja 1.13.2, pybind11 3.1.0 (groupe uv `native`), `-march=native`
+(défaut du projet), sans ISPC (non installé). Compilation : 1 min 37 s, avertissements seulement.
+```
+cmake -S vendor/src/RocketGPU -B vendor/build/rocketgpu-gcc -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++ \
+      -DROCKETGPU_BUILD_PYTHON=ON -DROCKETGPU_BUILD_BENCH=ON -DPython_EXECUTABLE=.venv/Scripts/python.exe
+cmake --build vendor/build/rocketgpu-gcc -j 12
+```
+PGO (gcc) : build `-DROCKETGPU_PGO=GENERATE`, profil = notre propre charge (`benchmark_sim.py --engine rocketgpu
+--arenas 256 --seconds 30`), puis build `-DROCKETGPU_PGO=USE`. Avertissements gcc « does not start with profile prefix »
+(séparateurs `\` vs `/` sous Windows) : le profil n'est **peut-être appliqué qu'en partie**.
+
+Cohérence physique (script jetable, 2026-11-10) : voiture seule, plein gaz, depuis un kickoff, |v| RocketSim 2.2.1 vs
+RocketGPU : 346,2 vs 354,0 (30 ticks), 623,6 vs 627,4 (60), 1002,1 vs 1001,6 (120) ; avec boost 1617,4 vs 1614,1 à
+120 ticks ; hauteur au repos 17,01 dans les deux. Écart ≤ 2,2 % à 30 ticks, ≤ 0,3 % à 120 ticks (spots de kickoff
+différents). Ce n'est **pas** un test de parité ; la parité avec le jeu reste à mesurer en Phase 5.
+
+Débit, même charge que M1/M1b (1v1, contrôles aléatoires tirés en numpy pour toutes les voitures, tenus 8 ticks, reset au
+but ou à 300 s), 1 processus, threads internes par défaut. Commande :
+`.venv/Scripts/python scripts/benchmark_sim.py --procs 1 --arenas <A> --engine rocketgpu --seconds 20`
+(`ROCKETGPU_PY_DIR=vendor/build/rg-pgo/python` pour le build PGO). Commit **f1b9d7e**, même machine, seed 0.
+
+| Arènes | Build simple : env-steps/s | Build PGO : env-steps/s | PGO : ticks/s |
+|---:|---:|---:|---:|
+| 64 | 159 031 | — | — |
+| 256 | 159 741 | 181 118 | 1 448 946 |
+| 1 024 | 161 254 | 193 430 | 1 547 439 |
+| 4 096 | 173 753 | 198 394 | 1 587 156 |
+
+Lecture :
+- RocketGPU PGO ≈ **198k env-steps/s**, soit **≈ 2,5×** le meilleur RocketSim 2.2.1 mesuré (77,8k, M1b) sur ce laptop,
+  et ≈ 2,2× sans PGO. Le gain annoncé par le README (≈ 6× vs nos chiffres) ne se reproduit pas : autre CPU, autre charge.
+- Le débit est déjà élevé à 64 arènes : le batch suffit à occuper les threads, et la pose des contrôles en numpy ne coûte
+  plus rien en Python par voiture.
+- Une mesure par point, 20 s : variance non estimée, throttling non mesuré.
+
 ### M2 — Sonde Kaggle T4 / TPU
 _À faire_ : `python scripts/kaggle_probe.py --user <pseudo> --acc t4,tpu --push` (jeton de l'utilisateur requis).
 Build à blanc vérifié sur 54a10a6 (`--user test-user`, sans `--push`) : métadonnées T4 et TPU générées, kernel compilé.
@@ -83,7 +122,9 @@ _À faire_ après le choix A1/A2.
 _Estimation à produire à partir de M1–M3 et du budget de `docs/GCO_SPEC.md` §6._
 
 ## Décision
-_En attente des mesures M2–M3._
+_En attente des mesures M2–M3._ Orientation proposée après M1c (non actée) : **RocketGPU comme simulateur principal**
+(CPU sur laptop et hôte TPU, CUDA à évaluer sur T4), commit épinglé, build scripté ; **RocketSim 2.2.1 conservé comme
+référence** (comparaisons de physique, repli si RocketGPU casse).
 
 ## Conséquences
 _À compléter._
