@@ -197,3 +197,13 @@ def test_probe_parts_put_gpu_first_and_validate() -> None:
     assert parse(["--parts", "rg_cuda", "--budget-min", "55"], True) == (["rg_cuda"], 55 * 60)  # type: ignore[operator]
     with pytest.raises(SystemExit):
         parse(["--parts", "gpu"], True)  # type: ignore[operator]
+
+
+def test_probe_error_lines_keep_compiler_errors_before_traceback() -> None:
+    ns: dict[str, object] = {"__name__": "probe_under_test"}
+    exec(compile(probe.render_kernel("abc1234", "colab"), "rlgco_probe.py", "exec"), ns)
+    log = "[1/9] Building CUDA object x.cu.o\nx.cu(12): error: identifier foo is undefined\nok\nCMake Error at y\n"
+    log += "Traceback (most recent call last):\nsubprocess.CalledProcessError: exit status 1\n"
+    lines = ns["error_lines"](log)  # type: ignore[operator]
+    assert lines[0] == "x.cu(12): error: identifier foo is undefined"
+    assert "CMake Error at y" in lines

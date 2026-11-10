@@ -52,14 +52,23 @@ def run(cmd: str, timeout: int = 120) -> dict[str, object]:
     )
     try:
         stdout, _ = proc.communicate(timeout=timeout)
-        out: dict[str, object] = {"code": proc.returncode, "out": (stdout or "").strip()[-6000:]}
+        code = proc.returncode
     except subprocess.TimeoutExpired:
         os.killpg(proc.pid, signal.SIGKILL)
         stdout, _ = proc.communicate()
-        out = {"code": -1, "out": f"timeout {timeout}s\n" + (stdout or "").strip()[-3000:]}
+        code = -1
+    text = (stdout or "").strip()
+    out: dict[str, object] = {"code": code, "out": (f"timeout {timeout}s\n" if code == -1 else "") + text[-6000:]}
+    out["full"] = text  # journal complet, écrit dans <WORK>/logs/ par step() puis retiré de probe.json
     out["seconds"] = round(time.time() - t, 1)
     out["cmd"] = cmd
     return out
+
+
+def error_lines(text: str, limit: int = 40) -> list[str]:
+    """Premières lignes d'erreur du compilateur ou de CMake (le traceback Python final les masque sinon)."""
+    keys = ("error", "Error", "ERROR", "fatal", "undefined reference", "CMake Error")
+    return [line[:300] for line in text.splitlines() if any(k in line for k in keys)][:limit]
 
 
 def sh(cmd: str, timeout: int = 120) -> str:
@@ -158,7 +167,15 @@ def main() -> int:
             steps[name] = {"code": -2, "out": "budget épuisé, étape sautée", "cmd": cmd}
         else:
             steps[name] = run(cmd, timeout=min(timeout, remaining()))
+            full = str(steps[name].pop("full", ""))
+            logs = WORK / "logs"
+            logs.mkdir(parents=True, exist_ok=True)
+            (logs / f"{name}.log").write_text(full, encoding="utf-8")
+            if steps[name]["code"] != 0:
+                steps[name]["errors"] = error_lines(full)
         print(f"== {name} (code {steps[name]['code']}, {steps[name].get('seconds')} s)", flush=True)
+        for line in steps[name].get("errors", []):  # type: ignore[union-attr]
+            print("   ", line, flush=True)
         save()
         return steps[name]["code"] == 0
 
