@@ -32,8 +32,8 @@ Mis à jour : 2026-11-10 (G1 validé, Phase 1 terminée).
 - **R8** : interruption possible d'une session à accélérateur sous-utilisé (CGU non lues).
 - **R9** : 4 cœurs CPU seulement en session T4 → collecte plafonnée.
 - **R10** : fuite du jeton Kaggle → jamais dans le dépôt, hooks de refus.
-- **R11** : relais sur les comptes de camarades. Partager une clé est contraire aux CGU Kaggle (« will not share your account »). Seule la variante où chacun opère son compte est envisagée ; le pooling de quotas reste en zone grise (« circumvent »). **Décision utilisateur en attente.**
-- **R12** : TPU avec file d'attente ≥ 35 h → appoint opportuniste seulement.
+- **R11** : groupe de 3 → 3 comptes Kaggle. **Décision utilisateur (2026-11-10)** : chaque membre opère son propre compte (`git pull` + une commande depuis son PC, son propre jeton) ; notebook commun et datasets partagés si possible. Le studio n'opère que le compte de l'utilisateur et ne manipule aucune clé tierce. Zone grise résiduelle : pooling de quotas (AUP « circumvent »).
+- **R12** : TPU avec file d'attente ≥ 35 h. L'utilisateur rapporte ≈ 2,5B steps par session de 9 h (≈ 77k SPS, **non mesuré**) ; si confirmé par la sonde, le TPU (≈ 10× une session T4 estimée) devient la ligne principale malgré la file. GPU + TPU en parallèle : limite de concurrence non documentée → à tester par la sonde.
 
 ## Expériences en cours
 Aucune.

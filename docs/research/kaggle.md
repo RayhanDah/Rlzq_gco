@@ -104,3 +104,27 @@ Les résultats vont dans `docs/adr/ADR-infra.md`, avec la commande, le commit et
   - à 6k SPS (4 cœurs, estimation) : ≈ 3,6B steps/semaine pour la chaîne 24/7.
 - Coût humain : un relais toutes les ≤ 12 h. Un camarade absent casse la chaîne, mais pas le run, grâce à la reprise
   depuis checkpoint.
+
+## 6. Mise à jour du 2026-11-10 (suite) : groupe de 3, débit TPU rapporté, concurrence
+**Décision de l'utilisateur** : groupe de 3, donc 3 comptes. Chaque membre opère son compte depuis son PC (`git pull` puis
+une commande, avec son propre jeton). Notebook commun et datasets partagés si possible. Le studio ne manipule que le compte
+de l'utilisateur.
+
+**Débit TPU rapporté par l'utilisateur** (non mesuré) : ≈ 2,5B steps par session de 9 h, soit ≈ 77k SPS, une session tous les
+≈ 48 h. Calculs dérivés (estimés, non mesurés) :
+- le quota TPU rapporté (≈ 20 h/semaine) autorise au plus 2 sessions de 9 h par compte et par semaine, soit ≈ 5B steps ;
+- 3 comptes : jusqu'à ≈ 15B steps/semaine si chacun obtient ses créneaux ;
+- une session T4 à ≈ 6k SPS (4 cœurs, estimation) donne ≈ 0,26B steps en 12 h, soit ≈ 10× moins qu'une session TPU.
+⇒ Si la sonde confirme l'ordre de grandeur, le TPU redevient la ligne principale et les T4 servent d'appoint (seeds,
+ablations, éval).
+
+**GPU et TPU en même temps** :
+- Quotas GPU et TPU distincts ; le quota GPU « flottant » ne s'applique pas au TPU
+  ([kaggle.com/product-feedback/173129](https://www.kaggle.com/product-feedback/173129)).
+- Ancienne annonce Kaggle : 1 session GPU interactive + 2 sessions GPU en commit simultanées
+  ([kaggle.com/discussions/general/105509](https://www.kaggle.com/discussions/general/105509), date et validité actuelle
+  non vérifiées). Aucune limite TPU concurrente trouvée.
+- **À tester par la sonde** : pousser un kernel T4 et un kernel TPU sur le même compte et relever `kaggle kernels status`.
+- Même si c'est possible, un run PPO est séquentiel : GPU et TPU en parallèle = **deux runs distincts** (seeds, ablation,
+  pool d'adversaires), pas un même run accéléré. Alterner TPU et T4 sur un même run est possible si le checkpoint est
+  portable entre les deux (même framework, learner indépendant du device).
