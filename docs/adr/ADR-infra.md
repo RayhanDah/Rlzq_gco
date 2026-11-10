@@ -18,6 +18,8 @@
 | A1. rlgym-learn + RLGym `main` + rocketsim 2.2.1 | collecte parallèle en Rust, PPO Python fourni, API RLGym v2 | build de `main` à faire ; rlgym-learn 2.0.0 instable (breaking changes) |
 | A2. Env maison minimal sur `rocketsim` 2.2.1 (PyPI) + PPO maison torch | aucune dépendance non publiée ; contrôle total (obs, reset, GCO) | réécrire obs/actions/parité RLGym ; collecte multi-process à écrire |
 | B. A1/A2 + chemins chauds natifs (obs, collecte) | débit | après mesure seulement (règle 7) |
+| **A3. RocketGPU** (`thecosmicskye/RocketGPU`, MIT) : sim batchée CPU ou CUDA, API numpy (contrôles et états en tableaux), paquet « RocketSim-style » | revendique ≈ 4,2M arena-ticks/s CPU (9800X3D, 14 threads) et 12,4M en CUDA (RTX 5090), 100 % bit-exact vs jeu réel ; **le mode CUDA rendrait les T4 utiles** ; pas d'objets Python par voiture | tiers, créé le 2026-10-27, 12 ★, un seul auteur, aucun wheel : build CMake + compilateur C++17 (code tiers à exécuter) ; chiffres **non reproduits** |
+| A4. RocketSim v3 (Rust) + bindings PyO3 maison | officiel, MIT | pas de binding Python ; toolchain Rust absente ; moins rapide et moins exact que A3 d'après le tableau de A3 (tiers) |
 | C. GigaLearn (C++) | débit élevé | PPO et rewards en C++ : **exclu** par la règle 7 ; plafond de référence au mieux |
 
 ## Mesures
@@ -45,6 +47,29 @@ Lecture :
   charge. Interprétation, non profilée.
 - C'est un **plafond** : pas d'obs, pas de politique, pas de PPO. Le débit bout-en-bout sera nettement plus bas (M3).
 - Durée 20 s par point : **ne mesure pas le throttling** (un run ≥ 30 min est prévu).
+
+### M1b — RocketSim 2.2.1 en un seul processus avec `Arena.multi_step` (threads C++)
+Commande : `.venv/Scripts/python scripts/benchmark_sim.py --procs 1 --arenas <A> --engine multi_step --seconds 20`
+(et `--procs 2,4 --arenas 64`). Commit **5e1bf19**, même machine, 2026-11-10, seed 0, actions aléatoires posées en Python.
+
+| Processus × arènes | env-steps/s | ticks/s |
+|---:|---:|---:|
+| 1 × 16 | 39 283 | 314 260 |
+| 1 × 64 | 57 599 | 460 794 |
+| 1 × 256 | 66 146 | 529 171 |
+| 2 × 64 | 77 752 | 622 015 |
+| 4 × 64 | 74 726 | 597 806 |
+
+Lecture :
+- `multi_step` est multithreadé : CPU/wall ≈ 7,2 à 16 arènes (mesure ponctuelle `time.process_time`, script jetable,
+  non versionné).
+- Le plafond du laptop avec RocketSim v2 est ≈ 75k env-steps/s (≈ 600k ticks/s), atteint par 14 processus (M1) ou par
+  2 processus `multi_step`. Un seul processus en obtient ≈ 85 %, sans IPC : architecture de collecte retenue a priori
+  (1 processus, N arènes, inférence torch batchée dans le même processus).
+- Sur ce chemin, la pose des contrôles en Python (une affectation par voiture) devient le goulot à 256 arènes
+  (interprétation : CPU/wall ≈ 9 sur 18 threads). Une API par tableaux (A3) le supprimerait.
+- Comparaison avec les chiffres de A3 **impossible en l'état** : autre CPU (9800X3D), autre charge (mix 1v1/2v2/3v3,
+  contrôles rejoués). À re-mesurer sur ce laptop, même charge, avant toute décision.
 
 ### M2 — Sonde Kaggle T4 / TPU
 _À faire_ : `python scripts/kaggle_probe.py --user <pseudo> --acc t4,tpu --push` (jeton de l'utilisateur requis).
