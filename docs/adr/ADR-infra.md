@@ -24,14 +24,32 @@
 ### M1 — Débit brut RocketSim, laptop (plafond de collecte, sans obs ni politique)
 Commande : `.venv/Scripts/python scripts/benchmark_sim.py --procs 1,2,4,6,8,12,14,18 --seconds 20` (seed 0, 4 arènes 1v1
 par processus, tick-skip 8, actions aléatoires). Matériel : Zenbook 14, Core Ultra 5 125H, Windows 11, Python 3.12.6,
-numpy 2.5.4, rocketsim 2.2.1, secteur. Commit : _à remplir (re-mesure sur commit propre)_.
+numpy 2.5.4, rocketsim 2.2.1. Commit : **54a10a6** (arbre propre), 2026-11-10 12:36 CET. Meshes : RLGym @2fc8d43
+(`scripts/fetch_meshes.py`, hash vérifiés). Rapport brut : `runs/bench/bench_sim_20261110_123933.json` (local).
 
-_Tableau à remplir._
+| Processus | env-steps/s | agent-steps/s (×2) | ticks/s | Gain vs 1 proc |
+|---:|---:|---:|---:|---:|
+| 1 | 21 257 | 42 514 | 170 054 | 1,0× |
+| 2 | 28 695 | 57 390 | 229 561 | 1,35× |
+| 4 | 38 137 | 76 275 | 305 099 | 1,79× |
+| 6 | 45 748 | 91 496 | 365 985 | 2,15× |
+| 8 | 52 322 | 104 643 | 418 573 | 2,46× |
+| 12 | 56 510 | 113 019 | 452 076 | 2,66× |
+| 14 | 71 869 | 143 739 | 574 955 | 3,38× |
+| 18 | 77 610 | 155 220 | 620 878 | 3,65× (sursouscription : 18 = threads logiques) |
 
-Durée 20 s par point : **ne mesure pas le throttling** (un run ≥ 30 min est prévu).
+Lecture :
+- Un passage antérieur (commit 12dad2d-dirty, sans barrière de départ) donnait des valeurs proches : 21,7k à 1 proc,
+  65,2k à 14 procs, 66,3k à 18 procs. L'écart à 14–18 procs (≈ 10–15 %) donne l'ordre de grandeur de la variance.
+- Scaling très sous-linéaire (3,4× pour 14 procs) : 4 P-cores rapides + 8 E-cores + 2 LP E-cores, turbo qui baisse avec la
+  charge. Interprétation, non profilée.
+- C'est un **plafond** : pas d'obs, pas de politique, pas de PPO. Le débit bout-en-bout sera nettement plus bas (M3).
+- Durée 20 s par point : **ne mesure pas le throttling** (un run ≥ 30 min est prévu).
 
 ### M2 — Sonde Kaggle T4 / TPU
 _À faire_ : `python scripts/kaggle_probe.py --user <pseudo> --acc t4,tpu --push` (jeton de l'utilisateur requis).
+Build à blanc vérifié sur 54a10a6 (`--user test-user`, sans `--push`) : métadonnées T4 et TPU générées, kernel compilé.
+Pousser T4 puis TPU à la suite teste aussi la concurrence GPU + TPU sur un compte.
 
 ### M3 — Bout-en-bout (obs + politique + PPO)
 _À faire_ après le choix A1/A2.

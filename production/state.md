@@ -6,7 +6,9 @@ Mis à jour : 2026-11-10 (G1 validé, Phase 1 terminée).
 - Phase 0 terminée. **Gate G1 validé** le 2026-11-10 (décisions : `docs/GCO_SPEC.md` §10).
 - **Compute** : entraînement sur **Kaggle** (2× T4 ou TPU v5e-8, via clé API installée par l'utilisateur). Le laptop sert au dev, aux smoke tests, à l'orchestration et à RLBot. Voir `docs/research/kaggle.md`.
 - **Phase 1 (studio) terminée** : `CLAUDE.md`, 17 agents, 10 skills, 7 rules, hooks testés (`tests/hooks`), ADR-000, dépôt git (remote privé `origin`).
-- **Phase 2 (infra)** : prochaine. Gate G2 à la sortie.
+- **Phase 2 (infra) en cours** (début 2026-11-10). Fait : rocketsim 2.2.1 + numpy 2.5.4 dans le venv, meshes soccar
+  vérifiés (`scripts/fetch_meshes.py`), plafond sim laptop mesuré (21k env-steps/s à 1 proc, ≈ 72k à 14 procs, 20 s,
+  commit 54a10a6, `docs/adr/ADR-infra.md` M1), kernel sonde prêt (`scripts/kaggle_probe.py`). Gate G2 à la sortie.
 - Livrables :
   - `docs/private/00_inventory.md` (local, non versionné : machine, contenu du dossier) ;
   - `docs/01_papers.md` (papiers et config PPO v0) ;
@@ -18,8 +20,10 @@ Mis à jour : 2026-11-10 (G1 validé, Phase 1 terminée).
 - Venv `.venv` (uv, Python 3.12) avec outils de dev seulement : ruff 0.17.4, mypy 2.4.1, pytest 9.2.0. Aucune dépendance RL installée.
 
 ## Prochaines actions
-1. Phase 2 : sonde Kaggle (cœurs hôte TPU v5e-8, versions), venv `uv`, benchmarks laptop et Kaggle, `docs/adr/ADR-infra.md` → G2.
-   Prérequis utilisateur : jeton Kaggle installé (`~/.kaggle/access_token` ou `kaggle auth login`), téléphone vérifié pour internet/GPU.
+1. Sonde Kaggle T4 + TPU (`python scripts/kaggle_probe.py --user <pseudo> --acc t4,tpu --push`).
+   Prérequis utilisateur : jeton installé (`.venv/Scripts/kaggle auth login`), téléphone vérifié (internet/GPU).
+2. Décision A1 (rlgym-learn + RLGym `main`, build à autoriser) vs A2 (env maison sur rocketsim PyPI), puis bench
+   bout-en-bout (M3) et bench laptop ≥ 30 min (throttling) → ADR-infra → G2.
 
 ## Risques ouverts
 - **R1** : amorçage de l'exploration en GCO à petit budget (aucune preuve publique sous 0,35B steps).
