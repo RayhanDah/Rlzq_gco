@@ -110,10 +110,36 @@ Lecture :
   plus rien en Python par voiture.
 - Une mesure par point, 20 s : variance non estimée, throttling non mesuré.
 
+### M1d — Variance et effet du PGO (builds scriptés)
+Builds produits par `scripts/build_rocketgpu.py` (sans option → `rocketgpu-gcc` manuel équivalent ; `--pgo` →
+`rocketgpu-cpu-pgo`, profil de 30 s sur notre charge, durée totale ≈ 20 min dont l'essentiel en compilation instrumentée).
+Série alternée, 3 paires, 4 096 arènes, 15 s chacune, commit **2a49494**, 2026-11-10 ≈ 14:30, laptop chaud (sorti de 20 min
+de compilation) :
+
+| Paire | Build simple : env-steps/s | Build PGO : env-steps/s |
+|---:|---:|---:|
+| 1 | 128 849 | 183 088 |
+| 2 | 169 994 | 174 282 |
+| 3 | 127 183 | 156 202 |
+| moyenne | 142 009 | 171 191 |
+
+Un passage alterné antérieur (même minute, arbre non commité, chemin CPU fonctionnellement identique) donnait
+193,8k / 160,1k (PGO manuel), 206,4k / 196,1k (PGO scripté) et 217,6k (simple).
+Lecture :
+- **Variance forte** : ≈ 127k à 218k env-steps/s pour un même binaire selon l'état thermique et le turbo du laptop.
+  Toute comparaison demande des séries alternées ; un point isolé ne vaut rien.
+- PGO devant le build simple sur les 3 paires du commit propre (+20 % en moyenne), mais derrière une fois dans le
+  passage antérieur : **gain du PGO probable, non démontré** (n = 3).
+- Ordre de grandeur RocketGPU CPU sur ce laptop : **≈ 130–215k env-steps/s**, contre ≈ 65–78k pour RocketSim (M1, M1b,
+  mêmes réserves de variance).
+
 ### M2 — Sonde Kaggle T4 / TPU
 _À faire_ : `python scripts/kaggle_probe.py --user <pseudo> --acc t4,tpu --push` (jeton de l'utilisateur requis).
 Build à blanc vérifié sur 54a10a6 (`--user test-user`, sans `--push`) : métadonnées T4 et TPU générées, kernel compilé.
 Pousser T4 puis TPU à la suite teste aussi la concurrence GPU + TPU sur un compte.
+Depuis 2a49494, la sonde construit aussi RocketGPU CPU (`build_rocketgpu.py --variant cpu`) et le mesure à 1 024 et
+4 096 arènes, puis, si `nvidia-smi -L` réussit, le build CUDA à 4 096 et 16 384 arènes (chemin CUDA **jamais exécuté**
+avant cette sonde). Budget interne 40 min, `probe.json` écrit après chaque étape.
 
 ### M3 — Bout-en-bout (obs + politique + PPO)
 _À faire_ après le choix A1/A2.
