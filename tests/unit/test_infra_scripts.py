@@ -63,9 +63,15 @@ def test_aggregate_uses_union_window_when_workers_are_staggered() -> None:
 @pytest.mark.skipif(not (ROOT / "vendor/collision_meshes/soccar").is_dir(), reason="meshes absents")
 def test_worker_runs_and_cars_stay_above_floor() -> None:
     pytest.importorskip("RocketSim")
-    r = bench.worker((0, 0.5, 2, 8, 300.0, str(ROOT / "vendor/collision_meshes")))
-    assert r["env_steps"] > 0
-    assert r["min_car_z"] > 0  # sous le sol ⇒ meshes non chargés
+    for engine in bench.ENGINES:
+        r = bench.worker((0, 0.5, 2, 8, 300.0, str(ROOT / "vendor/collision_meshes"), engine))
+        assert r["env_steps"] > 0
+        assert r["min_car_z"] > 0  # sous le sol ⇒ meshes non chargés
+
+
+def test_worker_rejects_unknown_engine() -> None:
+    with pytest.raises(ValueError):
+        bench.worker((0, 0.1, 1, 8, 300.0, "x", "gpu"))
 
 
 def test_probe_metadata_t4_and_tpu() -> None:

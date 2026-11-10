@@ -9,7 +9,7 @@ Unités rapportées :
 - agent-steps/s = 2 × env-steps/s en 1v1 self-play (les deux voitures produisent de l'expérience) ;
 - ticks/s = env-steps/s × tick_skip.
 
-Usage : python scripts/benchmark_sim.py --procs 1,2,4,8 --seconds 20 [--arenas 4] [--tick-skip 8]
+Usage : python scripts/benchmark_sim.py --procs 1,2,4,8 --seconds 20 [--arenas 4] [--tick-skip 8] [--engine multi_step]
 Écrit un JSON dans runs/bench/ (commit, matériel, date, arguments, résultats) et l'affiche.
 """
 
@@ -30,6 +30,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MESHES = ROOT / "vendor" / "collision_meshes"
 _BARRIER: Any = None
+_RS_INIT_DIR: str | None = None
+ENGINES = ("step", "multi_step")
 
 
 def _init_worker(barrier: Any) -> None:
@@ -37,12 +39,19 @@ def _init_worker(barrier: Any) -> None:
     _BARRIER = barrier
 
 
-def worker(args: tuple[int, float, int, int, float, str]) -> dict[str, float]:
-    seed, seconds, n_arenas, tick_skip, episode_s, mesh_dir = args
+def worker(args: tuple[int, float, int, int, float, str, str]) -> dict[str, float]:
+    seed, seconds, n_arenas, tick_skip, episode_s, mesh_dir, engine = args
+    if engine not in ENGINES:
+        raise ValueError(f"engine inconnu : {engine}")
     import numpy as np
     import RocketSim as rs
 
-    rs.init(mesh_dir)
+    global _RS_INIT_DIR
+    if _RS_INIT_DIR is None:  # rs.init lève « Already inited » au second appel dans un même processus
+        rs.init(mesh_dir)
+        _RS_INIT_DIR = mesh_dir
+    elif _RS_INIT_DIR != mesh_dir:
+        raise RuntimeError(f"RocketSim déjà initialisé avec {_RS_INIT_DIR}")
     rng = np.random.default_rng(seed)
     arenas, cars = [], []
     for i in range(n_arenas):
@@ -62,14 +71,19 @@ def worker(args: tuple[int, float, int, int, float, str]) -> dict[str, float]:
     deadline = t0 + seconds
     while time.perf_counter() < deadline:
         for _ in range(64):  # vérifier l'horloge toutes les 64 itérations
-            for i, a in enumerate(arenas):
-                for car in cars[i]:
-                    v = rng.uniform(-1.0, 1.0, 5)
-                    b = rng.random(3) < 0.5
-                    controls.throttle, controls.steer, controls.pitch, controls.yaw, controls.roll = map(float, v)
-                    controls.jump, controls.boost, controls.handbrake = map(bool, b)
+            axes = rng.uniform(-1.0, 1.0, (n_arenas, 2, 5)).tolist()
+            bits = (rng.random((n_arenas, 2, 3)) < 0.5).tolist()
+            for i in range(n_arenas):
+                for k, car in enumerate(cars[i]):
+                    controls.throttle, controls.steer, controls.pitch, controls.yaw, controls.roll = axes[i][k]
+                    controls.jump, controls.boost, controls.handbrake = bits[i][k]
                     car.set_controls(controls)
-                a.step(tick_skip)
+            if engine == "multi_step":
+                rs.Arena.multi_step(arenas, tick_skip)  # C++ multithreadé sur les arènes
+            else:
+                for a in arenas:
+                    a.step(tick_skip)
+            for i, a in enumerate(arenas):
                 ep_ticks[i] += tick_skip
                 s = a.blue_score + a.orange_score
                 if s != scores[i] or ep_ticks[i] >= max_ticks:
@@ -155,6 +169,7 @@ def main() -> int:
     ap.add_argument("--procs", default="1", help="liste de nombres de processus, ex. 1,2,4,8")
     ap.add_argument("--seconds", type=float, default=20.0)
     ap.add_argument("--arenas", type=int, default=4, help="arènes par processus")
+    ap.add_argument("--engine", choices=ENGINES, default="step", help="step par arène ou multi_step (threads C++)")
     ap.add_argument("--tick-skip", type=int, default=8)
     ap.add_argument("--episode-s", type=float, default=300.0)
     ap.add_argument("--seed", type=int, default=0)
@@ -175,7 +190,7 @@ def main() -> int:
         "results": [],
     }
     for n in [int(x) for x in args.procs.split(",")]:
-        base = (args.seconds, args.arenas, args.tick_skip, args.episode_s, args.meshes)
+        base = (args.seconds, args.arenas, args.tick_skip, args.episode_s, args.meshes, args.engine)
         jobs = [(args.seed + k, *base) for k in range(n)]
         if n == 1:
             res = [worker(jobs[0])]
