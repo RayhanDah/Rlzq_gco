@@ -1,0 +1,50 @@
+# Sonde Kaggle : résultats
+
+Sonde : `scripts/kaggle_probe.py` + `kaggle/probe/probe_kernel.py`, kernels privés sur le compte de l'utilisateur, lancés
+avec son accord explicite le 2026-11-11. Sorties rapatriées dans `kaggle_out/` (non versionné). Synthèse et décisions :
+`docs/adr/ADR-infra.md` (M2).
+
+## T4 ×2 — `rayhanda/rlgco-probe-t4`, version 1
+- Commande : `python scripts/kaggle_probe.py --user rayhanda --acc t4 --push` (commit **a74ac7f**). Parties par défaut
+  avec GPU : `rg_cuda, rocketsim, rg_cpu`. Démarrage 2026-11-11 11:00:35 UTC, durée 305 s, statut COMPLETE.
+- Le kernel TPU a été poussé pendant que celui-ci tournait : accepté et mis en file (QUEUED). La concurrence effective
+  GPU + TPU n'est pas encore observée.
+
+### Machine relevée
+| Élément | Valeur |
+|---|---|
+| CPU | 4 vCPU : Intel Xeon @ 2,00 GHz, 2 cœurs × 2 threads ; cgroup `cpu.max` = 400000/100000 |
+| RAM | 31 Go, sans swap |
+| GPU | 2 × Tesla T4, 15 Go chacun, compute capability 7.5 ; jax voit 2 `CudaDevice` |
+| Disque `/kaggle/working` | 20 Go |
+| Toolchain | nvcc CUDA 13.0 (V13.0.88), g++ 13.3, Python 3.13.16 |
+| Paquets présents | torch 2.11.0+cu130, jax 0.11.1, numpy 2.1.3 ; installés par la sonde : rocketsim 2.2.1, cmake 3.31.10, ninja 1.13.2, pybind11 3.1.0 |
+
+Le rapport tiers (« 4 cœurs, 29 Go », `docs/research/kaggle.md` §2) est confirmé à l'arrondi près.
+
+### Débits (15 s par point, actions aléatoires, 1v1, tick-skip 8)
+| Mesure | env-steps/s |
+|---|---:|
+| RocketSim 2.2.1, 1 / 2 / 4 / 8 processus | 14 955 / 28 830 / 36 492 / 32 677 |
+| RocketSim `multi_step`, 1 processus × 256 arènes | 18 510 |
+| RocketGPU CPU (build 88 s), 1 024 arènes | 50 422 |
+| RocketGPU CPU, 4 096 arènes | 55 253 |
+
+### Build RocketGPU CUDA : échec
+- Étape `build_rocketgpu_cuda`, 67,7 s, code 1. La cible `src/rocketgpu_cuda.cu.o` échoue avec
+  `--generate-code=arch=compute_75,code=[compute_75,sm_75]`.
+- La cause est dans le journal complet (`logs/build_rocketgpu_cuda.log`). Ce n'est pas une erreur de C++ : c'est le
+  vérificateur LLVM interne de `cicc` (NVVM, « Producer: 'LLVM7.0.1' ») qui rejette le code intermédiaire généré.
+  Messages : « Stored value type does not match pointer operand type! » (sur des pointeurs vers
+  `CarSharedSplitContactRow`, `CarSharedVelocityContactRow`, `CarSharedFrictionContactRow`), puis « Explicit load/store
+  type does not match pointee type of pointer operand ».
+- Même échec sur Colab T4 (CUDA 13.0, M2a de l'ADR) : le problème est reproductible avec ce couple CUDA 13.0 / sm_75.
+- Hypothèses, **non vérifiées** : défaut du compilateur CUDA 13.0 pour sm_75, ou motif de code RocketGPU jamais
+  compilé pour Turing par son auteur (benchmarks publiés sur RTX 5090).
+- Pistes, toutes à faire avec l'accord de l'utilisateur :
+  1. compiler avec une toolchain CUDA 12.x (paquets pip NVIDIA ou conda) dans le kernel ;
+  2. signaler le problème en amont (dépôt RocketGPU) ;
+  3. renoncer au GPU T4 pour la simulation : RocketGPU CPU sur les 4 vCPU, et le GPU pour le learner.
+
+## TPU v5e-8 — `rayhanda/rlgco-probe-tpu`, version 1
+Poussé le 2026-11-11 (commit a74ac7f), en file d'attente (QUEUED) au moment de la rédaction. Résultats à venir.

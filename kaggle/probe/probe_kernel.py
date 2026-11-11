@@ -67,7 +67,7 @@ def run(cmd: str, timeout: int = 120) -> dict[str, object]:
 
 def error_lines(text: str, limit: int = 40) -> list[str]:
     """Premières lignes d'erreur du compilateur ou de CMake (le traceback Python final les masque sinon)."""
-    keys = ("error", "Error", "ERROR", "fatal", "undefined reference", "CMake Error")
+    keys = ("error", "Error", "ERROR", "fatal", "undefined reference", "does not match", "FAILED:")
     return [line[:300] for line in text.splitlines() if any(k in line for k in keys)][:limit]
 
 

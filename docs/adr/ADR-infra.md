@@ -153,6 +153,14 @@ Lecture :
 - L'échec CUDA reste à diagnostiquer. Depuis 3e41d8a, la sonde garde le journal complet de chaque étape
   (`<WORK>/logs/`) et les lignes d'erreur dans `probe.json`. Relance prévue : `--parts rg_cuda`.
 
+### M2b — Sonde Kaggle T4 ×2 (2026-11-11, commit a74ac7f)
+Détail : `docs/research/kaggle_probe.md`. 4 vCPU (Xeon 2,0 GHz, 2 cœurs × 2 threads), 31 Go, 2 × T4, CUDA 13.0,
+Python 3.13.
+- RocketSim : 36,5k env-steps/s au mieux (4 processus) ; RocketGPU CPU : 55,3k env-steps/s (4 096 arènes).
+- Build RocketGPU CUDA : **échec** dans `cicc` (vérificateur LLVM de NVVM, CUDA 13.0, sm_75), reproduit sur Colab.
+- Conséquence provisoire : en session T4, la simulation tourne sur CPU (≈ 55k env-steps/s, environ 3 fois moins que
+  le laptop) tant que le build CUDA n'est pas réparé. Le GPU T4 reste utilisable pour le learner (torch cu130).
+
 ### M2 — Sonde Kaggle T4 / TPU
 _À faire_ : `python scripts/kaggle_probe.py --user <pseudo> --acc t4,tpu --push` (jeton de l'utilisateur requis).
 Build à blanc vérifié sur 54a10a6 (`--user test-user`, sans `--push`) : métadonnées T4 et TPU générées, kernel compilé.
