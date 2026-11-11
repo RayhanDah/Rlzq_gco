@@ -172,6 +172,16 @@ T4 ne dépend que de `OBS_DIM`, `N_ACTIONS` et §6 : il travaille sur un env jou
 - Révision si : la parité RLBot (T7) ne peut pas reproduire un champ (ex. `pad_cooldown`, `air_time_since_jump`) ;
   le coût mesuré de l'obs à 109 dims dégrade nettement le débit ; passage au 2v2.
 
+## Précisions apportées à l'implémentation (T1, 2026-11-11, revue APPROVE)
+- §3 : les vecteurs en repère local (balle − voiture, vitesse relative) utilisent une échelle scalaire (÷ 5120 pour la
+  position, ÷ 2300 pour la vitesse), pas l'échelle par axe monde de la balle, qui n'a pas de sens dans un repère tourné.
+- §3 : miroir d'orientation R′ = M·R ; les features locales sont invariantes.
+- §3 : `prev_actions` est un tableau d'indices int64 ; −1 (après reset) donne un bloc de zéros.
+- §3 : un cooldown de pad légèrement négatif (état légitime de RocketGPU avant respawn) est ramené à 0.
+- §4 : contrainte testée « boost = 1 ⇒ throttle = 1 » (écart de physique A1, `docs/reports/physics_parity.md`).
+- Pads : RocketSim place 4 pads à ±2300 là où RocketGPU les place à ±2302 ; la correspondance entre simulateurs se
+  fait par plus proche voisin (tolérance 4 uu).
+
 ## Points à valider par l'utilisateur
 1. v0 en 1v1 uniquement, contrat paramétré en `n_cars` pour le 2v2.
 2. Obs de 109 dims (structure type « Advanced ») au lieu des 89 du prototype ; aucun normaliseur courant.
