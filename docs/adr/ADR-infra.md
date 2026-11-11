@@ -1,7 +1,7 @@
 # ADR-001 — Infrastructure d'entraînement (simulateur, collecte, plateforme)
 
-- Statut : **proposé** (brouillon Phase 2, mesures partielles ; la décision finale attend la sonde Kaggle)
-- Date : 2026-11-10
+- Statut : **proposé**, présenté au Gate G2 (sonde TPU encore en file : partie de la décision réversible, voir M2c)
+- Date : 2026-11-10, mis à jour le 2026-11-11
 - Décideurs : tech-director + infra-perf-lead ; GO de l'utilisateur au Gate G2
 
 ## Contexte
@@ -10,7 +10,8 @@
   (`docs/research/kaggle.md` §5–6). TPU v5e-8 : file ≥ 35 h, ≈ 2,5B steps/session rapportés par l'utilisateur (non mesuré).
 - RLGym 2.0.1 (PyPI) impose numpy < 2 ; `main` (2fc8d43) accepte numpy < 3 mais n'est pas publié et se construit en deux
   temps (exécution de scripts `setup_*.py` tiers). Le build local depuis git a été refusé par le classifieur de sécurité de
-  la session le 2026-11-10 ; en attente d'une décision de l'utilisateur.
+  la session le 2026-11-10. L'option A1 a ensuite perdu son intérêt : A3 (RocketGPU) l'emporte en débit (M1c, M3) et ne
+  dépend pas de RLGym. Seuls les meshes de RLGym sont réutilisés (fichiers de données, `scripts/fetch_meshes.py`).
 
 ## Options
 | Option | Pour | Contre |
@@ -165,13 +166,11 @@ Python 3.13.
 - Conséquence provisoire : en session T4, la simulation tourne sur CPU (≈ 55k env-steps/s, environ 3 fois moins que
   le laptop) tant que le build CUDA n'est pas réparé. Le GPU T4 reste utilisable pour le learner (torch cu130).
 
-### M2 — Sonde Kaggle T4 / TPU
-_À faire_ : `python scripts/kaggle_probe.py --user <pseudo> --acc t4,tpu --push` (jeton de l'utilisateur requis).
-Build à blanc vérifié sur 54a10a6 (`--user test-user`, sans `--push`) : métadonnées T4 et TPU générées, kernel compilé.
-Pousser T4 puis TPU à la suite teste aussi la concurrence GPU + TPU sur un compte.
-Depuis 2a49494, la sonde construit aussi RocketGPU CPU (`build_rocketgpu.py --variant cpu`) et le mesure à 1 024 et
-4 096 arènes, puis, si `nvidia-smi -L` réussit, le build CUDA à 4 096 et 16 384 arènes (chemin CUDA **jamais exécuté**
-avant cette sonde). Budget interne 40 min, `probe.json` écrit après chaque étape.
+### M2c — Sonde Kaggle TPU v5e-8 (en file)
+`python scripts/kaggle_probe.py --user rayhanda --acc tpu --push`, commit a74ac7f, poussée le 2026-11-11 vers 11:05 UTC
+pendant que la sonde T4 tournait : acceptée, statut QUEUED, toujours en file à la rédaction. Elle relèvera les cœurs de
+l'hôte TPU (la spec GCP annonce 224 vCPU, sans preuve que Kaggle les expose) et les débits RocketSim et RocketGPU CPU.
+Aucun chiffre TPU n'entre dans la décision ci-dessous ; seule l'affectation du TPU en dépend.
 
 ### M3 — Learner seul et bout-en-bout, laptop (CPU vs GPU intégré Arc en XPU)
 Commit **c110603**, arbre propre, 2026-11-10 ≈ 15:30, secteur, seed 0. Deux sessions Claude parallèles étaient au repos
@@ -223,13 +222,39 @@ dégradation, puis avec un facteur prudent ×0,5 (throttling soutenu, critiques 
 | 100B | 21 jours | 43 jours |
 
 Par rapport à la spec §6.2 (scénarios 5k / 20k / 60k SPS en CPU seul), le laptop se place près du scénario optimiste,
-grâce à RocketGPU et au GPU intégré. Kaggle (M2) et Colab restent à mesurer : la sonde est prête
-(`scripts/kaggle_probe.py`, `--colab`).
+grâce à RocketGPU et au GPU intégré. Sur Kaggle T4, seule la collecte est mesurée (≈ 55k env-steps/s, soit ≈ 110k
+timesteps agents/s, sur les 4 vCPU qui servent aussi à l'apprentissage) : le bout-en-bout n'y est **pas mesuré**. Il
+serait inférieur à celui du laptop (estimé, non mesuré). Le TPU attend sa sonde (M2c).
 
 ## Décision
-_En attente des mesures M2–M3._ Orientation proposée après M1c (non actée) : **RocketGPU comme simulateur principal**
-(CPU sur laptop et hôte TPU, CUDA à évaluer sur T4), commit épinglé, build scripté ; **RocketSim 2.2.1 conservé comme
-référence** (comparaisons de physique, repli si RocketGPU casse).
+Option **A3**, proposée au G2 :
+1. **Simulateur** : RocketGPU @f0508a1, build **CPU** scripté et épinglé (`scripts/build_rocketgpu.py`, PGO optionnel).
+   RocketSim 2.2.1 (PyPI) est conservé comme référence de physique et comme repli. Le build CUDA est écarté pour
+   l'instant : il ne compile que pour sm_120 (M2b).
+2. **Environnement** : maison, batché sur l'API numpy de RocketGPU (contrôles et états en tableaux, sans objet Python
+   par voiture). Pas de dépendance d'entraînement à RLGym. Les obs, actions et la parité avec le déploiement RLBot sont
+   du ressort de la Phase 3 (test de parité exigé au G3).
+3. **Collecte** : un seul processus, ≥ 1 024 arènes par lot, PPO synchrone. Le recouvrement collecte/apprentissage
+   (double buffer, staleness ≤ 1) ne viendra qu'après mesure.
+4. **Learner** : PPO et récompense en Python/torch (règle 7). Sur le laptop, torch XPU sur le GPU intégré Arc
+   (`vendor/venv-xpu`, torch 2.15.0+xpu, `index_select` au lieu de `x[idx]`), repli CPU. Sur Kaggle T4, torch CUDA de
+   l'image.
+5. **Plateformes** : le laptop est la plateforme principale mesurée (≈ 52–58k timesteps/s bout-en-bout). Les sessions
+   Kaggle T4 sont un appoint (collecte CPU ≈ 55k env-steps/s, bout-en-bout non mesuré). Le rôle du TPU sera fixé par sa
+   sonde (M2c) : c'est la seule partie réversible à court terme.
 
 ## Conséquences
-_À compléter._
+- **Dépendance à un projet tiers jeune** (un auteur, créé le 2026-10-27). Mitigations : commit épinglé, build scripté et
+  testé, RocketSim gardé en référence. La cohérence physique n'est vérifiée que sur une accélération en ligne droite
+  (≤ 0,3 % à 120 ticks, M1c) : un test de comparaison RocketGPU / RocketSim sur des épisodes complets entre en Phase 3.
+- **Deux environnements torch** sur le laptop : `.venv` (CPU) et `vendor/venv-xpu` (XPU, 3,8 Go). Le code
+  d'entraînement doit tourner dans les deux ; le contournement `index_select` est testé.
+- **Débit soutenu non mesuré** : toutes les mesures durent 15 à 30 s, avec une variance de ±25 % (M1d). Le smoke test et
+  le run court 4a mesureront le débit sur la durée (throttling) avant tout run long (G3).
+- **Kaggle T4 faible pour la simulation** (4 vCPU, GPU inutilisable pour RocketGPU). Le relais entre comptes
+  (`claude/phase2-kaggle-relay-954373`) reste utile pour enchaîner des sessions, mais le gain par session est modeste.
+- **Critères de révision** :
+  - la sonde TPU mesure un hôte nettement plus rapide que le laptop ;
+  - RocketGPU CUDA compile pour sm_75 ou sm_89 (correctif en amont), ce qui rendrait les GPU Kaggle et Colab utiles ;
+  - un écart de physique RocketGPU / RocketSim apparaît en Phase 3 ;
+  - le débit soutenu tombe sous la moitié des valeurs de M3.

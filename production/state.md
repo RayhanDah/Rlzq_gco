@@ -26,14 +26,15 @@ Mis à jour : 2026-11-10 (G1 validé, Phase 1 terminée).
   - `docs/GCO_SPEC.md` (définition, budget de steps) ;
   - `docs/PLAN.md` (plan d'ensemble) ;
   - `docs/research/` (notes sur sources publiques) ; preuves issues des discussions Discord dans `docs/private/` (local, non versionné).
-- Venv `.venv` (uv, Python 3.12) avec outils de dev seulement : ruff 0.17.4, mypy 2.4.1, pytest 9.2.0. Aucune dépendance RL installée.
+- Venv `.venv` (uv, Python 3.12) : groupes dev, sim (rocketsim 2.2.1, numpy 2.5.4), native (cmake, ninja, pybind11), learn (torch 2.15.0 CPU) ; `vendor/venv-xpu` : torch 2.15.0+xpu.
 
 ## Prochaines actions
-1. Sonde Kaggle T4 + TPU (`python scripts/kaggle_probe.py --user <pseudo> --acc t4,tpu --push`).
-   Jeton installé par l'utilisateur (2026-11-10). **Gel Kaggle** : aucune commande `kaggle` tant que l'utilisateur n'a
-   pas donné le feu vert (ses propres sessions tournent ; « ce soir » au plus tôt).
-2. Décision A1 (rlgym-learn + RLGym `main`, build à autoriser) vs A2 (env maison sur rocketsim PyPI), puis bench
-   bout-en-bout (M3) et bench laptop ≥ 30 min (throttling) → ADR-infra → G2.
+1. **Gate G2** : `gate_check G2` = PRÊT POUR REVUE HUMAINE (2026-11-11). Décision proposée : `docs/adr/ADR-infra.md`
+   (A3 : RocketGPU CPU + env maison batché + learner torch XPU/CUDA). En attente du GO de l'utilisateur.
+2. Après GO : merger les branches `claude/phase3-gco-reward-fd3080` et `claude/phase2-kaggle-relay-954373` (conflits
+   attendus sur `production/state.md` et `pyproject.toml`), puis Phase 3.
+3. Sonde TPU (`rayhanda/rlgco-probe-tpu`) en file depuis le 2026-11-11 : récupérer `probe.json`, compléter M2c.
+   Kaggle : usage autorisé par l'utilisateur le 2026-11-11 (son compte, ses quotas).
 
 ## Risques ouverts
 - **R1** : amorçage de l'exploration en GCO à petit budget (aucune preuve publique sous 0,35B steps).
