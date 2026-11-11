@@ -46,4 +46,5 @@ files = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]  # layout src/ : les paquets s'importent comme `rewards`, `env`... (mypy fait de même)
 addopts = "-ra"
