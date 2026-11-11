@@ -32,7 +32,7 @@ Mis à jour : 2026-11-11 (**G2 validé**, Phase 3 ouverte).
 - Venv `.venv` (uv, Python 3.12) : groupes dev, sim (rocketsim 2.2.1, numpy 2.5.4), native (cmake, ninja, pybind11), learn (torch 2.15.0 CPU) ; `vendor/venv-xpu` : torch 2.15.0+xpu.
 
 - **Sprint Phase 3** (`production/sprints/2026-11-11.md`) : T0 fait (`docs/adr/003-interfaces.md`, **accepté** le 2026-11-11,
-  6 points validés) ; T3 mergé (`docs/reports/physics_parity.md`).
+  6 points validés) ; T3, T1a, T1 et T4 mergés (`src/obs`, `src/actions`, `src/models`, `src/training`) ; T2 (`src/env`) en cours.
 
 ## Prochaines actions
 1. **Phase 3** : sprint planifié dans `production/sprints/2026-11-11.md` (T0 à T7, rien de lancé). Contenu : env maison batché sur RocketGPU (`src/env`), obs et table de
