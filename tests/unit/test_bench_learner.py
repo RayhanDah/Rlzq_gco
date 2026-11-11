@@ -59,3 +59,11 @@ def test_ppo_update_changes_params_and_stays_finite() -> None:
     stats = bl.ppo_update(policy, value, opt, data, epochs=2, minibatch=16)
     assert math.isfinite(stats["loss"]) and math.isfinite(stats["kl"])
     assert any(not torch.equal(a, b) for a, b in zip(before, policy.parameters(), strict=True))
+
+
+def test_ppo_update_rejects_unknown_amp() -> None:
+    policy, value = bl.make_nets(4, torch.device("cpu"))
+    data = {"obs": torch.zeros(4, 4), "act": torch.zeros(4, dtype=torch.long), "logp": torch.zeros(4)}
+    data |= {"adv": torch.zeros(4), "ret": torch.zeros(4)}
+    with pytest.raises(ValueError):
+        bl.ppo_update(policy, value, _ManualSGD([], 0.1), data, epochs=1, minibatch=4, amp="int8")

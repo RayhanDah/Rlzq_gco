@@ -10,7 +10,9 @@ PROTOTYPE DE MESURE, pas le code d'entraînement (Phase 3) :
 - PPO v0 (`docs/01_papers.md` §2) : π 3×256, V 3×512, GAE γ=0,99 λ=0,95, 2 epochs, minibatch 25k.
 
 Mesure, par itération : temps de collecte (obs, inférence, sim, comptabilité), temps d'apprentissage (valeurs, GAE,
-update), et débit bout-en-bout = timesteps agents / (collecte + apprentissage), synchrone, sans recouvrement.
+update) et durée murale ; débit bout-en-bout = timesteps agents / durée murale. Par défaut synchrone ; `--overlap`
+apprend sur le lot k dans un thread pendant la collecte du lot k+1 (staleness 1, `docs/01_papers.md` §1.3). Le
+recouvrement n'est réel que si le simulateur relâche le GIL (build `--patch patches/rocketgpu-release-gil.patch`).
 Usage : python scripts/bench_e2e.py [--envs 1024] [--steps 25] [--iters 4] [--device cpu] [--threads 0]
 Avec torch XPU : vendor/venv-xpu/Scripts/python scripts/bench_e2e.py --device xpu
 """
@@ -145,8 +147,12 @@ def main() -> int:
     ap.add_argument("--episode-s", type=float, default=300.0)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--meshes", default=str(ROOT / "vendor" / "collision_meshes"))
+    ap.add_argument("--fused", action="store_true", help="Adam fused=True")
+    ap.add_argument("--overlap", action="store_true", help="apprentissage du lot k pendant la collecte du lot k+1")
     ap.add_argument("--out", type=Path, default=ROOT / "runs" / "bench")
     args = ap.parse_args()
+
+    import threading
 
     import torch
 
@@ -175,44 +181,51 @@ def main() -> int:
     commands = [rg.EnvCommand() for _ in range(n_env)]
     table = action_table()
     policy, value = make_nets(OBS_DIM, device)
-    opt = torch.optim.Adam([*policy.parameters(), *value.parameters()], lr=2e-4, eps=1e-5)
+    params = [*policy.parameters(), *value.parameters()]
+    opt = torch.optim.Adam(params, lr=2e-4, eps=1e-5, **({"fused": True} if args.fused else {}))
+    # En recouvrement, la collecte utilise une copie de la politique (staleness 1) pendant que le learner met à jour
+    # l'original ; la copie est rafraîchie à la fin de chaque itération.
+    actor = make_nets(OBS_DIM, device)[0] if args.overlap else policy
+    if args.overlap:
+        actor.load_state_dict(policy.state_dict())
 
-    prev = np.zeros((n_ag, 8), dtype=np.float32)
-    ep_ticks = np.zeros(n_env, dtype=np.int64)
-    scores = env["blue_score"].astype(np.int64), env["orange_score"].astype(np.int64)
+    st: dict[str, Any] = {
+        "prev": np.zeros((n_ag, 8), dtype=np.float32),
+        "ep_ticks": np.zeros(n_env, dtype=np.int64),
+        "scores": (env["blue_score"].astype(np.int64), env["orange_score"].astype(np.int64)),
+        "goals": 0,
+    }
     max_ticks = int(args.episode_s * 120)
     team_sign = np.tile(np.array([1.0, -1.0], dtype=np.float32), n_env)
-    rows: list[dict[str, Any]] = []
-    goals_total = 0
 
-    for it in range(args.iters):
-        t_parts = dict.fromkeys(("obs", "infer", "sim", "book", "learn"), 0.0)
+    def collect() -> tuple[dict[str, np.ndarray], dict[str, float]]:
+        parts = dict.fromkeys(("obs", "infer", "sim", "book"), 0.0)
         buf: dict[str, list[np.ndarray]] = {k: [] for k in ("obs", "act", "logp", "rew", "term", "trunc")}
         for _ in range(args.steps):
             t = time.perf_counter()
-            obs = build_obs(cars, balls, pads, prev)
-            t_parts["obs"] += time.perf_counter() - t
+            obs = build_obs(cars, balls, pads, st["prev"])
+            parts["obs"] += time.perf_counter() - t
             t = time.perf_counter()
             with torch.inference_mode():
-                dist = torch.distributions.Categorical(logits=policy(torch.from_numpy(obs).to(device)))
+                dist = torch.distributions.Categorical(logits=actor(torch.from_numpy(obs).to(device)))
                 act_t = dist.sample()
                 logp = dist.log_prob(act_t).cpu().numpy()
                 act = act_t.cpu().numpy()
-            t_parts["infer"] += time.perf_counter() - t
+            parts["infer"] += time.perf_counter() - t
             t = time.perf_counter()
             chosen = table[act]
             for j, name in enumerate(CONTROL_FIELDS):
                 ctrl[name] = chosen[:, j]
             sim.step_with_device_controls(ctrl.ctypes.data, args.tick_skip, 0)
-            t_parts["sim"] += time.perf_counter() - t
+            parts["sim"] += time.perf_counter() - t
             t = time.perf_counter()
-            ep_ticks += args.tick_skip
+            st["ep_ticks"] += args.tick_skip
             blue, orange = env["blue_score"].astype(np.int64), env["orange_score"].astype(np.int64)
-            d_blue, d_orange = blue - scores[0], orange - scores[1]
+            d_blue, d_orange = blue - st["scores"][0], orange - st["scores"][1]
             scored = (d_blue + d_orange) > 0
             r_env = (d_blue - d_orange).astype(np.float32)  # +1 si but bleu, −1 si but orange
             rew = np.repeat(r_env, 2) * team_sign
-            trunc_env = (~scored) & (ep_ticks >= max_ticks)
+            trunc_env = (~scored) & (st["ep_ticks"] >= max_ticks)
             done = np.flatnonzero(scored | trunc_env)
             if done.size:
                 for i in done:
@@ -220,52 +233,83 @@ def main() -> int:
                 sim.apply_env_commands(commands)
                 for i in done:
                     commands[i].reset_to_kickoff = 0
-                ep_ticks[done] = 0
-                goals_total += int(scored.sum())
-            scores = env["blue_score"].astype(np.int64), env["orange_score"].astype(np.int64)
-            prev = chosen
-            prev[np.repeat(scored | trunc_env, 2)] = 0.0
+                st["ep_ticks"][done] = 0
+                st["goals"] += int(scored.sum())
+            st["scores"] = env["blue_score"].astype(np.int64), env["orange_score"].astype(np.int64)
+            st["prev"] = chosen
+            st["prev"][np.repeat(scored | trunc_env, 2)] = 0.0
             for k, v in (("obs", obs), ("act", act), ("logp", logp), ("rew", rew)):
                 buf[k].append(v)
             buf["term"].append(np.repeat(scored, 2).astype(np.float32))
             buf["trunc"].append(np.repeat(trunc_env, 2).astype(np.float32))
-            t_parts["book"] += time.perf_counter() - t
+            parts["book"] += time.perf_counter() - t
+        batch = {k: np.stack(v) for k, v in buf.items()}
+        batch["last_obs"] = build_obs(cars, balls, pads, st["prev"])
+        return batch, parts
 
+    def learn(batch: dict[str, np.ndarray]) -> tuple[dict[str, float], float]:
         t = time.perf_counter()
-        obs_all = np.stack(buf["obs"])  # (T, A, D)
-        last_obs = build_obs(cars, balls, pads, prev)
+        obs_all = batch["obs"]  # (T, A, D)
         with torch.no_grad():
             v_all = value(torch.from_numpy(obs_all.reshape(-1, OBS_DIM)).to(device)).squeeze(-1).cpu().numpy()
-            v_last = value(torch.from_numpy(last_obs).to(device)).squeeze(-1).cpu().numpy()
+            v_last = value(torch.from_numpy(batch["last_obs"]).to(device)).squeeze(-1).cpu().numpy()
         val = v_all.reshape(args.steps, n_ag)
-        adv, ret = gae(np.stack(buf["rew"]), val, v_last, np.stack(buf["term"]), np.stack(buf["trunc"]), 0.99, 0.95)
+        adv, ret = gae(batch["rew"], val, v_last, batch["term"], batch["trunc"], 0.99, 0.95)
         data = {
             "obs": torch.from_numpy(obs_all.reshape(-1, OBS_DIM)).to(device),
-            "act": torch.from_numpy(np.stack(buf["act"]).reshape(-1)).to(device),
-            "logp": torch.from_numpy(np.stack(buf["logp"]).reshape(-1)).to(device),
+            "act": torch.from_numpy(batch["act"].reshape(-1)).to(device),
+            "logp": torch.from_numpy(batch["logp"].reshape(-1)).to(device),
             "adv": torch.from_numpy(adv.reshape(-1)).to(device),
             "ret": torch.from_numpy(ret.reshape(-1)).to(device),
         }
         stats = ppo_update(policy, value, opt, data, args.epochs, args.minibatch)
         sync(device)
-        t_parts["learn"] = time.perf_counter() - t
+        return stats, time.perf_counter() - t
 
-        timesteps = args.steps * n_ag
-        collect = sum(v for k, v in t_parts.items() if k != "learn")
+    rows: list[dict[str, Any]] = []
+    timesteps = args.steps * n_ag
+    batch, parts = collect()  # premier lot, hors mesure
+    for it in range(args.iters):
+        t0 = time.perf_counter()
+        if args.overlap:
+            res: dict[str, Any] = {}
+
+            def learner(b: dict[str, np.ndarray] = batch, out: dict[str, Any] = res) -> None:
+                try:
+                    out["stats"], out["learn_s"] = learn(b)
+                except BaseException as exc:  # remonté au thread principal après join
+                    out["error"] = exc
+
+            th = threading.Thread(target=learner, name="learner")
+            th.start()
+            nxt, parts = collect()
+            th.join()
+            if "error" in res:
+                raise RuntimeError("échec du thread learner") from res["error"]
+            stats, learn_s = res["stats"], res["learn_s"]
+            actor.load_state_dict(policy.state_dict())
+        else:
+            stats, learn_s = learn(batch)
+            nxt, parts = collect()
+        wall = time.perf_counter() - t0
+        collect_s = sum(parts.values())
         row = {
             "iter": it,
             "timesteps": timesteps,
-            "collect_s": round(collect, 3),
-            "learn_s": round(t_parts["learn"], 3),
-            "collect_sps": round(timesteps / collect, 1),
-            "learn_sps": round(timesteps / t_parts["learn"], 1),
-            "e2e_sps": round(timesteps / (collect + t_parts["learn"]), 1),
-            "parts_s": {k: round(v, 3) for k, v in t_parts.items()},
+            "collect_s": round(collect_s, 3),
+            "learn_s": round(learn_s, 3),
+            "wall_s": round(wall, 3),
+            "collect_sps": round(timesteps / collect_s, 1),
+            "learn_sps": round(timesteps / learn_s, 1),
+            "e2e_sps": round(timesteps / wall, 1),
+            "parts_s": {k: round(v, 3) for k, v in parts.items()},
             "loss": round(stats["loss"], 4),
-            "finite": bool(np.isfinite(stats["loss"]) and np.isfinite(obs_all).all()),
+            "finite": bool(np.isfinite(stats["loss"]) and np.isfinite(batch["obs"]).all()),
         }
         rows.append(row)
         print(json.dumps(row), flush=True)
+        batch = nxt
+    goals_total = st["goals"]
 
     kept = rows[1:] or rows
     summary = {k: round(float(np.mean([r[k] for r in kept])), 1) for k in ("collect_sps", "learn_sps", "e2e_sps")}

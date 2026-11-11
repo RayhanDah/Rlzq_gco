@@ -70,13 +70,30 @@ def bench_inference(policy: Any, obs_dim: int, n: int, device: Any, seconds: flo
 
 
 def ppo_update(
-    policy: Any, value: Any, opt: Any, data: dict[str, Any], epochs: int, minibatch: int, clip: float = 0.2
+    policy: Any,
+    value: Any,
+    opt: Any,
+    data: dict[str, Any],
+    epochs: int,
+    minibatch: int,
+    clip: float = 0.2,
+    amp: str = "none",
 ) -> dict[str, float]:
-    """Une itération PPO-clip complète : epochs × minibatches, avantages normalisés par minibatch, grad clip 0,5."""
+    """Une itération PPO-clip complète : epochs × minibatches, avantages normalisés par minibatch, grad clip 0,5.
+
+    Les statistiques ne sont lues qu'à la fin (une seule synchronisation hôte par itération, pas deux par minibatch).
+    `amp` ∈ {none, bf16, fp16} : autocast des passes avant (poids et optimiseur restent en float32).
+    """
+    import contextlib
+
     import torch
 
     n = data["obs"].shape[0]
-    stats = {"loss": 0.0, "kl": 0.0}
+    dev_type = data["obs"].device.type
+    dtypes = {"bf16": torch.bfloat16, "fp16": torch.float16}
+    if amp not in ("none", *dtypes):
+        raise ValueError(f"amp inconnu : {amp}")
+    last_loss = last_kl = None
     for _ in range(epochs):
         perm = torch.randperm(n, device=data["obs"].device)
         for i in range(0, n, minibatch):
@@ -86,27 +103,41 @@ def ppo_update(
             mb = {k: v.index_select(0, idx) for k, v in data.items()}
             obs, act = mb["obs"], mb["act"]
             adv = (mb["adv"] - mb["adv"].mean()) / (mb["adv"].std() + 1e-8)
-            dist = torch.distributions.Categorical(logits=policy(obs))
+            ctx = torch.autocast(dev_type, dtype=dtypes[amp]) if amp != "none" else contextlib.nullcontext()
+            with ctx:
+                logits, v_pred = policy(obs), value(obs)
+            dist = torch.distributions.Categorical(logits=logits.float())
             logp = dist.log_prob(act)
             ratio = torch.exp(logp - mb["logp"])
             pg = -torch.min(ratio * adv, torch.clamp(ratio, 1 - clip, 1 + clip) * adv).mean()
-            v_loss = 0.5 * (value(obs).squeeze(-1) - mb["ret"]).pow(2).mean()
+            v_loss = 0.5 * (v_pred.float().squeeze(-1) - mb["ret"]).pow(2).mean()
             loss = pg + v_loss - 0.01 * dist.entropy().mean()
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_([*policy.parameters(), *value.parameters()], 0.5)
             opt.step()
-            stats["loss"] = float(loss.detach())
-            stats["kl"] = float((mb["logp"] - logp).mean().detach())
-    return stats
+            last_loss, last_kl = loss.detach(), (mb["logp"] - logp).mean().detach()
+    if last_loss is None or last_kl is None:
+        return {"loss": 0.0, "kl": 0.0}
+    return {"loss": float(last_loss), "kl": float(last_kl)}
 
 
 def bench_update(
-    policy: Any, value: Any, obs_dim: int, batch: int, minibatch: int, epochs: int, device: Any, iters: int
+    policy: Any,
+    value: Any,
+    obs_dim: int,
+    batch: int,
+    minibatch: int,
+    epochs: int,
+    device: Any,
+    iters: int,
+    amp: str = "none",
+    fused: bool = False,
 ) -> float:
     import torch
 
-    opt = torch.optim.Adam([*policy.parameters(), *value.parameters()], lr=2e-4, eps=1e-5)
+    params = [*policy.parameters(), *value.parameters()]
+    opt = torch.optim.Adam(params, lr=2e-4, eps=1e-5, **({"fused": True} if fused else {}))
     with torch.no_grad():
         obs = torch.randn(batch, obs_dim, device=device)
         dist = torch.distributions.Categorical(logits=policy(obs))
@@ -118,11 +149,12 @@ def bench_update(
             "adv": torch.randn(batch, device=device),
             "ret": torch.randn(batch, device=device),
         }
-    ppo_update(policy, value, opt, data, 1, minibatch)  # échauffement
+    for _ in range(2):  # échauffement (et compilation éventuelle)
+        ppo_update(policy, value, opt, data, 1, minibatch, amp=amp)
     sync(device)
     t0 = time.perf_counter()
     for _ in range(iters):
-        ppo_update(policy, value, opt, data, epochs, minibatch)
+        ppo_update(policy, value, opt, data, epochs, minibatch, amp=amp)
     sync(device)
     return iters * batch / (time.perf_counter() - t0)
 
@@ -141,6 +173,10 @@ def main() -> int:
     ap.add_argument("--infer-sizes", default="256,1024,4096,8192")
     ap.add_argument("--infer-seconds", type=float, default=3.0)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--amp", choices=("none", "bf16", "fp16"), default="none")
+    ap.add_argument("--fused", action="store_true", help="Adam fused=True")
+    ap.add_argument("--compile", action="store_true", help="torch.compile des deux réseaux")
+    ap.add_argument("--skip-inference", action="store_true")
     ap.add_argument("--out", type=Path, default=ROOT / "runs" / "bench")
     args = ap.parse_args()
 
@@ -151,13 +187,17 @@ def main() -> int:
         torch.set_num_threads(args.threads)
     device = torch.device(args.device)
     policy, value = make_nets(args.obs_dim, device)
+    if args.compile:
+        policy, value = torch.compile(policy), torch.compile(value)
     results: dict[str, Any] = {"threads": torch.get_num_threads(), "torch": torch.__version__}
+    sizes = [] if args.skip_inference else args.infer_sizes.split(",")
     results["inference_obs_per_s"] = {
-        n: round(bench_inference(policy, args.obs_dim, int(n), device, args.infer_seconds), 1)
-        for n in args.infer_sizes.split(",")
+        n: round(bench_inference(policy, args.obs_dim, int(n), device, args.infer_seconds), 1) for n in sizes
     }
     print(json.dumps({"inference_obs_per_s": results["inference_obs_per_s"]}), flush=True)
-    sps = bench_update(policy, value, args.obs_dim, args.batch, args.minibatch, args.epochs, device, args.iters)
+    sps = bench_update(
+        policy, value, args.obs_dim, args.batch, args.minibatch, args.epochs, device, args.iters, args.amp, args.fused
+    )
     results["update_timesteps_per_s"] = round(sps, 1)
     results["update_seconds_per_iteration"] = round(args.batch / sps, 3)
     print(json.dumps({k: results[k] for k in ("update_timesteps_per_s", "update_seconds_per_iteration")}), flush=True)
