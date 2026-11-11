@@ -182,6 +182,19 @@ T4 ne dépend que de `OBS_DIM`, `N_ACTIONS` et §6 : il travaille sur un env jou
 - Pads : RocketSim place 4 pads à ±2300 là où RocketGPU les place à ±2302 ; la correspondance entre simulateurs se
   fait par plus proche voisin (tolérance 4 uu).
 
+## Hypothèses vérifiées par la mesure (T2, 2026-11-11, RocketGPU CPU @f0508a1, `tests/integration/test_env_rocketgpu.py`)
+- Pads de chaque arène contigus en mémoire (index e·34 + i) ; gros pads aux indices 28 à 33.
+- `pad_cooldown` en secondes (4 s petit pad, 10 s gros pad) ; minimum observé −1/120 s avant respawn.
+- Le score monte à chaque tick tant que la balle reste dans le filet (jusqu'à +8 par step) : but = Δscore > 0, compté
+  une fois, arène réinitialisée dans le même step.
+- Quaternion `rot` en (w, x, y, z) ; dérive de norme ≤ 1,6e-7 sur 400 steps × 64 arènes.
+- Drapeaux u8 toujours à 0 ou 1 (`is_demoed` jamais observé à 1 : aucune démolition dans les runs).
+- Téléporter une arène laisse les autres bit-exactes (80 steps, voiture en l'air et contact voiture-balle).
+- §5 précisé : `Simulator.step` reçoit des indices d'action ; `BatchEnv.obs_dim` est connu dès la construction ;
+  `info.final_obs` couvre toutes les arènes finies (le tampon ne garde que les troncatures).
+- Débit de `BatchEnv.step` avec les vraies obs (4 096 arènes, 15 s, commit 585b712, thermique non contrôlée) :
+  146–166k env-steps/s à p_kick = 1,0 et 116–119k à p_kick = 0,2 ; `build_obs` ≈ 9–10 ms par step (27 à 36 %).
+
 ## Points à valider par l'utilisateur
 1. v0 en 1v1 uniquement, contrat paramétré en `n_cars` pour le 2v2.
 2. Obs de 109 dims (structure type « Advanced ») au lieu des 89 du prototype ; aucun normaliseur courant.
