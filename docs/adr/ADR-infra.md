@@ -159,6 +159,9 @@ Python 3.13.
 - RocketSim : 36,5k env-steps/s au mieux (4 processus) ; RocketGPU CPU : 55,3k env-steps/s (4 096 arènes).
 - Build RocketGPU CUDA : **échec** dans `cicc` (vérificateur LLVM de NVVM, CUDA 13.0, sm_75), reproduit sur Colab.
 - Version 2 (b4b0481) avec CUDA 12.9 installé par apt : **même échec**. Le défaut n'est pas propre à CUDA 13.0.
+- Compilation par architecture en session CPU (c8f865c) : l'objet CUDA ne compile que pour **sm_120** (585 s). Il
+  échoue pour sm_75, 80, 86, 89 et 90. Aucun GPU Kaggle ou Colab ne peut donc exécuter RocketGPU CUDA @f0508a1 ;
+  RocketGPU y tourne en CPU.
 - Conséquence provisoire : en session T4, la simulation tourne sur CPU (≈ 55k env-steps/s, environ 3 fois moins que
   le laptop) tant que le build CUDA n'est pas réparé. Le GPU T4 reste utilisable pour le learner (torch cu130).
 

@@ -59,5 +59,27 @@ Le rapport tiers (« 4 cœurs, 29 Go », `docs/research/kaggle.md` §2) est conf
   (LLVM 7) rejette ce code alors que celui des GPU récents (RTX 5090 de l'auteur) l'accepte. Test possible sans quota
   GPU : compiler pour sm_75, sm_86, sm_89 et sm_120 dans une session Kaggle CPU.
 
+## Session CPU — compilation de l'objet CUDA par architecture (`rayhanda/rlgco-probe-cpu`, version 1)
+- Commande : `python scripts/kaggle_probe.py --user rayhanda --acc cpu --parts cuda_archs --push` (commit **c8f865c**).
+  Session sans accélérateur (4 vCPU, pas de nvcc dans l'image CPU), démarrage 2026-11-11 11:59:11 UTC, durée 684 s.
+- CUDA 12.9 installé par apt (24,8 s). Cible Ninja seule : `CMakeFiles/rocketgpu.dir/src/rocketgpu_cuda.cu.o`, avec
+  `-DCMAKE_CUDA_ARCHITECTURES=<arch>` et le reste des options du projet inchangé.
+
+| Architecture | GPU typiques | Résultat |
+|---|---|---|
+| sm_75 | T4 | échec en 13,5 s (NVVM « LLVM7.0.1 », mêmes messages) |
+| sm_80 | A100 | échec en 10,0 s |
+| sm_86 | RTX 30xx | échec en 11,5 s |
+| sm_89 | RTX 40xx, L4 | échec en 10,3 s |
+| sm_90 | H100 | échec en 10,4 s |
+| sm_120 | RTX 50xx (Blackwell) | **réussi** en 585 s |
+
+- **Conclusion (mesurée)** : avec CUDA 12.9, RocketGPU @f0508a1 ne compile en CUDA que pour sm_120 parmi les
+  architectures testées. Toutes les architectures jusqu'à sm_90 échouent dans le même chemin NVVM « LLVM7.0.1 ». C'est
+  cohérent avec les benchmarks de l'auteur, faits sur RTX 5090.
+- Interprétation, non vérifiée : NVVM traite Blackwell par un autre chemin interne, qui accepte ce code.
+- **Conséquence** : aucun GPU accessible au projet (Kaggle T4, Colab T4, L4 ou A100) ne peut exécuter la version CUDA
+  actuelle de RocketGPU. Sur ces plateformes, RocketGPU tourne en CPU.
+
 ## TPU v5e-8 — `rayhanda/rlgco-probe-tpu`, version 1
 Poussé le 2026-11-11 (commit a74ac7f), en file d'attente (QUEUED) au moment de la rédaction. Résultats à venir.

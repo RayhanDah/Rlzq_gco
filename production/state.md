@@ -12,7 +12,10 @@ Mis à jour : 2026-11-10 (G1 validé, Phase 1 terminée).
   compilé en local (gcc, PGO) : ≈ 130–215k env-steps/s en 1 processus selon l'état thermique, ≈ 2–2,5× RocketSim
   (M1c, M1d). Build scripté : `scripts/build_rocketgpu.py` ; la sonde Kaggle le construit (CPU, puis CUDA si GPU).
   Bout-en-bout prototype (M3, c110603) : ≈ 16,5k ts/s CPU, ≈ 52–58k ts/s avec learner sur GPU intégré Arc (torch XPU,
-  `vendor/venv-xpu`). Sonde portable Colab prête (`--colab`). Gate G2 à la sortie (manque M2 : sonde Kaggle ou Colab).
+  `vendor/venv-xpu`). Sonde portable Colab prête (`--colab`).
+- **Sondes Kaggle (2026-11-11, `docs/research/kaggle_probe.md`)** : T4 = 4 vCPU, RocketGPU CPU ≈ 55k env-steps/s.
+  RocketGPU CUDA ne compile que pour sm_120 (Blackwell) : aucun GPU Kaggle/Colab utilisable pour la simulation.
+  Sonde TPU en file. Gate G2 à la sortie (manque la sonde TPU).
 - **Branches en attente du GO G2** : `claude/phase3-gco-reward-fd3080` (récompense GCO + tests §7 + ADR-002, Phase 3
   anticipée, revue APPROVE) ; `claude/phase2-kaggle-relay-954373` (lanceur de relais, aucun appel Kaggle, en revue).
 - Livrables :
