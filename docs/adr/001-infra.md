@@ -316,4 +316,10 @@ Option **A3**, acceptée au G2 (GO du 2026-11-11) :
   - la sonde TPU mesure un hôte nettement plus rapide que le laptop ;
   - RocketGPU CUDA compile pour sm_75 ou sm_89 (correctif en amont), ce qui rendrait les GPU Kaggle et Colab utiles ;
   - un écart de physique RocketGPU / RocketSim apparaît en Phase 3 ;
+    - **Examiné le 2026-11-11** (`docs/reports/physics_parity.md`, commit f4f1a45) : accord à ≤ 8 uu sur 120
+      ticks hors contrôles aléatoires. Un écart net : au sol, boost avec gaz ≤ 0,01, RocketGPU freine
+      (≈ 6,5 uu/s à 24 ticks) là où RocketSim accélère (≈ 464 uu/s). La table de 90 actions n'a aucune action
+      « boost sans plein gaz » (0 sur 90, vérifié sur `bench_e2e.action_table`) : l'entraînement n'y passe pas.
+      **Décision : A3 maintenue**, à condition que la règle « boost ⇒ plein gaz » soit testée dans
+      `src/actions` (T1). Non comparé au jeu (Phase 5).
   - le débit soutenu de la vraie boucle (Phase 4a) tombe sous 25k timesteps/s, soit la moitié du plateau de M4.

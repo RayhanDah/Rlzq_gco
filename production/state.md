@@ -31,6 +31,9 @@ Mis à jour : 2026-11-11 (**G2 validé**, Phase 3 ouverte).
   - `docs/research/` (notes sur sources publiques) ; preuves issues des discussions Discord dans `docs/private/` (local, non versionné).
 - Venv `.venv` (uv, Python 3.12) : groupes dev, sim (rocketsim 2.2.1, numpy 2.5.4), native (cmake, ninja, pybind11), learn (torch 2.15.0 CPU) ; `vendor/venv-xpu` : torch 2.15.0+xpu.
 
+- **Sprint Phase 3** (`production/sprints/2026-11-11.md`) : T0 livré (`docs/adr/003-interfaces.md`, **proposé**,
+  6 points à valider par l'utilisateur) ; T3 mergé (`docs/reports/physics_parity.md`).
+
 ## Prochaines actions
 1. **Phase 3** : sprint planifié dans `production/sprints/2026-11-11.md` (T0 à T7, rien de lancé). Contenu : env maison batché sur RocketGPU (`src/env`), obs et table de
    90 actions (`src/obs`, `src/actions`), PPO v0 avec recouvrement (`src/training`), checkpoints atomiques, smoke test
@@ -39,6 +42,9 @@ Mis à jour : 2026-11-11 (**G2 validé**, Phase 3 ouverte).
 3. Prochain gate : **G3**, avant le premier run long (smoke test, run court 4a, config et kill criteria).
 
 ## Risques ouverts
+- **R13** : écarts RocketGPU / RocketSim **mesurés** (T3) : boost au sol sans gaz (RocketGPU freine), ordre des
+  34 pads différent, boost initial 33,3 contre 33,3333. Sans effet avec la table de 90 actions (boost ⇒ plein
+  gaz) ; à tester dans T1 et T7. Aucune comparaison au jeu avant la Phase 5.
 - **R1** : amorçage de l'exploration en GCO à petit budget (aucune preuve publique sous 0,35B steps).
 - **R2** : throttling **mesuré** : 75k ts/s les 6 premières minutes, plateau ≈ 45–50k ensuite, moyenne 50,3k sur
   57 min (M4, politique aléatoire). RAM (16 Go partagés) non mesurée.
