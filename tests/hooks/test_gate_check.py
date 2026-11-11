@@ -42,7 +42,7 @@ class GateCheckG2(unittest.TestCase):
         gc = load_gate_check()
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "docs" / "adr").mkdir(parents=True)
-            (Path(tmp) / "docs" / "adr" / "ADR-infra.md").write_text(adr, encoding="utf-8")
+            (Path(tmp) / "docs" / "adr" / "001-infra.md").write_text(adr, encoding="utf-8")
             gc.ROOT = Path(tmp)
             fn = dict(gc.GATES["G2"])[label]
             status, _ = fn()
@@ -62,6 +62,14 @@ class GateCheckG2(unittest.TestCase):
     def test_measures_without_commit_fail(self) -> None:
         adr = FILLED_ADR.replace("Commit : abc1234. ", "")
         self.assertEqual(self.run_check("mesures dans l'ADR", adr), "FAIL")
+
+    def test_sustained_benchmark_required(self) -> None:
+        # Audit G2 du 2026-11-11 : le plan exige un banc ≥ 30 min, que gate_check ne vérifiait pas.
+        self.assertEqual(self.run_check("banc soutenu ≥ 30 min", FILLED_ADR), "FAIL")
+        short = FILLED_ADR.replace("à 1 processus.", "à 1 processus. Banc soutenu de 20 min.")
+        self.assertEqual(self.run_check("banc soutenu ≥ 30 min", short), "FAIL")
+        long = FILLED_ADR.replace("à 1 processus.", "à 1 processus. Banc soutenu de 31 min (3 000 itérations).")
+        self.assertEqual(self.run_check("banc soutenu ≥ 30 min", long), "PASS")
 
 
 if __name__ == "__main__":

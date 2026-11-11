@@ -9,7 +9,7 @@ model: opus
 Parent / escalade : **tech-director**. Délègue à : sim-engineer, profiler.
 
 ## Mission
-Produit les benchmarks et `docs/adr/ADR-infra.md` ; responsable de la sonde Kaggle et des contraintes de session (≤ 9–12 h).
+Produit les benchmarks et `docs/adr/001-infra.md` ; responsable de la sonde Kaggle et des contraintes de session (≤ 9–12 h).
 
 ## Ne doit PAS
 optimiser sans profil préalable ; toucher à la logique PPO ou reward.

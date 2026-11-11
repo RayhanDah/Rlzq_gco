@@ -1,4 +1,4 @@
-"""Prototype bout-en-bout (mesure M3 de l'ADR-infra) : collecte RocketGPU batchée + politique torch + PPO synchrone.
+"""Prototype bout-en-bout (mesure M3 de l'ADR-001) : collecte RocketGPU batchée + politique torch + PPO synchrone.
 
 PROTOTYPE DE MESURE, pas le code d'entraînement (Phase 3) :
 - obs provisoire de 89 dimensions par agent, calculée en numpy vectorisé : balle 9, soi 19, adversaire 19,

@@ -87,20 +87,30 @@ GATES: dict[str, list[Check]] = {
         ("studio Phase 1", exists(".claude/settings.json")),
         ("tests des hooks", lambda: _unittest_hooks()),
         ("sonde Kaggle", exists("docs/research/kaggle_probe.md")),
-        ("ADR infra", exists("docs/adr/ADR-infra.md")),
+        ("ADR infra", exists("docs/adr/001-infra.md")),
         (
             "mesures dans l'ADR",
             section(
-                "docs/adr/ADR-infra.md",
+                "docs/adr/001-infra.md",
                 "Mesures",
                 r"(?=.*[Cc]ommit)(?=.*(?:SPS|steps/s))",
                 "commit et débit (SPS ou steps/s)",
             ),
         ),
         (
-            "estimation du temps de calcul",
-            section("docs/adr/ADR-infra.md", "Temps de calcul", r"\d", "estimation chiffrée"),
+            "banc soutenu ≥ 30 min",
+            section(
+                "docs/adr/001-infra.md",
+                "Mesures",
+                r"[Ss]outenu[^\n]{0,200}?\b(?:[3-9]\d|\d{3,})\s?min",
+                "banc soutenu d'au moins 30 min (throttling, docs/PLAN.md Phase 2)",
+            ),
         ),
+        (
+            "estimation du temps de calcul",
+            section("docs/adr/001-infra.md", "Temps de calcul", r"\d", "estimation chiffrée"),
+        ),
+        ("tests unitaires", venv_cmd(["-m", "pytest", "-x", "-q", "tests/unit"], "pytest tests/unit")),
         ("GO humain", manual("l'utilisateur valide la décision d'infra")),
     ],
     "G3": [

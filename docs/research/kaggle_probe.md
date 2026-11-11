@@ -2,7 +2,7 @@
 
 Sonde : `scripts/kaggle_probe.py` + `kaggle/probe/probe_kernel.py`, kernels privés sur le compte de l'utilisateur, lancés
 avec son accord explicite le 2026-11-11. Sorties rapatriées dans `kaggle_out/` (non versionné). Synthèse et décisions :
-`docs/adr/ADR-infra.md` (M2).
+`docs/adr/001-infra.md` (M2).
 
 ## T4 ×2 — `rayhanda/rlgco-probe-t4`, version 1
 - Commande : `python scripts/kaggle_probe.py --user rayhanda --acc t4 --push` (commit **a74ac7f**). Parties par défaut

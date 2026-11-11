@@ -71,7 +71,7 @@ Un kernel `probe` par accélérateur, durée ≤ 15 min. Il relève :
 - un micro-benchmark RocketSim 1v1 à 1, 4, N processus (steps/s au tick-skip 8) ;
 - un step PPO factice sur l'accélérateur et sur le CPU.
 
-Les résultats vont dans `docs/adr/ADR-infra.md`, avec la commande, le commit et la date.
+Les résultats vont dans `docs/adr/001-infra.md`, avec la commande, le commit et la date.
 
 ## 5. Mise à jour du 2026-11-10 : disponibilité réelle et mutualisation (informations de l'utilisateur et CGU vérifiées)
 **Disponibilité rapportée par l'utilisateur** (non mesurée par nous) :

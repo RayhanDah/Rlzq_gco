@@ -208,23 +208,81 @@ Lecture :
 - Limites : politique aléatoire (presque aucun but, peu de resets), ≈ 30 s par point, une seule série, pas de
   throttling mesuré, pas de critiques d'exploration GCO-std (surcoût de ≈ 5 % à ≈ ×0,5 selon la spec §6.2).
 
+### M4 — Optimisation du learner et de la boucle, puis banc soutenu (2026-11-11)
+Code des bancs commité en **07571ca** (les variantes ont été mesurées sur l'arbre de travail équivalent, juste avant ce
+commit). Laptop, torch 2.15.0+xpu, réseaux PPO v0, lot de 50k, minibatch de 25k, 2 epochs.
+
+**Learner seul** (`vendor/venv-xpu/Scripts/python scripts/bench_learner.py --device xpu --iters 6 --skip-inference
+<variante>`). Depuis 07571ca, les statistiques ne sont lues qu'en fin d'itération, au lieu de 2 synchronisations hôte
+par minibatch.
+
+| Variante | Update (timesteps/s) |
+|---|---:|
+| base | 137 052 |
+| Adam `fused=True` | 162 984 ; 162 519 |
+| autocast bf16 | 135 740 |
+| autocast fp16 | 146 295 |
+| fused + bf16 | 152 446 |
+| fused + fp16 | 163 753 |
+| fused + `torch.compile` | échec (`InductorError`) |
+
+Retenu : Adam fused en fp32 (+19 %). La précision réduite n'apporte rien de plus.
+
+**Threads de simulation** (RocketGPU PGO, 4 096 arènes, 12 s, `ROCKETGPU_CPU_THREADS`, 2 passages) : 4 → 162 860 /
+132 594 ; 8 → 163 728 / 172 036 ; 12 → 191 897 / 200 184 ; 16 (défaut) → 203 040 / 203 506 ; 18 → 207 452 /
+200 694 env-steps/s. Défaut conservé.
+
+**Recouvrement** (`bench_e2e.py --device xpu --envs 4096 --steps 7 --iters 6 --fused [--overlap]`, 2 passages) :
+
+| Build RocketGPU | Mode | Passage 1 | Passage 2 |
+|---|---|---:|---:|
+| `rocketgpu-gcc` | synchrone | 96 845 | 78 467 |
+| `rocketgpu-gcc` | recouvrement | 99 155 | 96 273 |
+| correctif GIL (expérimental) | synchrone | 57 632 | 76 145 |
+| correctif GIL (expérimental) | recouvrement | 85 306 | 95 104 |
+
+- Recouvrement retenu : stable à ≈ 96–99k, contre 78–97k en synchrone sur des séries courtes.
+- Le correctif expérimental (`py::call_guard<py::gil_scoped_release>` sur `step`, `step_with_device_controls`,
+  `apply_env_commands` et `reset_to_kickoff`) n'apporte rien : le thread learner attend surtout le GPU, ce qui relâche
+  déjà le GIL. Il a été abandonné et supprimé, pour ne pas modifier de code tiers.
+- Une file XPU séparée pour l'inférence (`--actor-stream`, laptop chaud, 25 itérations) donne 47 944 / 44 249 contre
+  45 202 / 50 144 sans : écart dans le bruit. Abandonnée.
+
+**Banc soutenu de 57 min** :
+- Commande : `ROCKETGPU_PY_DIR=vendor/build/rocketgpu-cpu-pgo/python vendor/venv-xpu/Scripts/python
+  scripts/bench_e2e.py --device xpu --envs 4096 --steps 7 --iters 3000 --fused --overlap`.
+- Commit 07571ca (marqué `-dirty` à cause de modifications de documentation sans lien) ; départ 2026-11-11 15:28 ;
+  secteur.
+- Rapport : `runs/bench/bench_e2e_20261111_152829.json` (local).
+- Résultat : 3 000 itérations, 172,0M timesteps en 57,0 min, soit une **moyenne de 50 323 timesteps/s**. Toutes les
+  pertes et observations restent finies ; 2 850 buts (politique aléatoire).
+
+| Décile | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| ts/s | 75 021 | 60 593 | 48 919 | 49 142 | 44 972 | 48 325 | 50 768 | 45 280 | 45 655 | 46 558 |
+
+Lecture :
+- **Throttling réel** : le débit baisse de 35 à 40 % après ≈ 10–15 min, puis se stabilise vers ≈ 45–50k ts/s. Par
+  itération, la simulation passe de 0,183 à 0,238 s (+30 %) et l'apprentissage de 0,73 à 1,19 s (+62 %).
+- CPU et GPU intégré partagent la même enveloppe de puissance : les gains mesurés sur 30 s surestiment le régime de
+  croisière. **Le chiffre de planification est le plateau soutenu**, pas les mesures courtes (M3, M4 hors banc soutenu).
+
 ## Temps de calcul
-Estimation **dérivée de M3, non mesurée sur un run réel** : débit bout-en-bout ≈ 55k timesteps/s (laptop, XPU), sans
-dégradation, puis avec un facteur prudent ×0,5 (throttling soutenu, critiques d'exploration, évaluation ; facteurs de
-`docs/GCO_SPEC.md` §6.2, non mesurés).
+Base **mesurée** : plateau soutenu du laptop ≈ 50k timesteps/s (M4, 57 min, politique aléatoire). Seconde colonne :
+facteur ×0,7, **estimé, non mesuré**, pour les critiques d'exploration GCO-std et l'évaluation (spec §6.2).
 
-| Steps (jalon médian, spec §6.1) | À 55k ts/s | À 27k ts/s (×0,5) |
+| Steps (jalon médian, spec §6.1) | À 50k ts/s (mesuré, soutenu) | À 35k ts/s (×0,7, estimé) |
 |---|---:|---:|
-| 1B (≈ S1 amorçage, médiane 0,7B) | 5,1 h | 10 h |
-| 3B (≈ S2 bat ATBA, médiane 2B) | 15 h | 1,3 jour |
-| 10B (≈ S3 bot faible, médiane 8B) | 2,1 jours | 4,3 jours |
-| 40B (≈ S4 Nexto, médiane 40B) | 8,4 jours | 17 jours |
-| 100B | 21 jours | 43 jours |
+| 1B (≈ S1 amorçage, médiane 0,7B) | 5,6 h | 7,9 h |
+| 3B (≈ S2 bat ATBA, médiane 2B) | 17 h | 24 h |
+| 10B (≈ S3 bot faible, médiane 8B) | 2,3 jours | 3,3 jours |
+| 40B (≈ S4 Nexto, médiane 40B) | 9,3 jours | 13 jours |
+| 100B | 23 jours | 33 jours |
 
-Par rapport à la spec §6.2 (scénarios 5k / 20k / 60k SPS en CPU seul), le laptop se place près du scénario optimiste,
-grâce à RocketGPU et au GPU intégré. Sur Kaggle T4, seule la collecte est mesurée (≈ 55k env-steps/s, soit ≈ 110k
-timesteps agents/s, sur les 4 vCPU qui servent aussi à l'apprentissage) : le bout-en-bout n'y est **pas mesuré**. Il
-serait inférieur à celui du laptop (estimé, non mesuré). Le TPU attend sa sonde (M2c).
+Par rapport à la spec §6.2 (scénarios 5k / 20k / 60k SPS en CPU seul), le laptop se place entre les scénarios
+« hybride » et « optimiste ». Sur Kaggle T4, seule la collecte est mesurée (≈ 55k env-steps/s, soit ≈ 110k timesteps
+agents/s, sur les 4 vCPU qui servent aussi à l'apprentissage) : le bout-en-bout n'y est **pas mesuré**. Le TPU attend
+sa sonde (M2c).
 
 ## Décision
 Option **A3**, proposée au G2 :
@@ -234,12 +292,13 @@ Option **A3**, proposée au G2 :
 2. **Environnement** : maison, batché sur l'API numpy de RocketGPU (contrôles et états en tableaux, sans objet Python
    par voiture). Pas de dépendance d'entraînement à RLGym. Les obs, actions et la parité avec le déploiement RLBot sont
    du ressort de la Phase 3 (test de parité exigé au G3).
-3. **Collecte** : un seul processus, ≥ 1 024 arènes par lot, PPO synchrone. Le recouvrement collecte/apprentissage
-   (double buffer, staleness ≤ 1) ne viendra qu'après mesure.
+3. **Collecte** : un seul processus, ≥ 1 024 arènes par lot (4 096 mesurées). L'apprentissage du lot k se fait dans
+   un thread pendant la collecte du lot k+1 (staleness 1, `docs/01_papers.md` §1.3), avec une copie de la politique
+   pour l'inférence (M4).
 4. **Learner** : PPO et récompense en Python/torch (règle 7). Sur le laptop, torch XPU sur le GPU intégré Arc
-   (`vendor/venv-xpu`, torch 2.15.0+xpu, `index_select` au lieu de `x[idx]`), repli CPU. Sur Kaggle T4, torch CUDA de
-   l'image.
-5. **Plateformes** : le laptop est la plateforme principale mesurée (≈ 52–58k timesteps/s bout-en-bout). Les sessions
+   (`vendor/venv-xpu`, torch 2.15.0+xpu, `index_select` au lieu de `x[idx]`, Adam `fused=True`, fp32,
+   statistiques lues une fois par itération), repli CPU. Sur Kaggle T4, torch CUDA de l'image.
+5. **Plateformes** : le laptop est la plateforme principale mesurée (≈ 50k timesteps/s soutenus sur 57 min, M4). Les sessions
    Kaggle T4 sont un appoint (collecte CPU ≈ 55k env-steps/s, bout-en-bout non mesuré). Le rôle du TPU sera fixé par sa
    sonde (M2c) : c'est la seule partie réversible à court terme.
 
@@ -249,12 +308,12 @@ Option **A3**, proposée au G2 :
   (≤ 0,3 % à 120 ticks, M1c) : un test de comparaison RocketGPU / RocketSim sur des épisodes complets entre en Phase 3.
 - **Deux environnements torch** sur le laptop : `.venv` (CPU) et `vendor/venv-xpu` (XPU, 3,8 Go). Le code
   d'entraînement doit tourner dans les deux ; le contournement `index_select` est testé.
-- **Débit soutenu non mesuré** : toutes les mesures durent 15 à 30 s, avec une variance de ±25 % (M1d). Le smoke test et
-  le run court 4a mesureront le débit sur la durée (throttling) avant tout run long (G3).
+- **Throttling mesuré** : −35 à −40 % après ≈ 10–15 min (M4). Ce plateau suppose une politique aléatoire et pas
+  encore de critiques d'exploration. Le run court 4a le remesurera avec la vraie boucle avant tout run long (G3).
 - **Kaggle T4 faible pour la simulation** (4 vCPU, GPU inutilisable pour RocketGPU). Le relais entre comptes
   (`claude/phase2-kaggle-relay-954373`) reste utile pour enchaîner des sessions, mais le gain par session est modeste.
 - **Critères de révision** :
   - la sonde TPU mesure un hôte nettement plus rapide que le laptop ;
   - RocketGPU CUDA compile pour sm_75 ou sm_89 (correctif en amont), ce qui rendrait les GPU Kaggle et Colab utiles ;
   - un écart de physique RocketGPU / RocketSim apparaît en Phase 3 ;
-  - le débit soutenu tombe sous la moitié des valeurs de M3.
+  - le débit soutenu de la vraie boucle (Phase 4a) tombe sous 25k timesteps/s, soit la moitié du plateau de M4.

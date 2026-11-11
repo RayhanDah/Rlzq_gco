@@ -3,7 +3,7 @@ name = "rl-gco"
 version = "0.0.1"
 description = "Agent PPO Rocket League sous récompense Goal/Concede Only, déployé via RLBot v5"
 requires-python = ">=3.11,<3.13"
-# Dépendances runtime (rlgym, rocketsim, torch/jax, rlbot...) ajoutées en Phase 2 après vérification des versions (ADR-infra).
+# Dépendances runtime (rlgym, rocketsim, torch/jax, rlbot...) ajoutées en Phase 2 après vérification des versions (ADR-001).
 dependencies = []
 
 [dependency-groups]
