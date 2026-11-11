@@ -1,6 +1,6 @@
 # ADR-003 — Contrat d'interface env / obs / actions / PPO / checkpoint (v0, 1v1)
 
-- Statut : proposé (T0 du sprint `production/sprints/2026-11-11.md`), à valider par l'utilisateur
+- Statut : **accepté** (les six points validés par l'utilisateur le 2026-11-11)
 - Date : 2026-11-11
 - Décideurs : tech-director ; relecture rl-algo-lead (§5–7) et integration-lead (§3, §4, §7)
 
