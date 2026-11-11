@@ -91,7 +91,15 @@ def py_versions() -> dict[str, str]:
     return out
 
 
-PARTS = ("rg_cuda", "rocketsim", "rg_cpu")
+PARTS = ("rg_cuda", "rg_cuda12", "rocketsim", "rg_cpu")
+DEFAULT_PARTS = "__PARTS__"  # remplacé au build (kaggle_probe.py --parts) ; un kernel Kaggle ne reçoit pas d'arguments
+CUDA12 = "12.9"
+CUDA12_INSTALL = (
+    "wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb"
+    " -O /tmp/cuda-keyring.deb && dpkg -i /tmp/cuda-keyring.deb && apt-get update -q"
+    " && DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends"
+    " cuda-nvcc-12-9 cuda-cudart-dev-12-9 cuda-cccl-12-9"
+)
 
 
 def parse_parts(argv: list[str], has_gpu: bool) -> tuple[list[str], int]:
@@ -99,12 +107,13 @@ def parse_parts(argv: list[str], has_gpu: bool) -> tuple[list[str], int]:
     visible (sinon elle passe après les étapes CPU et peut manquer de budget sur une machine à 2 cœurs)."""
     import argparse
 
+    default = DEFAULT_PARTS if DEFAULT_PARTS != "__PARTS__" else "auto"
     ap = argparse.ArgumentParser()
-    ap.add_argument("--parts", default="auto", help=f"auto ou liste parmi {','.join(PARTS)}")
+    ap.add_argument("--parts", default=default, help=f"auto ou liste parmi {','.join(PARTS)}")
     ap.add_argument("--budget-min", type=int, default=40)
     a = ap.parse_args(argv)
     if a.parts == "auto":
-        parts = list(PARTS) if has_gpu else ["rocketsim", "rg_cpu"]
+        parts = ["rg_cuda", "rocketsim", "rg_cpu"] if has_gpu else ["rocketsim", "rg_cpu"]  # rg_cuda12 : sur demande
     else:
         parts = [p.strip() for p in a.parts.split(",") if p.strip()]
         unknown = [p for p in parts if p not in PARTS]
@@ -211,7 +220,30 @@ def main() -> int:
                 for n in (4096, 16384)
             )
 
-    runners = {"rg_cuda": part_rg_cuda, "rocketsim": part_rocketsim, "rg_cpu": part_rg_cpu}
+    def part_rg_cuda12() -> None:
+        """Toolkit CUDA 12.9 installé par apt (dépôt officiel NVIDIA, Ubuntu 24.04) à côté du CUDA de l'image :
+        contourne l'échec de cicc (CUDA 13.0, sm_75) constaté le 2026-11-11."""
+        if not has_gpu:
+            rg_ok["cuda12"] = "pas de GPU"
+            return
+        rg_ok["cuda12"] = False
+        nvcc12 = Path(f"/usr/local/cuda-{CUDA12}/bin/nvcc")
+        if not step("install_cuda12", CUDA12_INSTALL, 900) or not nvcc12.exists():
+            return
+        tag = "cu12"
+        if step("build_rocketgpu_cuda12", f"{build} --variant cuda --nvcc {nvcc12} --suffix {tag}", remaining()):
+            env = f"ROCKETGPU_PY_DIR={APP / f'vendor/build/rocketgpu-cuda-{tag}/python'}"
+            rg_ok["cuda12"] = all(
+                step(f"bench_rocketgpu_cuda12_{n}", f"{env} {bench} --procs 1 --arenas {n} --engine rocketgpu", 180)
+                for n in (4096, 16384)
+            )
+
+    runners = {
+        "rg_cuda": part_rg_cuda,
+        "rg_cuda12": part_rg_cuda12,
+        "rocketsim": part_rocketsim,
+        "rg_cpu": part_rg_cpu,
+    }
     if ok:
         for name in parts:
             runners[name]()

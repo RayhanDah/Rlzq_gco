@@ -199,6 +199,25 @@ def test_probe_parts_put_gpu_first_and_validate() -> None:
         parse(["--parts", "gpu"], True)  # type: ignore[operator]
 
 
+def test_probe_parts_baked_into_kernel_become_default() -> None:
+    ns: dict[str, object] = {"__name__": "probe_under_test"}
+    exec(compile(probe.render_kernel("abc1234", "NvidiaTeslaT4", "rg_cuda12"), "k.py", "exec"), ns)
+    assert ns["parse_parts"]([], True) == (["rg_cuda12"], 40 * 60)  # type: ignore[operator]
+    plain: dict[str, object] = {"__name__": "probe_under_test"}
+    exec(compile(probe.render_kernel("abc1234", "NvidiaTeslaT4"), "k.py", "exec"), plain)
+    assert plain["parse_parts"]([], True)[0] == ["rg_cuda", "rocketsim", "rg_cpu"]  # type: ignore[operator]
+    with pytest.raises(ValueError):
+        probe.render_kernel("abc1234", "NvidiaTeslaT4", "rg_gpu")
+
+
+def test_rocketgpu_build_name() -> None:
+    assert build_rg.build_name("cpu", False, False) == "rocketgpu-cpu"
+    assert build_rg.build_name("cpu", True, False) == "rocketgpu-cpu-pgo"
+    assert build_rg.build_name("cuda", False, False, "cu12") == "rocketgpu-cuda-cu12"
+    with pytest.raises(ValueError):
+        build_rg.build_name("cuda", False, False, "../x")
+
+
 def test_probe_error_lines_keep_compiler_errors_before_traceback() -> None:
     ns: dict[str, object] = {"__name__": "probe_under_test"}
     exec(compile(probe.render_kernel("abc1234", "colab"), "rlgco_probe.py", "exec"), ns)

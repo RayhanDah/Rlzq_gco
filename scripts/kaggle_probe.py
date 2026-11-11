@@ -33,13 +33,27 @@ def git(*args: str) -> str:
     return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()
 
 
-def render_kernel(commit: str, accelerator: str) -> str:
+PROBE_PARTS = ("rg_cuda", "rg_cuda12", "rocketsim", "rg_cpu")  # miroir de PARTS dans probe_kernel.py
+
+
+def render_kernel(commit: str, accelerator: str, parts: str = "") -> str:
+    """Rend le kernel autonome. `parts` (ex. "rg_cuda12") fige les parties par défaut, un kernel Kaggle ne recevant
+    pas d'arguments ; vide = choix automatique du kernel."""
     src = TEMPLATE.read_text(encoding="utf-8")
     embedded = {rel: (ROOT / rel).read_text(encoding="utf-8") for rel in EMBED}
     marker = "EMBEDDED: dict[str, str] = {}"
     if marker not in src:
         raise ValueError("marqueur EMBEDDED introuvable dans le modèle")
     src = src.replace(marker, f"EMBEDDED: dict[str, str] = {json.dumps(embedded, ensure_ascii=False)}", 1)
+    if parts:
+        names = [p.strip() for p in parts.split(",") if p.strip()]
+        unknown = [n for n in names if n not in PROBE_PARTS]
+        if unknown or not names:
+            raise ValueError(f"parties inconnues : {unknown or parts!r} (choix : {PROBE_PARTS})")
+        assign = 'DEFAULT_PARTS = "__PARTS__"'
+        if assign not in src:
+            raise ValueError("marqueur DEFAULT_PARTS introuvable dans le modèle")
+        src = src.replace(assign, f'DEFAULT_PARTS = "{",".join(names)}"', 1)
     return src.replace("__COMMIT__", commit).replace("__ACCELERATOR__", accelerator)
 
 
@@ -71,6 +85,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--user", help="pseudo Kaggle (minuscules) ; requis sauf avec --colab")
     ap.add_argument("--colab", action="store_true", help="fichier unique pour Colab, sans métadonnées ni push")
+    ap.add_argument("--parts", default="", help="parties figées dans le kernel, ex. rg_cuda12 ; vide = auto")
     ap.add_argument("--acc", default="t4", help="liste parmi t4,tpu")
     ap.add_argument("--push", action="store_true")
     args = ap.parse_args()
@@ -86,7 +101,7 @@ def main() -> int:
         out = ROOT / "build" / "colab"
         out.mkdir(parents=True, exist_ok=True)
         path = out / "rlgco_probe.py"
-        path.write_text(render_kernel(commit, "colab"), encoding="utf-8")
+        path.write_text(render_kernel(commit, "colab", args.parts), encoding="utf-8")
         print(f"construit : {path} (commit {commit}) ; dans Colab : !python rlgco_probe.py")
         return 0
     if not args.user:
@@ -100,7 +115,7 @@ def main() -> int:
         out = ROOT / "build" / "kaggle" / f"probe-{key}"
         shutil.rmtree(out, ignore_errors=True)
         out.mkdir(parents=True)
-        (out / "probe_kernel.py").write_text(render_kernel(commit, ACCELERATORS[key]), encoding="utf-8")
+        (out / "probe_kernel.py").write_text(render_kernel(commit, ACCELERATORS[key], args.parts), encoding="utf-8")
         meta = metadata(args.user, key)
         (out / "kernel-metadata.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
         print(f"construit : {out} ({meta['id']}, commit {commit})")

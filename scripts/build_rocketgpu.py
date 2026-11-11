@@ -50,6 +50,14 @@ def find_nvcc() -> str | None:
     return cands[-1] if cands else None
 
 
+def build_name(variant: str, pgo: bool, portable: bool, suffix: str = "") -> str:
+    """Nom du dossier de build ; la sonde Kaggle s'appuie sur ces noms (rocketgpu-cpu, rocketgpu-cuda-cu12...)."""
+    if suffix and not suffix.replace("-", "").isalnum():
+        raise ValueError(f"suffixe invalide : {suffix!r}")
+    parts = [f"rocketgpu-{variant}", "pgo" if pgo else "", "portable" if portable else "", suffix]
+    return "-".join(p for p in parts if p)
+
+
 def has_profile_data(profile: Path) -> bool:
     """Profil PGO non vide : *.gcda (gcc) ou *.profraw (clang) de taille > 0, comme le vérifie tools/pgo_build.sh."""
     return any(f.stat().st_size > 0 for pat in ("*.gcda", "*.profraw") for f in profile.rglob(pat))
@@ -135,15 +143,20 @@ def main() -> int:
     ap.add_argument("--src", type=Path, default=ROOT / "vendor" / "src" / "RocketGPU")
     ap.add_argument("--out", type=Path, default=ROOT / "vendor" / "build")
     ap.add_argument("--meshes", default=str(ROOT / "vendor" / "collision_meshes"))
+    ap.add_argument("--nvcc", help="CUDA : nvcc explicite (ex. /usr/local/cuda-12.9/bin/nvcc), sinon recherche auto")
+    ap.add_argument("--suffix", default="", help="suffixe du dossier de build (ex. cu12 → rocketgpu-cuda-cu12)")
     a = ap.parse_args()
 
     ensure_source(a.src, a.sha)
     windows = os.name == "nt"
-    name = f"rocketgpu-{a.variant}" + ("-pgo" if a.pgo else "") + ("-portable" if a.portable else "")
+    name = build_name(a.variant, a.pgo, a.portable, a.suffix)
     build = a.out / name
-    nvcc = find_nvcc() if a.variant == "cuda" else None
-    if a.variant == "cuda" and nvcc is None:
-        print("nvcc introuvable (PATH, /usr/local/cuda*/bin)", file=sys.stderr)
+    if a.nvcc and a.variant != "cuda":
+        print("--nvcc réservé à --variant cuda", file=sys.stderr)
+        return 2
+    nvcc = (a.nvcc or find_nvcc()) if a.variant == "cuda" else None
+    if a.variant == "cuda" and (nvcc is None or not Path(nvcc).exists()):
+        print(f"nvcc introuvable ({nvcc or 'PATH, /usr/local/cuda*/bin'})", file=sys.stderr)
         return 1
     common = {
         "variant": a.variant,
@@ -180,7 +193,14 @@ def main() -> int:
     if not any(py_dir.glob("rocketgpu_py*")):
         print(f"module rocketgpu_py absent de {py_dir}", file=sys.stderr)
         return 1
-    info = {"sha": a.sha, "variant": a.variant, "pgo": a.pgo, "portable": a.portable, "py_dir": str(py_dir)}
+    info = {
+        "sha": a.sha,
+        "variant": a.variant,
+        "pgo": a.pgo,
+        "portable": a.portable,
+        "nvcc": nvcc,
+        "py_dir": str(py_dir),
+    }
     (build / "build_info.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
     print(json.dumps(info))
     return 0
