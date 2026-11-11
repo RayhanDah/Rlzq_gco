@@ -32,7 +32,7 @@ Mis à jour : 2026-11-11 (**G2 validé**, Phase 3 ouverte).
 - Venv `.venv` (uv, Python 3.12) : groupes dev, sim (rocketsim 2.2.1, numpy 2.5.4), native (cmake, ninja, pybind11), learn (torch 2.15.0 CPU) ; `vendor/venv-xpu` : torch 2.15.0+xpu.
 
 ## Prochaines actions
-1. **Phase 3** (`docs/PLAN.md`) : `/plan-sprint`, puis env maison batché sur RocketGPU (`src/env`), obs et table de
+1. **Phase 3** : sprint planifié dans `production/sprints/2026-11-11.md` (T0 à T7, rien de lancé). Contenu : env maison batché sur RocketGPU (`src/env`), obs et table de
    90 actions (`src/obs`, `src/actions`), PPO v0 avec recouvrement (`src/training`), checkpoints atomiques, smoke test
    1M steps. Ne pas reprendre le GAE du prototype `bench_e2e.py` (bootstrap de troncature sur V(s_t)).
 2. Sonde TPU (`rayhanda/rlgco-probe-tpu`) toujours en file le 2026-11-11 : récupérer `probe.json`, compléter M2c.
