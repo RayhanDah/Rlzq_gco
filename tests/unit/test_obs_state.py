@@ -204,6 +204,16 @@ def test_refuse_boost_hors_plage(boost: float) -> None:
         _replace(state, car_boost=arr).validate()
 
 
+def test_accepte_cooldown_de_pad_legerement_negatif() -> None:
+    # Revue du 2026-11-11 : RocketGPU décrémente le cooldown d'un pad inactif de dt par tick et ne le remet à 0 qu'au
+    # respawn (env_step.hpp:1998-2011, :2531-2534) ; un step peut donc finir avec cooldown ≈ -dt (≈ -0,0083 s).
+    state = BatchState.zeros(2, 2)
+    cd = _copy_field(state, "pad_cooldown")
+    cd[0, 0] = -1.0 / 120.0
+
+    _replace(state, pad_cooldown=cd).validate()
+
+
 def test_refuse_air_time_et_cooldown_negatifs() -> None:
     state = BatchState.zeros(2, 2)
     air = _copy_field(state, "car_air_time_since_jump")

@@ -22,6 +22,9 @@ QUAT_NORM_TOL = 1e-3
 entre deux renormalisations du sim sans accepter un quaternion non normalisé (norme 1,01 => échelle d'obs fausse
 de 1 %). Valeur de conception, non mesurée sur RocketGPU : à resserrer après mesure en T2."""
 
+# Un pad inactif peut finir un step avec cooldown ≈ -dt (1/120 s) avant son respawn : RocketGPU ne le remet à 0
+# qu'au respawn (env_step.hpp:1998-2011, :2531-2534). Marge de 2 ticks ; au-delà, l'état est jugé corrompu.
+PAD_COOLDOWN_SLACK_S = 2.0 / 120.0
 BOOST_MAX = 100.0
 """Boost maximal (ADR-003 §2 : 0–100)."""
 
@@ -145,8 +148,8 @@ class BatchState:
             errors.append(f"car_boost: hors [0, {BOOST_MAX:g}]")
         if bool((self.car_air_time_since_jump < 0.0).any()):
             errors.append("car_air_time_since_jump: valeur négative")
-        if bool((self.pad_cooldown < 0.0).any()):
-            errors.append("pad_cooldown: valeur négative")
+        if bool((self.pad_cooldown < -PAD_COOLDOWN_SLACK_S).any()):
+            errors.append(f"pad_cooldown: valeur négative au-delà de {PAD_COOLDOWN_SLACK_S:g} s")
         if not np.array_equal(self.car_team, default_car_team(n_cars)):
             errors.append("car_team: attendu k < C/2 bleu (0), sinon orange (1)")
         if errors:
