@@ -19,8 +19,8 @@ Mis à jour : 2026-11-11 (**G2 validé**, Phase 3 ouverte).
   RocketGPU CUDA ne compile que pour sm_120 (Blackwell) : aucun GPU Kaggle/Colab utilisable pour la simulation.
   Sonde TPU en file.
 - **Phase 3 (implémentation) ouverte** : récompense GCO mergée (`src/rewards`, tests §7, ADR-002, 1bcd5ae).
-  Branche `claude/phase2-kaggle-relay-954373` (lanceur de relais, aucun appel Kaggle) : revue `code-reviewer` en
-  cours, merge après verdict.
+  Lanceur de relais Kaggle mergé (`scripts/kaggle_run.py`, `docs/research/kaggle_relay.md`, revue faite) : jamais
+  exécuté contre Kaggle, à valider sur un dataset jetable avant tout vrai run.
 - Livrables :
   - `docs/private/00_inventory.md` (local, non versionné : machine, contenu du dossier) ;
   - `docs/01_papers.md` (papiers et config PPO v0) ;
@@ -35,9 +35,8 @@ Mis à jour : 2026-11-11 (**G2 validé**, Phase 3 ouverte).
 1. **Phase 3** (`docs/PLAN.md`) : `/plan-sprint`, puis env maison batché sur RocketGPU (`src/env`), obs et table de
    90 actions (`src/obs`, `src/actions`), PPO v0 avec recouvrement (`src/training`), checkpoints atomiques, smoke test
    1M steps. Ne pas reprendre le GAE du prototype `bench_e2e.py` (bootstrap de troncature sur V(s_t)).
-2. Merger la branche relais après verdict de revue (conflit attendu : `production/state.md` seulement).
-3. Sonde TPU (`rayhanda/rlgco-probe-tpu`) toujours en file le 2026-11-11 : récupérer `probe.json`, compléter M2c.
-4. Prochain gate : **G3**, avant le premier run long (smoke test, run court 4a, config et kill criteria).
+2. Sonde TPU (`rayhanda/rlgco-probe-tpu`) toujours en file le 2026-11-11 : récupérer `probe.json`, compléter M2c.
+3. Prochain gate : **G3**, avant le premier run long (smoke test, run court 4a, config et kill criteria).
 
 ## Risques ouverts
 - **R1** : amorçage de l'exploration en GCO à petit budget (aucune preuve publique sous 0,35B steps).
