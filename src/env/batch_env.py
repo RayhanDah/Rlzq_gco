@@ -4,8 +4,8 @@ Ordre d'un step : contrôles et sim -> but (hausse de score) -> touche -> `Rewar
 reset) -> obs de s' -> pour les arènes finies : `info["final_obs"]`, reset dans le même step, compteurs et action
 précédente à 0, nouvelle obs de ces arènes.
 
-Contrat de `build_obs` : `(BatchState, prev_actions (n, 8) f32) -> (n, obs_dim) f32` pour n = E'·C où E' est le nombre
-d'arènes de l'état passé (peut être un sous-ensemble : l'env rappelle le constructeur sur les seules arènes
+Contrat de `build_obs` : `(BatchState, prev_actions (n,) i64, -1 = aucune) -> (n, obs_dim) f32`, n = E'·C où E' est le
+nombre d'arènes de l'état passé (peut être un sous-ensemble : l'env rappelle le constructeur sur les seules arènes
 réinitialisées).
 Il doit retourner un tableau NEUF à chaque appel (l'env en réécrit des lignes), et ne rien conserver de l'état (vues).
 """
@@ -19,15 +19,18 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
+from actions import ACTION_TABLE, N_ACTIONS
 from env.initial_states import InitialStateSampler
 from env.sim_adapter import Simulator
+from obs import build_obs as default_build_obs
+from obs.schema import obs_dim as schema_obs_dim
 from obs.state import BatchState
 from rewards import GoalNet, RewardFunction
 
 F32Array = npt.NDArray[np.float32]
 I64Array = npt.NDArray[np.int64]
 BoolArray = npt.NDArray[np.bool_]
-ObsBuilder = Callable[[BatchState, F32Array], F32Array]
+ObsBuilder = Callable[[BatchState, I64Array], F32Array]
 
 
 def _subset_state(state: BatchState, arenas: I64Array) -> BatchState:
@@ -40,41 +43,47 @@ def _subset_state(state: BatchState, arenas: I64Array) -> BatchState:
 
 
 class BatchEnv:
+    """`build_obs` : défaut `obs.build_obs` (obs de `obs.schema.obs_dim(n_cars)` dims). Un constructeur injecté (tests)
+    impose `obs_dim`. `action_table` : optionnelle ; la table est la globale `actions.ACTION_TABLE` (écrite dans le sim
+    par `actions.write_controls`) : toute autre table est refusée."""
+
     def __init__(
         self,
         sim: Simulator,
-        build_obs: ObsBuilder,
-        action_table: F32Array,
         reward: RewardFunction,
         sampler: InitialStateSampler,
+        *,
+        build_obs: ObsBuilder | None = None,
+        obs_dim: int | None = None,
+        action_table: F32Array | None = None,
     ) -> None:
-        if action_table.ndim != 2 or action_table.shape[1] != 8 or action_table.dtype != np.float32:
+        if action_table is not None and not np.array_equal(action_table, ACTION_TABLE):
             raise ValueError(
-                f"action_table: (n_actions, 8) float32 attendu, reçu {action_table.dtype} {action_table.shape}"
+                "action_table différente de actions.ACTION_TABLE : refusée (le sim écrit la table globale)"
             )
         if sampler.n_cars != sim.n_cars:
             raise ValueError(f"sampler.n_cars {sampler.n_cars} != sim.n_cars {sim.n_cars}")
-        self._sim, self._build_obs, self._table, self._reward, self._sampler = (
-            sim,
-            build_obs,
-            action_table,
-            reward,
-            sampler,
-        )
+        if build_obs is None:
+            if obs_dim is not None and obs_dim != schema_obs_dim(sim.n_cars):
+                raise ValueError(f"obs_dim {obs_dim} != {schema_obs_dim(sim.n_cars)} (builder par défaut)")
+            build_obs, obs_dim = default_build_obs, schema_obs_dim(sim.n_cars)
+        elif obs_dim is None:
+            raise ValueError("obs_dim est requis avec un build_obs injecté")
+        self._sim, self._build_obs, self._reward, self._sampler = sim, build_obs, reward, sampler
         self.n_envs = sim.n_envs
         self.n_cars = sim.n_cars
         self.n_agents = self.n_envs * self.n_cars
-        self.n_actions = int(action_table.shape[0])
+        self.n_actions = N_ACTIONS
         self.tick_skip = sim.tick_skip
+        self.obs_dim = int(obs_dim)
         self._cfg = reward.config
-        self._prev_actions = np.zeros((self.n_agents, 8), dtype=np.float32)
+        self._prev_idx = np.full(self.n_agents, -1, dtype=np.int64)  # indice d'action précédent, -1 = aucune
         self._episode_ticks = np.zeros(self.n_envs, dtype=np.int64)
         self._ticks_since_touch = np.zeros(self.n_envs, dtype=np.int64)
         self._last_toucher = np.full(self.n_envs, -1, dtype=np.int64)
         self._score_blue, self._score_orange = sim.scores()
         self.n_ambiguous_goals = 0
         """Steps où les deux scores ont monté ; non observé en pratique, compté pour le rapport (cf. `_goal_net`)."""
-        self.obs_dim = -1
 
     def set_p_kick(self, p_kick: float) -> None:
         """Annealing piloté par le trainer (spec §2.3)."""
@@ -96,7 +105,7 @@ class BatchEnv:
         self._ticks_since_touch[arenas] = 0
         self._last_toucher[arenas] = -1
         agents = self._agents_of(arenas)
-        self._prev_actions[agents] = 0.0
+        self._prev_idx[agents] = -1
         self._score_blue, self._score_orange = self._sim.scores()
 
     def _agents_of(self, arenas: I64Array) -> I64Array:
@@ -106,8 +115,7 @@ class BatchEnv:
         """Réinitialise toutes les arènes (graine du tirage des états initiaux) et retourne l'obs `(N, D)`."""
         self._sampler.reseed(seed)
         self._reset_arenas(np.arange(self.n_envs, dtype=np.int64))
-        obs = self._as_obs(self._build_obs(self._sim.state(), self._prev_actions))
-        self.obs_dim = int(obs.shape[1])
+        obs = self._as_obs(self._build_obs(self._sim.state(), self._prev_idx))
         return obs
 
     def _as_obs(self, obs: F32Array) -> F32Array:
@@ -139,10 +147,9 @@ class BatchEnv:
         if bool(((actions < 0) | (actions >= self.n_actions)).any()):
             raise ValueError(f"actions hors de [0, {self.n_actions})")
         sim, e, c = self._sim, self.n_envs, self.n_cars
-        rows = self._table[actions]
         tick_before = sim.env_ticks()
-        sim.step(rows)
-        self._prev_actions = rows
+        sim.step(actions)
+        self._prev_idx = actions.copy()
         self._episode_ticks += self.tick_skip
 
         blue, orange = sim.scores()
@@ -160,7 +167,7 @@ class BatchEnv:
         scorer = None if self._cfg.rules.team_attribution else self._last_toucher
         out = self._reward.step(goal_net, state.car_team, self._ticks_since_touch, self._episode_ticks, scorer)
 
-        obs = self._as_obs(self._build_obs(state, rows))
+        obs = self._as_obs(self._build_obs(state, self._prev_idx))
         done = out.terminated | out.truncated
         info: dict[str, Any] = {
             "goal_net": goal_net,
@@ -174,7 +181,7 @@ class BatchEnv:
         if done_idx.size:
             self._reset_arenas(done_idx)
             sub = _subset_state(sim.state(), done_idx)
-            fresh = self._as_obs_rows(self._build_obs(sub, self._prev_actions[agents]), agents.size)
+            fresh = self._as_obs_rows(self._build_obs(sub, self._prev_idx[agents]), agents.size)
             obs[agents] = fresh
 
         reward = out.rewards.reshape(e * c)

@@ -29,8 +29,7 @@ from rewards import RewardConfig, RewardFunction, RewardVariant
 F32 = npt.NDArray[np.float32]
 I64 = npt.NDArray[np.int64]
 TICK_SKIP = 8
-TABLE = np.zeros((4, 8), dtype=np.float32)
-TABLE[:, 0] = [1.0, 2.0, 3.0, 4.0]  # première colonne = identifiant de l'action, lisible dans l'obs
+N_FAKE_ACTIONS = 4  # le sim factice n'interprète pas les indices : il les recopie dans l'état
 
 
 class FakeSim:
@@ -45,7 +44,8 @@ class FakeSim:
         self._touch = np.full((n_envs, n_cars), -1, dtype=np.int64)
         self.n_steps = 0
         self.goals: dict[tuple[int, int], tuple[str, int]] = {}  # (step, arène) -> (équipe qui marque, incrément)
-        self.touches: dict[tuple[int, int], int] = {}  # (step, arène) -> slot de la voiture qui touche
+        self.touches: dict[tuple[int, int], int] = {}  # (step, arène) -> slot de la voiture qui touche (dernier tick)
+        self.touches_first_tick: dict[tuple[int, int], int] = {}  # idem, au tout premier tick du step
         self.reset_calls: list[I64] = []
         self.set_state_calls: list[I64] = []
         self.kickoff_seeds: list[Any] = []
@@ -57,17 +57,21 @@ class FakeSim:
     def state(self) -> BatchState:
         return self._state
 
-    def step(self, controls: F32) -> None:
-        assert controls.shape == (self._e * self._c, 8)
-        self._tick += TICK_SKIP  # l'horloge avance avant : un step couvre ]tick_before, tick_after]
+    def step(self, actions: I64) -> None:
+        assert actions.shape == (self._e * self._c,)
+        tick_before = self._tick.copy()
+        self._tick += TICK_SKIP  # le réel horodate les touches dans [tick_before, tick_after - 1]
         self._state.ball_pos[:, 0] += 1.0
-        self._state.car_pos[:, :, 0] = controls[:, 0].reshape(self._e, self._c)  # écho de l'action tenue
+        self._state.car_pos[:, :, 0] = actions.reshape(self._e, self._c) + 1  # écho de l'indice d'action tenu
         for (step, arena), (team, inc) in self.goals.items():
             if step == self.n_steps:
                 (self._blue if team == "blue" else self._orange)[arena] += inc
         for (step, arena), slot in self.touches.items():
             if step == self.n_steps:
                 self._touch[arena, slot] = self._tick[arena] - 1
+        for (step, arena), slot in self.touches_first_tick.items():
+            if step == self.n_steps:
+                self._touch[arena, slot] = tick_before[arena]
         self.n_steps += 1
 
     def scores(self) -> tuple[I64, I64]:
@@ -91,12 +95,13 @@ class FakeSim:
         self._state.car_pos[arena_idx] = states.car_pos
 
 
-def fake_obs(state: BatchState, prev_actions: F32) -> F32:
-    """Obs factice (D = 14) : balle (3), voiture (3), action précédente (8). Tableau neuf à chaque appel."""
+def fake_obs(state: BatchState, prev_actions: I64) -> F32:
+    """Obs factice (D = 7) : balle (3), voiture (3), indice d'action précédente (1, -1 = aucune). Tableau neuf."""
     e, c = state.n_envs, state.n_cars
     ball = np.repeat(state.ball_pos, c, axis=0)
     car = state.car_pos.reshape(e * c, 3)
-    return np.concatenate([ball, car, prev_actions], axis=1).astype(np.float32)
+    assert prev_actions.dtype == np.int64 and prev_actions.shape == (e * c,)
+    return np.concatenate([ball, car, prev_actions[:, None]], axis=1).astype(np.float32)
 
 
 def make_env(
@@ -110,7 +115,7 @@ def make_env(
     sim = FakeSim(n_envs)
     sampler = InitialStateSampler(sim.n_cars, p_kick, seed_sampler)
     reward = RewardFunction(RewardConfig(variant=variant, no_touch_timeout_s=no_touch_s, max_episode_s=max_s))
-    return BatchEnv(sim, fake_obs, TABLE, reward, sampler), sim, sampler
+    return BatchEnv(sim, reward, sampler, build_obs=fake_obs, obs_dim=7), sim, sampler
 
 
 def zero_actions(env: BatchEnv, value: int = 0) -> I64:
@@ -199,13 +204,13 @@ def test_obs_finale_est_celle_d_avant_le_reset() -> None:
     assert term.tolist() == [False, False, True, True, False, False]
     assert info["final_agent"].tolist() == [2, 3]
     final = info["final_obs"]
-    assert final.shape == (2, 14)
+    assert final.shape == (2, 7)
     assert (final[:, 0] == 3.0).all()  # balle avancée de 3 steps : état s' d'avant reset
-    assert (final[:, 6] == 3.0).all()  # action précédente = identifiant 3 de l'action 2 envoyée à ce step
+    assert (final[:, 6] == 2.0).all()  # action précédente = indice 2 envoyé à ce step
     assert (obs[2:4, 0] == 0.0).all()  # obs retournée : état du nouvel épisode (kickoff factice)
-    assert (obs[2:4, 6:] == 0.0).all()  # action précédente remise à zéro au reset
+    assert (obs[2:4, 6] == -1.0).all()  # action précédente remise à « aucune » (-1) au reset
     assert (obs[[0, 1, 4, 5], 0] == 3.0).all()  # les autres arènes continuent
-    assert (obs[[0, 1, 4, 5], 6] == 3.0).all()
+    assert (obs[[0, 1, 4, 5], 6] == 2.0).all()
 
 
 def test_reset_seulement_des_arenes_finies_et_compteurs_remis_a_zero() -> None:
@@ -270,7 +275,7 @@ def test_validation_des_entrees() -> None:
     env, _, _ = make_env(n_envs=2)
     env.reset(0)
     with pytest.raises(ValueError):
-        env.step(np.full(env.n_agents, 4, dtype=np.int64))  # hors table
+        env.step(np.full(env.n_agents, 90, dtype=np.int64))  # hors table (90 actions)
     with pytest.raises(ValueError):
         env.step(np.zeros(env.n_agents + 1, dtype=np.int64))
     with pytest.raises(ValueError):
@@ -397,3 +402,43 @@ def test_dernier_toucheur_remis_a_zero_au_reset() -> None:
     assert term.all() and info["last_toucher"].tolist() == [1]  # valeur de l'épisode fini
     _, _, _, _, info = env.step(zero_actions(env))
     assert info["last_toucher"].tolist() == [-1] and info["episode_ticks"].tolist() == [TICK_SKIP]
+
+
+def test_touche_au_premier_tick_du_step_est_detectee() -> None:
+    """Le réel horodate dans [tick_before, tick_after - 1] : un stamp == tick_before compte comme touche du step."""
+    env, sim, _ = make_env(n_envs=1, no_touch_s=1.0)  # 15 steps sans touche => troncature
+    for t in range(40):
+        sim.touches_first_tick[(t, 0)] = 1
+    env.reset(0)
+    for _ in range(40):
+        _, _, term, trunc, info = env.step(zero_actions(env))
+        assert not trunc.any() and not term.any() and info["last_toucher"].tolist() == [1]
+
+
+def test_prev_actions_indices_et_table_refusee() -> None:
+    from actions import ACTION_TABLE
+
+    env, _, _ = make_env(n_envs=2)
+    assert env.n_actions == 90 and env.obs_dim == 7  # fixés dès le constructeur, avant reset()
+    sim = FakeSim(1)
+    sampler = InitialStateSampler(2, 1.0, 0)
+    reward = RewardFunction(RewardConfig())
+    with pytest.raises(ValueError):
+        BatchEnv(sim, reward, sampler, action_table=ACTION_TABLE[:4].copy())  # table différente
+    with pytest.raises(ValueError):
+        BatchEnv(sim, reward, sampler, build_obs=fake_obs)  # obs_dim requis avec un builder injecté
+    default = BatchEnv(sim, reward, sampler, action_table=ACTION_TABLE.copy())
+    assert default.obs_dim == 109
+
+
+def test_builder_par_defaut_reset_step_et_obs_109() -> None:
+    """Régression : `obs.build_obs` exige des indices int64 (-1 après reset) ; l'env doit les lui passer."""
+    env = BatchEnv(FakeSim(3), RewardFunction(RewardConfig()), InitialStateSampler(2, 0.5, 0))
+    obs = env.reset(0)
+    assert obs.shape == (6, 109) and np.isfinite(obs).all()
+    sim = env._sim
+    assert isinstance(sim, FakeSim)
+    sim.goals[(0, 1)] = ("blue", 1)
+    obs, _, term, _, info = env.step(np.arange(6, dtype=np.int64))
+    assert obs.shape == (6, 109) and term.tolist() == [False, False, True, True, False, False]
+    assert info["final_obs"].shape == (2, 109) and np.isfinite(obs).all()

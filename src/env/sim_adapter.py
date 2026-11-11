@@ -22,10 +22,10 @@ from typing import Any, Protocol
 import numpy as np
 import numpy.typing as npt
 
+from actions import write_controls
 from env.initial_states import InitialStates
 from obs.state import N_PADS, BatchState, default_car_team
 
-F32Array = npt.NDArray[np.float32]
 I64Array = npt.NDArray[np.int64]
 U64Array = npt.NDArray[np.uint64]
 
@@ -53,8 +53,8 @@ class Simulator(Protocol):
     def state(self) -> BatchState:
         """Vues vivantes (alias de la mémoire du sim)."""
 
-    def step(self, controls: F32Array) -> None:
-        """`controls` (E·C, 8) = [throttle, steer, pitch, yaw, roll, jump, boost, handbrake], tenus tick_skip ticks."""
+    def step(self, actions: I64Array) -> None:
+        """`actions` (E·C,) indices de `actions.ACTION_TABLE`, tenus tick_skip ticks."""
 
     def scores(self) -> tuple[I64Array, I64Array]:
         """Copies (E,) des scores (bleu, orange). Monotones : les resets ne les remettent jamais à zéro."""
@@ -194,15 +194,11 @@ class RocketGPUSimulator:
     def state(self) -> BatchState:
         return self._state
 
-    def step(self, controls: F32Array) -> None:
-        if controls.shape != (self._n_envs * self._n_cars, 8):
-            raise ValueError(f"controls: forme {controls.shape} != {(self._n_envs * self._n_cars, 8)}")
-        ctrl = self._ctrl
-        for col, name in enumerate(("throttle", "steer", "pitch", "yaw", "roll")):
-            ctrl[name] = controls[:, col]
-        for col, name in ((5, "jump"), (6, "boost"), (7, "handbrake")):
-            ctrl[name] = controls[:, col] > 0.5
-        self._sim.step_with_device_controls(ctrl.ctypes.data, self._tick_skip, 0)  # stride 0 : tenus tick_skip ticks
+    def step(self, actions: I64Array) -> None:
+        if actions.shape != (self._n_envs * self._n_cars,):
+            raise ValueError(f"actions: forme {actions.shape} != {(self._n_envs * self._n_cars,)}")
+        write_controls(self._ctrl, actions)  # un seul endroit pour le dtype et l'ordre des champs (src/actions)
+        self._sim.step_with_device_controls(self._ctrl.ctypes.data, self._tick_skip, 0)  # tenus tick_skip ticks
 
     def scores(self) -> tuple[I64Array, I64Array]:
         return self._env["blue_score"].astype(np.int64), self._env["orange_score"].astype(np.int64)
