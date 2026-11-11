@@ -226,3 +226,27 @@ def test_probe_error_lines_keep_compiler_errors_before_traceback() -> None:
     lines = ns["error_lines"](log)  # type: ignore[operator]
     assert lines[0] == "x.cu(12): error: identifier foo is undefined"
     assert "CMake Error at y" in lines
+
+
+def test_probe_metadata_cpu_session_has_no_accelerator() -> None:
+    cpu = probe.metadata("alice-1", "cpu")
+    assert cpu["id"] == "alice-1/rlgco-probe-cpu"
+    assert cpu["machine_shape"] == "" and cpu["enable_gpu"] == "false" and cpu["enable_tpu"] == "false"
+
+
+def test_rocketgpu_cmake_args_cuda_arch() -> None:
+    kw = {"pgo": "OFF", "profile": None, "portable": False, "python": "py", "windows": False}
+    args = build_rg.cmake_args(Path("s"), Path("b"), variant="cuda", cuda_arch="120", **kw)
+    assert "-DCMAKE_CUDA_ARCHITECTURES=120" in args
+    for bad_variant, bad_arch in (("cpu", "75"), ("cuda", "sm_75")):
+        with pytest.raises(ValueError):
+            build_rg.cmake_args(Path("s"), Path("b"), variant=bad_variant, cuda_arch=bad_arch, **kw)
+
+
+def test_probe_cuda_archs_part_is_known_and_bakeable() -> None:
+    src = probe.render_kernel("abc1234", "", "cuda_archs")
+    ns: dict[str, object] = {"__name__": "probe_under_test"}
+    exec(compile(src, "k.py", "exec"), ns)
+    assert ns["parse_parts"]([], False) == (["cuda_archs"], 40 * 60)  # type: ignore[operator]
+    assert "75" in ns["CUDA_ARCHS"] and "120" in ns["CUDA_ARCHS"]  # type: ignore[operator]
+    assert ns["CUDA_OBJECT"] == build_rg.CUDA_OBJECT

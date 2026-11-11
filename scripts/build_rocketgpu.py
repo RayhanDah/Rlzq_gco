@@ -26,6 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 REPO_URL = "https://github.com/thecosmicskye/RocketGPU.git"
 PINNED_SHA = "f0508a184829d1cb32522e3e37debe5c1bcd895d"  # 2026-11-08, « Update README », inspecté le 2026-11-10
+CUDA_OBJECT = "CMakeFiles/rocketgpu.dir/src/rocketgpu_cuda.cu.o"  # cible Ninja de l'objet CUDA
 PGO_TRAIN = ("--procs", "1", "--arenas", "256", "--engine", "rocketgpu", "--seconds", "30")
 
 
@@ -74,6 +75,7 @@ def cmake_args(
     python: str,
     windows: bool,
     cuda_compiler: str | None = None,
+    cuda_arch: str | None = None,
 ) -> list[str]:
     """Arguments de configuration CMake. `pgo` ∈ {OFF, GENERATE, USE}."""
     if variant not in ("cpu", "cuda"):
@@ -99,6 +101,10 @@ def cmake_args(
     ]
     if variant == "cuda" and cuda_compiler:
         args.append(f"-DCMAKE_CUDA_COMPILER={cuda_compiler}")
+    if cuda_arch:
+        if variant != "cuda" or not cuda_arch.isdigit():
+            raise ValueError(f"architecture CUDA invalide : {cuda_arch!r} (ex. 75, 89, 120 ; variante cuda)")
+        args.append(f"-DCMAKE_CUDA_ARCHITECTURES={cuda_arch}")  # requis sans GPU (pas de nvidia-smi)
     if windows:
         args.append("-DCMAKE_CXX_COMPILER=g++")  # MSVC : ni -march=native ni PGO dans le CMake du projet
     if pgo != "OFF" and profile is not None:
@@ -124,11 +130,11 @@ def ensure_source(src: Path, sha: str) -> None:
         raise SystemExit(f"source RocketGPU modifiée localement : {src}")
 
 
-def configure_and_build(args: list[str], build: Path, jobs: int) -> None:
+def configure_and_build(args: list[str], build: Path, jobs: int, target: str | None = None) -> None:
     shutil.rmtree(build, ignore_errors=True)
     env = {**os.environ, "PATH": f"{Path(tool('ninja')).parent}{os.pathsep}{os.environ.get('PATH', '')}"}
     run([tool("cmake"), *args], env)
-    run([tool("cmake"), "--build", str(build), "-j", str(jobs)], env)
+    run([tool("cmake"), "--build", str(build), "-j", str(jobs), *(["--target", target] if target else [])], env)
 
 
 def main() -> int:
@@ -145,8 +151,13 @@ def main() -> int:
     ap.add_argument("--meshes", default=str(ROOT / "vendor" / "collision_meshes"))
     ap.add_argument("--nvcc", help="CUDA : nvcc explicite (ex. /usr/local/cuda-12.9/bin/nvcc), sinon recherche auto")
     ap.add_argument("--suffix", default="", help="suffixe du dossier de build (ex. cu12 → rocketgpu-cuda-cu12)")
+    ap.add_argument("--cuda-arch", help="CUDA : architecture unique (ex. 75) ; défaut : détection nvidia-smi")
+    ap.add_argument("--target", help="cible Ninja seule, ex. " + CUDA_OBJECT + " (compilation sans module)")
     a = ap.parse_args()
 
+    if a.target and a.pgo:
+        print("--target incompatible avec --pgo", file=sys.stderr)
+        return 2
     ensure_source(a.src, a.sha)
     windows = os.name == "nt"
     name = build_name(a.variant, a.pgo, a.portable, a.suffix)
@@ -164,6 +175,7 @@ def main() -> int:
         "python": sys.executable,
         "windows": windows,
         "cuda_compiler": nvcc,
+        "cuda_arch": a.cuda_arch,
     }
     if a.pgo:
         profile = a.out / f"{name}-profile"
@@ -187,9 +199,12 @@ def main() -> int:
             return 1
         configure_and_build(cmake_args(a.src, build, pgo="USE", profile=profile, **common), build, a.jobs)
     else:
-        configure_and_build(cmake_args(a.src, build, pgo="OFF", profile=None, **common), build, a.jobs)
+        configure_and_build(cmake_args(a.src, build, pgo="OFF", profile=None, **common), build, a.jobs, a.target)
 
     py_dir = build / "python"
+    if a.target:
+        print(json.dumps({"sha": a.sha, "target": a.target, "cuda_arch": a.cuda_arch, "nvcc": nvcc, "ok": True}))
+        return 0
     if not any(py_dir.glob("rocketgpu_py*")):
         print(f"module rocketgpu_py absent de {py_dir}", file=sys.stderr)
         return 1

@@ -91,7 +91,9 @@ def py_versions() -> dict[str, str]:
     return out
 
 
-PARTS = ("rg_cuda", "rg_cuda12", "rocketsim", "rg_cpu")
+PARTS = ("rg_cuda", "rg_cuda12", "cuda_archs", "rocketsim", "rg_cpu")
+CUDA_ARCHS = ("75", "80", "86", "89", "90", "120")  # T4, A100, RTX 30xx, RTX 40xx/L4, H100, RTX 50xx
+CUDA_OBJECT = "CMakeFiles/rocketgpu.dir/src/rocketgpu_cuda.cu.o"
 DEFAULT_PARTS = "__PARTS__"  # remplacé au build (kaggle_probe.py --parts) ; un kernel Kaggle ne reçoit pas d'arguments
 CUDA12 = "12.9"
 CUDA12_INSTALL = (
@@ -238,7 +240,24 @@ def main() -> int:
                 for n in (4096, 16384)
             )
 
+    def part_cuda_archs() -> None:
+        """Compilation seule de l'objet CUDA pour plusieurs architectures, sans GPU requis (session CPU possible) :
+        isole si l'échec NVVM du 2026-11-11 est propre à sm_75."""
+        nvcc12 = Path(f"/usr/local/cuda-{CUDA12}/bin/nvcc")
+        if not nvcc12.exists() and not step("install_cuda12", CUDA12_INSTALL, 900):
+            rg_ok["cuda_archs"] = "toolkit CUDA 12 non installé"
+            return
+        results: dict[str, bool] = {}
+        rg_ok["cuda_archs"] = results
+        for arch in CUDA_ARCHS:
+            cmd = (
+                f"{build} --variant cuda --nvcc {nvcc12} --cuda-arch {arch} --suffix cu12-sm{arch}"
+                f" --target {CUDA_OBJECT}"
+            )
+            results[f"sm_{arch}"] = step(f"compile_cuda12_sm{arch}", cmd, 900)
+
     runners = {
+        "cuda_archs": part_cuda_archs,
         "rg_cuda": part_rg_cuda,
         "rg_cuda12": part_rg_cuda12,
         "rocketsim": part_rocketsim,

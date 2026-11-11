@@ -25,7 +25,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = ROOT / "kaggle" / "probe" / "probe_kernel.py"
 EMBED = ("scripts/benchmark_sim.py", "scripts/fetch_meshes.py", "scripts/build_rocketgpu.py")
-ACCELERATORS = {"t4": "NvidiaTeslaT4", "tpu": "TpuV5E8"}
+ACCELERATORS = {"t4": "NvidiaTeslaT4", "tpu": "TpuV5E8", "cpu": ""}  # "" : session CPU, aucun accélérateur
 TIMEOUT_S = 50 * 60  # budget interne du kernel : 40 min
 
 
@@ -33,7 +33,7 @@ def git(*args: str) -> str:
     return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()
 
 
-PROBE_PARTS = ("rg_cuda", "rg_cuda12", "rocketsim", "rg_cpu")  # miroir de PARTS dans probe_kernel.py
+PROBE_PARTS = ("rg_cuda", "rg_cuda12", "cuda_archs", "rocketsim", "rg_cpu")  # miroir de PARTS dans probe_kernel.py
 
 
 def render_kernel(commit: str, accelerator: str, parts: str = "") -> str:
@@ -122,7 +122,8 @@ def main() -> int:
         if args.push:
             kaggle = ROOT / ".venv" / "Scripts" / "kaggle.exe"
             exe = str(kaggle) if kaggle.exists() else "kaggle"
-            cmd = [exe, "kernels", "push", "-p", str(out), "--accelerator", ACCELERATORS[key], "-t", str(TIMEOUT_S)]
+            acc = ["--accelerator", ACCELERATORS[key]] if ACCELERATORS[key] else []
+            cmd = [exe, "kernels", "push", "-p", str(out), *acc, "-t", str(TIMEOUT_S)]
             print("+", " ".join(cmd), flush=True)
             if subprocess.run(cmd, cwd=ROOT).returncode != 0:
                 return 1
