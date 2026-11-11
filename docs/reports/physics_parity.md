@@ -325,7 +325,7 @@ Les scénarios aléatoires n'exigent que des états finis et aucun objet sous le
 - A1 remet en cause la parité de RocketGPU @f0508a1 avec RocketSim 2.2.1 sur ce point précis, pas la qualité globale de la physique :
   les autres écarts mesurés sont petits ou transitoires. Réponse au critère de révision de l'ADR-001 : **partiellement déclenché** ;
   il est contournable côté entraînement/déploiement si `boost = 1` impose `gaz = 1` dans l'espace d'actions (variantes `_tb` : écart divisé
-  par 3 à 6 à 120 ticks), à valider par un test de parité de l'espace d'actions (T1) et, surtout, contre le jeu (Phase 5), car
+  par 3 à 8 selon l'horizon), à valider par un test de parité de l'espace d'actions (T1) et, surtout, contre le jeu (Phase 5), car
   **la référence est RocketSim, pas le jeu** : on ne sait pas ici lequel colle au jeu sur A1 et A2.
 - Un correctif dans RocketGPU (ou un fork) relèverait d'une décision `tech-director` ; je n'ai rien modifié sous `vendor/`.
 

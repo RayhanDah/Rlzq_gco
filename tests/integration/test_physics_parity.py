@@ -705,6 +705,7 @@ def test_chaotic_scenarios_sane(name: str) -> None:
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason="ÉCART MESURÉ : RocketGPU applique le frein au sol quand |gaz| <= 0,01 même en boostant "
     "(raycast_wheels_and_contact_prep.hpp:2713-2722) ; RocketSim 2.2.1 accélère quelle que soit la valeur du gaz. "
     "Retirer ce xfail quand l'écart est corrigé ou toléré par décision (ADR).",
