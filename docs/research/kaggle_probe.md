@@ -46,5 +46,18 @@ Le rapport tiers (« 4 cœurs, 29 Go », `docs/research/kaggle.md` §2) est conf
   2. signaler le problème en amont (dépôt RocketGPU) ;
   3. renoncer au GPU T4 pour la simulation : RocketGPU CPU sur les 4 vCPU, et le GPU pour le learner.
 
+## T4 ×2 — version 2 : RocketGPU CUDA avec CUDA 12.9
+- Commande : `python scripts/kaggle_probe.py --user rayhanda --acc t4 --parts rg_cuda12 --push` (commit **b4b0481**).
+  Démarrage 2026-11-11 11:26:51 UTC, durée 116 s.
+- `install_cuda12` (apt, dépôt NVIDIA ubuntu2404, `cuda-nvcc-12-9 cuda-cudart-dev-12-9 cuda-cccl-12-9`) : réussi en
+  19,7 s. CMake identifie « NVIDIA 12.9.86 » et compile avec `/usr/local/cuda-12.9/bin/nvcc`.
+- `build_rocketgpu_cuda12` : **même échec** que sous CUDA 13.0, pour la même cible (`rocketgpu_cuda.cu.o`, sm_75), avec
+  les mêmes messages de NVVM (« Stored value type does not match pointer operand type! », « Producer: 'LLVM7.0.1' »).
+- Conclusion : ce n'est **pas** propre à CUDA 13.0. Le défaut tient au couple code RocketGPU @f0508a1 / compilation
+  NVVM pour sm_75, ou au code lui-même. Aucun seuil `__CUDA_ARCH__` numérique dans le source (recherche du 2026-11-11).
+- Hypothèse **non vérifiée** : NVVM suit un chemin interne différent selon l'architecture visée, et celui de sm_75
+  (LLVM 7) rejette ce code alors que celui des GPU récents (RTX 5090 de l'auteur) l'accepte. Test possible sans quota
+  GPU : compiler pour sm_75, sm_86, sm_89 et sm_120 dans une session Kaggle CPU.
+
 ## TPU v5e-8 — `rayhanda/rlgco-probe-tpu`, version 1
 Poussé le 2026-11-11 (commit a74ac7f), en file d'attente (QUEUED) au moment de la rédaction. Résultats à venir.
