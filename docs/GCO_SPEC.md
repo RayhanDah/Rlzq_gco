@@ -191,6 +191,9 @@ les chiffres corrects sont ceux des §5 et §6.
 | H6 | Code sans licence (GigaLearn leak, pulsar2) : référence uniquement, jamais copié ni utilisé comme dépendance |
 
 ## 11. Addendum G1 : budget sur Kaggle (hypothèses, NON mesuré)
+> **Remplacé au G2 (2026-11-11)** par les mesures de `docs/adr/001-infra.md` (voir §12). Ce tableau est conservé
+> comme trace des hypothèses du G1 ; ses débits (T4 à 6k, laptop à 10k) sont démentis par la mesure.
+
 Contraintes rapportées (détail et sources : `docs/research/kaggle.md`) : ≈ 20 h TPU et ≈ 30 h GPU par semaine, sessions
 ≤ 9 h (TPU) ou ≤ 12 h (GPU), seulement 4 cœurs CPU en session T4. La collecte étant CPU-bound, le débit dépend surtout du
 **nombre de cœurs hôte**, inconnu en TPU v5e-8 (entre 96 et 224 possibles, à sonder).
@@ -207,3 +210,16 @@ Contraintes rapportées (détail et sources : `docs/research/kaggle.md`) : ≈ 2
 Ce tableau montre surtout ceci : **sans hôte TPU large, Kaggle n'apporte pas plus que le laptop**. Mise à jour du 2026-11-10 : le TPU impose une file d'attente d'au moins 35 h, la ligne principale passe donc sur des **sessions T4 en relais** (chaque compte opéré par son titulaire, voir les CGU dans `docs/research/kaggle.md` §5), avec le TPU en appoint opportuniste. Le cumul des deux (Kaggle
 + laptop) reste une option. La Phase 2 tranche par mesure : sonde Kaggle d'abord, puis benchmark. Aucun chiffre de ce
 tableau n'est mesuré.
+
+## 12. Décisions du Gate G2 (validé le 2026-11-11)
+Détail, commandes et commits : `docs/adr/001-infra.md`.
+- **Infra A3** : simulateur RocketGPU @f0508a1 en CPU, environnement maison batché, PPO et récompense en Python
+  (torch), learner sur GPU intégré (XPU) en local ou CUDA sur Kaggle T4.
+- **Débit de planification** : plateau soutenu **mesuré** du laptop ≈ 50k timesteps/s (57 min, politique aléatoire,
+  sans critiques d'exploration). 1B ≈ 5,6 h, 10B ≈ 2,3 jours, 40B ≈ 9,3 jours. Avec le facteur ×0,7 (estimé, non
+  mesuré) pour GCO-std et l'évaluation : 7,9 h, 3,3 jours, 13 jours.
+- **Plateformes** : laptop = plateforme principale ; Kaggle T4 = appoint (4 vCPU mesurés, bout-en-bout non mesuré) ;
+  rôle du TPU décidé après sa sonde (en file au moment du GO).
+- **Acceptés non mesurés au GO** : RAM du laptop, learner JAX sur TPU, relais Kaggle jamais exécuté contre Kaggle. Le
+  débit sera remesuré avec la vraie boucle au run court (Phase 4a), avant le G3.
+

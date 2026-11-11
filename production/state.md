@@ -1,13 +1,14 @@
 # État du projet RL-GCO
 
-Mis à jour : 2026-11-11 (G1 validé, Phase 2 présentée au G2).
+Mis à jour : 2026-11-11 (**G2 validé**, Phase 3 ouverte).
 
 ## Où on en est
 - Phase 0 terminée. **Gate G1 validé** le 2026-11-10 (décisions : `docs/GCO_SPEC.md` §10).
-- **Compute** (G1) : Kaggle (2× T4 ou TPU v5e-8) ; laptop pour dev, smoke tests, orchestration, RLBot. **Proposé au G2**
-  (`docs/adr/001-infra.md`) : laptop = plateforme principale mesurée, Kaggle T4 = appoint, rôle du TPU après sa sonde.
+- **Gate G2 validé** le 2026-11-11 (GO utilisateur ; décisions : `docs/GCO_SPEC.md` §12, `docs/adr/001-infra.md`) :
+  option A3, laptop = plateforme principale (≈ 50k ts/s soutenus mesurés), Kaggle T4 = appoint, rôle du TPU après
+  sa sonde.
 - **Phase 1 (studio) terminée** : `CLAUDE.md`, 17 agents, 10 skills, 7 rules, hooks testés (`tests/hooks`), ADR-000, dépôt git (remote privé `origin`).
-- **Phase 2 (infra) en cours** (début 2026-11-10). Fait : rocketsim 2.2.1 + numpy 2.5.4 dans le venv, meshes soccar
+- **Phase 2 (infra) terminée** (2026-11-10 → 11). Fait : rocketsim 2.2.1 + numpy 2.5.4 dans le venv, meshes soccar
   vérifiés (`scripts/fetch_meshes.py`), plafond sim laptop mesuré (21k env-steps/s à 1 proc, ≈ 72k à 14 procs, 20 s,
   commit 54a10a6, `docs/adr/001-infra.md` M1), kernel sonde prêt (`scripts/kaggle_probe.py`). RocketGPU @f0508a1
   compilé en local (gcc, PGO) : ≈ 130–215k env-steps/s en 1 processus selon l'état thermique, ≈ 2–2,5× RocketSim
@@ -16,9 +17,10 @@ Mis à jour : 2026-11-11 (G1 validé, Phase 2 présentée au G2).
   `vendor/venv-xpu`). Sonde portable Colab prête (`--colab`).
 - **Sondes Kaggle (2026-11-11, `docs/research/kaggle_probe.md`)** : T4 = 4 vCPU, RocketGPU CPU ≈ 55k env-steps/s.
   RocketGPU CUDA ne compile que pour sm_120 (Blackwell) : aucun GPU Kaggle/Colab utilisable pour la simulation.
-  Sonde TPU en file. Gate G2 à la sortie (manque la sonde TPU).
-- **Branches en attente du GO G2** : `claude/phase3-gco-reward-fd3080` (récompense GCO + tests §7 + ADR-002, Phase 3
-  anticipée, revue APPROVE) ; `claude/phase2-kaggle-relay-954373` (lanceur de relais, aucun appel Kaggle, en revue).
+  Sonde TPU en file.
+- **Phase 3 (implémentation) ouverte** : récompense GCO mergée (`src/rewards`, tests §7, ADR-002, 1bcd5ae).
+  Branche `claude/phase2-kaggle-relay-954373` (lanceur de relais, aucun appel Kaggle) : revue `code-reviewer` en
+  cours, merge après verdict.
 - Livrables :
   - `docs/private/00_inventory.md` (local, non versionné : machine, contenu du dossier) ;
   - `docs/01_papers.md` (papiers et config PPO v0) ;
@@ -30,12 +32,12 @@ Mis à jour : 2026-11-11 (G1 validé, Phase 2 présentée au G2).
 - Venv `.venv` (uv, Python 3.12) : groupes dev, sim (rocketsim 2.2.1, numpy 2.5.4), native (cmake, ninja, pybind11), learn (torch 2.15.0 CPU) ; `vendor/venv-xpu` : torch 2.15.0+xpu.
 
 ## Prochaines actions
-1. **Gate G2** : `gate_check G2` = PRÊT POUR REVUE HUMAINE (2026-11-11). Décision proposée : `docs/adr/001-infra.md`
-   (A3 : RocketGPU CPU + env maison batché + learner torch XPU/CUDA). En attente du GO de l'utilisateur.
-2. Après GO : merger les branches `claude/phase3-gco-reward-fd3080` et `claude/phase2-kaggle-relay-954373` (conflits
-   attendus : `production/state.md` pour la branche relais seulement, d'après `git merge-tree`), puis Phase 3.
-3. Sonde TPU (`rayhanda/rlgco-probe-tpu`) en file depuis le 2026-11-11 : récupérer `probe.json`, compléter M2c.
-   Kaggle : usage autorisé par l'utilisateur le 2026-11-11 (son compte, ses quotas).
+1. **Phase 3** (`docs/PLAN.md`) : `/plan-sprint`, puis env maison batché sur RocketGPU (`src/env`), obs et table de
+   90 actions (`src/obs`, `src/actions`), PPO v0 avec recouvrement (`src/training`), checkpoints atomiques, smoke test
+   1M steps. Ne pas reprendre le GAE du prototype `bench_e2e.py` (bootstrap de troncature sur V(s_t)).
+2. Merger la branche relais après verdict de revue (conflit attendu : `production/state.md` seulement).
+3. Sonde TPU (`rayhanda/rlgco-probe-tpu`) toujours en file le 2026-11-11 : récupérer `probe.json`, compléter M2c.
+4. Prochain gate : **G3**, avant le premier run long (smoke test, run court 4a, config et kill criteria).
 
 ## Risques ouverts
 - **R1** : amorçage de l'exploration en GCO à petit budget (aucune preuve publique sous 0,35B steps).

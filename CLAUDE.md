@@ -14,7 +14,7 @@ Objectif : entraîner un agent PPO sous GCO (`docs/GCO_SPEC.md`), jouable dans R
 4. **ADR** pour toute décision structurelle : `docs/adr/NNN-titre.md` (modèle `docs/adr/TEMPLATE.md`).
 5. **Petits pas vérifiables** : test → benchmark → revue → intégration. Jamais de gros calcul (Kaggle ou local > 30 min)
    sans smoke test vert sur le même commit.
-6. **Gates humains** : G1 (spec, fait), G2 (infra, après Phase 2), G3 (avant le premier run long). Ne jamais franchir un gate
+6. **Gates humains** : G1 (spec, fait), G2 (infra, fait), G3 (avant le premier run long). Ne jamais franchir un gate
    sans GO explicite de l'utilisateur. Le verdict de `/gate-check` vient d'un script, pas d'une déclaration.
 7. **PPO et récompenses en Python.** Seuls les chemins chauds (sim, obs, collecte) peuvent être natifs, après mesure.
 8. **Secrets** : le jeton Kaggle (`~/.kaggle/`, `KAGGLE_API_TOKEN`) n'est jamais lu, affiché, copié ni commité. C'est
@@ -23,10 +23,11 @@ Objectif : entraîner un agent PPO sous GCO (`docs/GCO_SPEC.md`), jouable dans R
    C1–C4 (`GCO_SPEC.md` §3). Toute piste GCO-ext reste une ablation étiquetée.
 
 ## Compute
-- **Entraînement : Kaggle** (TPU v5e-8 `TpuV5E8` ou 2× T4 `NvidiaTeslaT4`), en sessions chaînées ≤ 9 h (TPU) ou ≤ 12 h (GPU),
-  avec reprise depuis checkpoint. Contraintes et inconnues : `docs/research/kaggle.md`.
-- **Laptop** (Zenbook 14, Core Ultra 5 125H, 16 Go, Arc iGPU, pas de CUDA) : dev, tests, smoke tests, orchestration
-  (`kaggle kernels push/status/output`), éval, déploiement RLBot.
+Décision G2 (2026-11-11) : `docs/adr/001-infra.md` (A3 : RocketGPU CPU, env maison batché, learner torch).
+- **Laptop = plateforme principale** (Zenbook 14, Core Ultra 5 125H, 16 Go, Arc iGPU, pas de CUDA) : entraînement
+  (learner torch XPU dans `vendor/venv-xpu`, ≈ 50k timesteps/s soutenus mesurés), dev, tests, orchestration, éval, RLBot.
+- **Kaggle = appoint** : 2× T4 `NvidiaTeslaT4` (4 vCPU, sim en CPU, learner CUDA), sessions chaînées ≤ 12 h avec reprise
+  depuis checkpoint ; TPU v5e-8 `TpuV5E8` (≤ 9 h) selon sa sonde. Contraintes : `docs/research/kaggle.md`, `kaggle_probe.md`.
 - Aucun run d'entraînement dans un subagent. Les runs sont des processus détachés ou des kernels Kaggle, journalisés.
 
 ## Arborescence

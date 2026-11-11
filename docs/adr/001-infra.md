@@ -1,6 +1,6 @@
 # ADR-001 — Infrastructure d'entraînement (simulateur, collecte, plateforme)
 
-- Statut : **proposé**, présenté au Gate G2 (sonde TPU encore en file : partie de la décision réversible, voir M2c)
+- Statut : **accepté** au Gate G2 (GO de l'utilisateur le 2026-11-11 ; sonde TPU encore en file : partie de la décision réversible, voir M2c)
 - Date : 2026-11-10, mis à jour le 2026-11-11
 - Décideurs : tech-director + infra-perf-lead ; GO de l'utilisateur au Gate G2
 
@@ -285,7 +285,7 @@ agents/s, sur les 4 vCPU qui servent aussi à l'apprentissage) : le bout-en-bout
 sa sonde (M2c).
 
 ## Décision
-Option **A3**, proposée au G2 :
+Option **A3**, acceptée au G2 (GO du 2026-11-11) :
 1. **Simulateur** : RocketGPU @f0508a1, build **CPU** scripté et épinglé (`scripts/build_rocketgpu.py`, PGO optionnel).
    RocketSim 2.2.1 (PyPI) est conservé comme référence de physique et comme repli. Le build CUDA est écarté pour
    l'instant : il ne compile que pour sm_120 (M2b).
