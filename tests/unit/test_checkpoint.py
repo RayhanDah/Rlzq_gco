@@ -272,6 +272,23 @@ def test_rotation_ne_protege_pas_un_sain_corrompu(tmp_path: Path) -> None:
     assert mgr.load_latest(healthy_only=True) is None
 
 
+def test_rotation_garde_le_dernier_sain_integre_si_un_plus_recent_est_corrompu(tmp_path: Path) -> None:
+    # Revue du 2026-11-13 : un sain corrompu situé dans la fenêtre `keep` était protégé sans vérification, et le
+    # dernier sain intègre (plus ancien) était supprimé : plus aucun checkpoint sain chargeable.
+    mgr = CheckpointManager(tmp_path, keep=2)
+    p_a = mgr.save(_state(1), healthy=True)
+    p_b = mgr.save(_state(2), healthy=True)
+    raw = bytearray(p_b.read_bytes())
+    raw[-1] ^= 1  # corruption du corps, en-tête intact
+    p_b.write_bytes(bytes(raw))
+
+    mgr.save(_state(3), healthy=False)
+
+    assert p_a.exists()
+    found = mgr.load_latest(healthy_only=True)
+    assert found is not None and found[0] == p_a
+
+
 # ---------------------------------------------------------------------------------------------- identité
 
 

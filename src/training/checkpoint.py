@@ -414,7 +414,9 @@ class CheckpointManager:
                 healthy = bool(read_meta(ref.path).get("healthy"))
             except (CheckpointCorruptError, OSError, ValueError):
                 continue
-            if healthy and (ref.path in protected or self._verified(ref)):
+            # Toujours vérifier la somme de contrôle, même dans la fenêtre `keep` : un sain corrompu ne doit pas
+            # faire supprimer le dernier sain intègre.
+            if healthy and self._verified(ref):
                 protected.add(ref.path)
                 break
         for ref in refs:
