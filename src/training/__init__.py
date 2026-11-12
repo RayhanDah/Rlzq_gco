@@ -1,9 +1,43 @@
 """Entraînement PPO v0 : tampon de rollout, GAE, mise à jour PPO et recouvrement collecte/apprentissage (ADR-003 §6).
 
-Les checkpoints, gardes et journaux (T5) vivent dans des modules séparés, non importés ici.
+Checkpoints, gardes et journaux (T5) : `checkpoint`, `guards`, `logging`.
 """
 
+from training.checkpoint import (
+    CheckpointCorruptError,
+    CheckpointError,
+    CheckpointIdentity,
+    CheckpointIncompatibleError,
+    CheckpointManager,
+    RestoreInfo,
+    StatefulEnv,
+    capture,
+    check_identity,
+    git_commit,
+    hash_config,
+    restore,
+)
 from training.gae import bootstrap_values, gae
+from training.guards import (
+    Action,
+    GuardConfig,
+    GuardDecision,
+    GuardObservation,
+    GuardState,
+    evaluate,
+    grads_finite,
+    params_finite,
+)
+from training.logging import (
+    JsonlWriter,
+    MultiWriter,
+    ScalarWriter,
+    TensorBoardWriter,
+    ThroughputMeter,
+    batch_scalars,
+    grad_norms,
+    iteration_scalars,
+)
 from training.ppo import (
     IterationResult,
     Learner,
@@ -18,19 +52,47 @@ from training.ppo import (
 from training.rollout import Collector, RolloutBatch, RolloutBuffer, VecEnv
 
 __all__ = [
+    "Action",
+    "CheckpointCorruptError",
+    "CheckpointError",
+    "CheckpointIdentity",
+    "CheckpointIncompatibleError",
+    "CheckpointManager",
     "Collector",
+    "GuardConfig",
+    "GuardDecision",
+    "GuardObservation",
+    "GuardState",
     "IterationResult",
+    "JsonlWriter",
     "Learner",
     "LearnerError",
+    "MultiWriter",
     "OptimizerLike",
     "OverlapTrainer",
     "PPOConfig",
     "PPOStats",
+    "RestoreInfo",
     "RolloutBatch",
     "RolloutBuffer",
+    "ScalarWriter",
+    "StatefulEnv",
+    "TensorBoardWriter",
+    "ThroughputMeter",
     "VecEnv",
+    "batch_scalars",
     "bootstrap_values",
+    "capture",
+    "check_identity",
+    "evaluate",
     "gae",
+    "git_commit",
+    "grad_norms",
+    "grads_finite",
+    "hash_config",
+    "iteration_scalars",
     "make_optimizer",
+    "params_finite",
     "resolve_device",
+    "restore",
 ]

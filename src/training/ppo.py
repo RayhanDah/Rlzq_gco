@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 import threading
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, fields
 from typing import Any, Protocol
 
@@ -176,6 +176,29 @@ class Learner:
         self.generator.manual_seed(seed)
         self.version = 0
 
+    def state_dict(self) -> dict[str, Any]:
+        """État complet du learner pour la reprise (T5) : poids π et V, optimiseur, générateur des permutations,
+        version. Les tenseurs sont ceux du learner (non copiés) ; l'optimiseur doit exposer `state_dict()`."""
+        return {
+            "version": self.version,
+            "generator": self.generator.get_state(),
+            "policy": self.policy.state_dict(),
+            "value": self.value.state_dict(),
+            "optimizer": self._stateful_optimizer().state_dict(),
+        }
+
+    def load_state_dict(self, state: Mapping[str, Any]) -> None:
+        self.policy.load_state_dict(state["policy"])
+        self.value.load_state_dict(state["value"])
+        self._stateful_optimizer().load_state_dict(state["optimizer"])
+        self.generator.set_state(state["generator"].cpu())
+        self.version = int(state["version"])
+
+    def _stateful_optimizer(self) -> Any:
+        if not (hasattr(self.optimizer, "state_dict") and hasattr(self.optimizer, "load_state_dict")):
+            raise TypeError("l'optimiseur n'expose pas state_dict()/load_state_dict() : reprise impossible")
+        return self.optimizer
+
     def _values(self, obs: torch.Tensor) -> torch.Tensor:
         """V par morceaux de `minibatch_size` (borne la mémoire des activations 3×512)."""
         if obs.shape[0] == 0:
@@ -330,6 +353,30 @@ class OverlapTrainer:
     def pending_batch(self) -> RolloutBatch | None:
         """Lot déjà collecté, à apprendre à la prochaine itération (à inclure dans un checkpoint, ADR-003 §7)."""
         return self._pending
+
+    def state_dict(self) -> dict[str, Any]:
+        """État pour la reprise exacte, à la frontière d'itération : learner, collecteur, lot en attente (k+1) et
+        version de l'acteur. Refuse un trainer en échec ou dont le thread learner tourne."""
+        if self._failed or self._thread is not None:
+            raise RuntimeError("state_dict impossible : trainer en échec ou thread learner actif")
+        return {
+            "learner": self.learner.state_dict(),
+            "collector": self.collector.state_dict(),
+            "pending": self._pending,
+            "actor_version": self._actor_version,
+        }
+
+    def load_state_dict(self, state: Mapping[str, Any], obs: Any = None) -> None:
+        """Inverse de `state_dict`. `obs` : observation courante de l'env si elle diffère de celle sauvegardée (reprise
+        « modulo reset des arènes »). L'acteur est resynchronisé sur π (copie de π à la frontière d'itération)."""
+        if self._thread is not None:
+            raise RuntimeError("load_state_dict impossible : thread learner actif")
+        self.learner.load_state_dict(state["learner"])
+        self.collector.load_state_dict(state["collector"], obs=obs)
+        self._pending = state["pending"]
+        self.sync_actor()
+        self._actor_version = int(state["actor_version"])
+        self._failed = False
 
     def sync_actor(self) -> None:
         self.collector.policy.load_state_dict(self.learner.policy.state_dict())

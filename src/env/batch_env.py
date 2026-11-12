@@ -12,7 +12,7 @@ Il doit retourner un tableau NEUF à chaque appel (l'env en réécrit des lignes
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import fields
 from typing import Any
 
@@ -92,6 +92,51 @@ class BatchEnv:
     @property
     def p_kick(self) -> float:
         return self._sampler.p_kick
+
+    # ------------------------------------------------------------------------------------------------ reprise (T5)
+
+    def state_dict(self, include_sim: bool = True) -> dict[str, Any]:
+        """État pour la reprise : compteurs, scores, tirage des états initiaux et, si `include_sim` et si le simulateur
+        sait se sauvegarder (`state_dict`), l'état du simulateur (reprise exacte ; volumineux, voir rapport T5)."""
+        sim_state = None
+        if include_sim and hasattr(self._sim, "state_dict"):
+            sim_state = self._sim.state_dict()
+        return {
+            "n_envs": self.n_envs,
+            "n_cars": self.n_cars,
+            "prev_idx": self._prev_idx.copy(),
+            "episode_ticks": self._episode_ticks.copy(),
+            "ticks_since_touch": self._ticks_since_touch.copy(),
+            "last_toucher": self._last_toucher.copy(),
+            "score_blue": self._score_blue.copy(),
+            "score_orange": self._score_orange.copy(),
+            "n_ambiguous_goals": self.n_ambiguous_goals,
+            "sampler": self._sampler.state_dict(),
+            "sim": sim_state,
+        }
+
+    def load_state_dict(self, state: Mapping[str, Any]) -> F32Array | None:
+        """Restaure l'env. État du simulateur présent : reprise exacte, rend None. Absent : reprise « modulo reset des
+        arènes » : tirage et compteurs restaurés, puis toutes les arènes repartent d'un nouveau tirage d'états
+        initiaux ; rend l'observation courante `(N, D)`, à passer au collecteur."""
+        if int(state["n_envs"]) != self.n_envs or int(state["n_cars"]) != self.n_cars:
+            raise ValueError(f"env sauvegardé {state['n_envs']}x{state['n_cars']} != {self.n_envs}x{self.n_cars}")
+        sim_state = state.get("sim")
+        if sim_state is not None and not hasattr(self._sim, "load_state_dict"):
+            raise ValueError("état de simulateur sauvegardé mais ce simulateur ne sait pas le restaurer")
+        self._sampler.load_state_dict(state["sampler"])
+        self.n_ambiguous_goals = int(state["n_ambiguous_goals"])
+        if sim_state is not None:
+            self._sim.load_state_dict(sim_state)  # type: ignore[attr-defined]
+            self._prev_idx = np.array(state["prev_idx"], dtype=np.int64)
+            self._episode_ticks = np.array(state["episode_ticks"], dtype=np.int64)
+            self._ticks_since_touch = np.array(state["ticks_since_touch"], dtype=np.int64)
+            self._last_toucher = np.array(state["last_toucher"], dtype=np.int64)
+            self._score_blue = np.array(state["score_blue"], dtype=np.int64)
+            self._score_orange = np.array(state["score_orange"], dtype=np.int64)
+            return None
+        self._reset_arenas(np.arange(self.n_envs, dtype=np.int64))
+        return self._as_obs(self._build_obs(self._sim.state(), self._prev_idx))
 
     # ------------------------------------------------------------------------------------------------ resets
 
