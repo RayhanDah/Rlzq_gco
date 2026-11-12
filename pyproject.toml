@@ -22,13 +22,16 @@ native = [
     "ninja>=1.13.2",
     "pybind11>=3.1.0",
 ]
+rlbot = [
+    "rlbot==2.0.0b56",  # RLBot v5 (PyPI, dépôt RLBot/python-interface) ; la « latest » stable 1.68.0 est v4
+]
 sim = [
     "numpy>=2,<3",
     "rocketsim==2.2.1",
 ]
 
 [tool.uv]
-default-groups = ["dev", "sim", "native", "learn"]
+default-groups = ["dev", "sim", "native", "learn", "rlbot"]
 
 [tool.ruff]
 line-length = 120
