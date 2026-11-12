@@ -32,7 +32,7 @@ Mis à jour : 2026-11-11 (**G2 validé**, Phase 3 ouverte).
 - Venv `.venv` (uv, Python 3.12) : groupes dev, sim (rocketsim 2.2.1, numpy 2.5.4), native (cmake, ninja, pybind11), learn (torch 2.15.0 CPU) ; `vendor/venv-xpu` : torch 2.15.0+xpu.
 
 - **Sprint Phase 3** (`production/sprints/2026-11-11.md`) : T0 à T5 et T7 mergés (`src/{obs,actions,env,models,
-  training,rlbot_bot}`, ADR-003 accepté, ADR-004 **proposé**). Reprise exacte mesurée, simulateur bit à bit (CPU).
+  training,rlbot_bot}`, ADR-003 et ADR-004 acceptés). Reprise exacte mesurée, simulateur bit à bit (CPU).
   Reste T6 : boucle de run, config et **smoke test 1M steps (à la demande de l'utilisateur)**.
 
 ## Prochaines actions

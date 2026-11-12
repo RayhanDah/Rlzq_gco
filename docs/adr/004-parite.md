@@ -1,6 +1,7 @@
 # ADR-004 — Parité entraînement / RLBot v5 : adaptateur paquet -> `BatchState`
 
-- Statut : proposé
+- Statut : **accepté** par l'utilisateur le 2026-11-13, y compris `on_ground` défini comme RLBot (`air_state == 0`).
+  Délai d'action d'un tick de RLBot : non modélisé, à traiter en ablation (Phase 4a).
 - Date : 2026-11-13
 - Décideurs : integration-lead (rédaction) ; tech-director (arbitrage du schéma d'obs, §Décision 3) ; code-reviewer avant merge
 
