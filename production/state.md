@@ -31,16 +31,16 @@ Mis à jour : 2026-11-11 (**G2 validé**, Phase 3 ouverte).
   - `docs/research/` (notes sur sources publiques) ; preuves issues des discussions Discord dans `docs/private/` (local, non versionné).
 - Venv `.venv` (uv, Python 3.12) : groupes dev, sim (rocketsim 2.2.1, numpy 2.5.4), native (cmake, ninja, pybind11), learn (torch 2.15.0 CPU) ; `vendor/venv-xpu` : torch 2.15.0+xpu.
 
-- **Sprint Phase 3** (`production/sprints/2026-11-11.md`) : T0 fait (`docs/adr/003-interfaces.md`, **accepté** le 2026-11-11,
-  6 points validés) ; T3, T1a, T1, T2 et T4 mergés (`src/obs`, `src/actions`, `src/env`, `src/models`, `src/training`). Restent T5
-  (checkpoints), T7 (parité RLBot), T6 (assemblage, smoke test 1M steps : à la demande de l'utilisateur).
+- **Sprint Phase 3** (`production/sprints/2026-11-11.md`) : T0 à T5 et T7 mergés (`src/{obs,actions,env,models,
+  training,rlbot_bot}`, ADR-003 accepté, ADR-004 **proposé**). Reprise exacte mesurée, simulateur bit à bit (CPU).
+  Reste T6 : boucle de run, config et **smoke test 1M steps (à la demande de l'utilisateur)**.
 
 ## Prochaines actions
-1. **Phase 3** : sprint planifié dans `production/sprints/2026-11-11.md` (T0 à T7, rien de lancé). Contenu : env maison batché sur RocketGPU (`src/env`), obs et table de
-   90 actions (`src/obs`, `src/actions`), PPO v0 avec recouvrement (`src/training`), checkpoints atomiques, smoke test
-   1M steps. Ne pas reprendre le GAE du prototype `bench_e2e.py` (bootstrap de troncature sur V(s_t)).
-2. Sonde TPU (`rayhanda/rlgco-probe-tpu`) toujours en file le 2026-11-11 : récupérer `probe.json`, compléter M2c.
-3. Prochain gate : **G3**, avant le premier run long (smoke test, run court 4a, config et kill criteria).
+1. Décisions utilisateur : ADR-004 (adaptateur maison ; `on_ground` défini comme RLBot, ce qui change le sens d'un
+   champ d'obs) et traitement du délai d'action d'un tick de RLBot (non modélisé, non mesuré).
+2. T6 : `scripts/train.py`, `configs/smoke.yaml`, application des gardes, puis smoke test et `docs/reports/smoke_test.md`.
+3. Sonde TPU (`rayhanda/rlgco-probe-tpu`) toujours en file le 2026-11-13 : récupérer `probe.json`, compléter M2c.
+4. Prochain gate : **G3**, avant le premier run long (smoke test, run court 4a, config et kill criteria).
 
 ## Risques ouverts
 - **R13** : écarts RocketGPU / RocketSim **mesurés** (T3) : boost au sol sans gaz (RocketGPU freine), ordre des
@@ -49,8 +49,9 @@ Mis à jour : 2026-11-11 (**G2 validé**, Phase 3 ouverte).
 - **R1** : amorçage de l'exploration en GCO à petit budget (aucune preuve publique sous 0,35B steps).
 - **R2** : throttling **mesuré** : 75k ts/s les 6 premières minutes, plateau ≈ 45–50k ensuite, moyenne 50,3k sur
   57 min (M4, politique aléatoire). RAM (16 Go partagés) non mesurée.
-- **R3** : RLGym 2.0.1 (PyPI) exige numpy < 2. Hors du chemin d'entraînement depuis A3 (env maison) ; reste à
-  vérifier côté déploiement RLBot (parité obs/actions, Phase 3).
+- **R3** : parité RLBot : cohérence adaptateur ↔ obs **testée** (écart ≤ 7,2e-7), mais conventions réelles du jeu
+  (ordre d'Euler, signe du roll, ordre des pads, délai d'action) non vérifiées avant la Phase 5. `rlbot` 2.0.0b56
+  est une pré-version.
 - **R4** : code pulsar2 / GigaLearn sans licence → référence uniquement.
 - **R5** : RLBC 2025 était en 2v2 uniquement ; aucune règle 2026 publiée.
 - **R6** : Rocket League sous EAC depuis avril 2026 → passer exclusivement par RLBot (lancé sans EAC), pas de dumper mémoire.

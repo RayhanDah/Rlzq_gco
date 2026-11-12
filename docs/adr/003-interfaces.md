@@ -195,6 +195,13 @@ T4 ne dépend que de `OBS_DIM`, `N_ACTIONS` et §6 : il travaille sur un env jou
 - Débit de `BatchEnv.step` avec les vraies obs (4 096 arènes, 15 s, commit 585b712, thermique non contrôlée) :
   146–166k env-steps/s à p_kick = 1,0 et 116–119k à p_kick = 0,2 ; `build_obs` ≈ 9–10 ms par step (27 à 36 %).
 
+## Reprise exacte mesurée (T5, 2026-11-13, `tests/integration/test_resume_rocketgpu.py`)
+- §7 : RocketGPU se restaure **bit à bit**, y compris dans une autre instance, à condition de sauver les tableaux
+  publics ET le blob interne (`download_internal_state`) et de recharger en `PreserveInternal`. Le point 6 ci-dessous
+  (reprise « modulo reset des arènes ») reste un repli disponible, non utilisé par défaut.
+- Reprise exacte de bout en bout (RocketGPU, Adam réel, recouvrement) : 3 itérations == 1 + reprise + 2, en CPU.
+  Non testé sur XPU ni CUDA. Blob interne ≈ 20 Ko par arène (≈ 80 Mo à 4 096 arènes : estimé, non mesuré).
+
 ## Points à valider par l'utilisateur
 1. v0 en 1v1 uniquement, contrat paramétré en `n_cars` pour le 2v2.
 2. Obs de 109 dims (structure type « Advanced ») au lieu des 89 du prototype ; aucun normaliseur courant.
