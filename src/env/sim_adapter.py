@@ -191,6 +191,35 @@ class RocketGPUSimulator:
             "boost_pad_states": self._pads,
         }
 
+    def state_dict(self) -> dict[str, Any]:
+        """Instantané complet du simulateur : tableaux d'état publics (octets) et blob d'état interne
+        (`download_internal_state`, rocketgpu_bindings.cpp:918). Restauration bit à bit mesurée (rapport T5)."""
+        layout = [(str(n), int(b)) for n, b in self._sim.internal_state_layout()]
+        blob = np.zeros(sum(b for _, b in layout), dtype=np.uint8)
+        self._sim.download_internal_state(blob.ctypes.data)
+        arrays = {k: np.frombuffer(v.tobytes(), dtype=np.uint8).copy() for k, v in self.raw_arrays.items()}
+        return {"n_envs": self._n_envs, "n_cars": self._n_cars, "layout": layout, "internal": blob, "arrays": arrays}
+
+    def load_state_dict(self, state: Any) -> None:
+        """Inverse de `state_dict`, sur un simulateur de même forme (les vues de `state()` restent valides)."""
+        if (int(state["n_envs"]), int(state["n_cars"])) != (self._n_envs, self._n_cars):
+            raise ValueError("forme du simulateur sauvegardé différente")
+        layout = [(str(n), int(b)) for n, b in self._sim.internal_state_layout()]
+        if [(str(n), int(b)) for n, b in state["layout"]] != layout:
+            raise ValueError("disposition de l'état interne différente (autre build ou autre forme de RocketGPU)")
+        blob = np.array(state["internal"], dtype=np.uint8)
+        if blob.nbytes != sum(b for _, b in layout):
+            raise ValueError("blob d'état interne de taille inattendue")
+        raws: list[tuple[str, npt.NDArray[Any], int]] = []
+        for name, live in self.raw_arrays.items():  # tout valider avant d'écrire dans le simulateur
+            raw = np.array(state["arrays"][name], dtype=np.uint8)
+            if raw.nbytes != live.nbytes:
+                raise ValueError(f"{name} : {raw.nbytes} octets sauvegardés, {live.nbytes} attendus")
+            raws.append((name, raw, int(live.shape[0])))
+        for name, raw, count in raws:
+            self._sim.upload_state_array(name, raw.ctypes.data, count, True)  # True : PreserveInternal
+        self._sim.upload_internal_state(blob.ctypes.data)
+
     def state(self) -> BatchState:
         return self._state
 

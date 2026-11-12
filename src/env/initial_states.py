@@ -12,7 +12,10 @@ les lois sont indépendantes entre champs, sans condition sur l'état du jeu aut
 
 from __future__ import annotations
 
+import copy
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -281,6 +284,16 @@ class InitialStateSampler:
 
     def reseed(self, seed: int) -> None:
         self._rng = np.random.default_rng(seed)
+
+    def state_dict(self) -> dict[str, Any]:
+        """État pour la reprise (T5) : `p_kick` et état du générateur (entiers Python, copie profonde)."""
+        return {"p_kick": self._p_kick, "rng": copy.deepcopy(self._rng.bit_generator.state)}
+
+    def load_state_dict(self, state: Mapping[str, Any]) -> None:
+        rng = np.random.default_rng()
+        rng.bit_generator.state = copy.deepcopy(dict(state["rng"]))
+        self._rng = rng
+        self._p_kick = self._check_p(state["p_kick"])
 
     def sample(self, k: int) -> InitialDraw:
         if k < 0:

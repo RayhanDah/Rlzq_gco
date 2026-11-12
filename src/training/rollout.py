@@ -204,6 +204,23 @@ class Collector:
             raise ValueError(f"reset : obs {self._obs.shape} ≠ ({n}, {d})")
         self.agent_steps = 0
 
+    def state_dict(self) -> dict[str, Any]:
+        """État du collecteur pour la reprise (T5) : générateur d'échantillonnage, observation courante, compteur."""
+        return {
+            "generator": self.generator.get_state(),
+            "obs": np.array(self._obs, dtype=np.float32),
+            "agent_steps": self.agent_steps,
+        }
+
+    def load_state_dict(self, state: Mapping[str, Any], obs: F32 | None = None) -> None:
+        """`obs` remplace l'observation sauvegardée (env restauré « modulo reset des arènes »)."""
+        cur = np.array(state["obs"] if obs is None else obs, dtype=np.float32)
+        if cur.shape != self._obs.shape:
+            raise ValueError(f"obs {cur.shape} ≠ {self._obs.shape}")
+        self.generator.set_state(state["generator"].cpu())
+        self._obs = cur
+        self.agent_steps = int(state["agent_steps"])
+
     def collect(self, policy_version: int) -> RolloutBatch:
         """Joue `n_steps` steps et rend le lot. Le lot rendu reste valide jusqu'au début du collect suivant le suivant
         (deux tampons alternés)."""
