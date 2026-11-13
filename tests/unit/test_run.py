@@ -30,6 +30,7 @@ from training import (  # noqa: E402
     CheckpointIncompatibleError,
     CheckpointManager,
     Learner,
+    LearnerError,
     PPOStats,
     RunConfig,
     RunError,
@@ -194,9 +195,21 @@ def test_calendrier_p_kick_applique_a_chaque_iteration(tmp_path: Path) -> None:
     r = rows(out)
     # l'itération numéro `step` (1-based) tourne avec p_kick_at(step - 1) ; annealing sur 6 itérations (192 / 32)
     assert [x["env/p_kick"] for x in r] == pytest.approx([cfg.p_kick_at(i) for i in range(6)])
-    assert r[0]["env/p_kick"] == pytest.approx(0.2) and r[-1]["env/p_kick"] < 0.8
     kicks = [x["env/p_kick"] for x in r]
+    assert r[0]["env/p_kick"] == pytest.approx(0.2)
     assert all(b > a for a, b in itertools.pairwise(kicks))  # croissant strictement pendant l'annealing
+    # revue T6 (A1.5) : la dernière itération de l'annealing tourne AVEC la valeur cible (avant : 0,767 pour 0,8)
+    assert r[-1]["env/p_kick"] == pytest.approx(0.8)
+
+
+def test_p_kick_reste_a_la_cible_quand_l_annealing_est_plus_court_que_le_run(tmp_path: Path) -> None:
+    # Arrange : annealing de 2 itérations (64 timesteps) dans un run de 6
+    cfg, out = cfg_of(initial_states={"p_kick_start": 0.2, "p_kick_end": 0.8, "anneal_timesteps": 64}), tmp_path / "run"
+    # Act
+    s = go(cfg, out)
+    # Assert
+    kicks = [x["env/p_kick"] for x in rows(out)]
+    assert kicks == pytest.approx([0.2, 0.8, 0.8, 0.8, 0.8, 0.8]) and s.p_kick_final == pytest.approx(0.8)
 
 
 def test_buts_comptes_sur_tous_les_lots_collectes(tmp_path: Path) -> None:
@@ -220,21 +233,39 @@ def test_aucune_iteration_en_trop_et_plafond_absolu(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------------------------------- gardes
 
 
-def test_stop_sur_nan_sans_checkpoint_sain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # Arrange : NaN injecté dès le 1er appel, avant tout checkpoint (périodique tous les 2)
+def test_checkpoint_initial_ecrit_et_divergence_precoce_restauree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Arrange : NaN dès le 1er appel, avant tout checkpoint périodique (tous les 2) ; avant A1.1 : arrêt
     inject(monkeypatch, lambda n, st: dataclasses.replace(st, policy_loss=float("nan")) if n == 1 else st)
     out = tmp_path / "run"
     # Act
     s = go(cfg_of(), out)
-    # Assert : arrêt propre, cause écrite, NaN compté, NaN visible dans le journal (chaîne "nan")
+    # Assert : un checkpoint sain à l'itération 0 existe, la restauration le reprend et le run se termine
+    assert s.checkpoints[0]["iteration"] == 0 and s.checkpoints[0]["healthy"] is True
+    assert s.status == "completed" and s.restores == 1 and s.nan_detected == 1 and s.end_iteration == 6
+    assert [e["to_iteration"] for e in events(out) if e["event"] == "restore"] == [0]
+    assert [x["step"] for x in rows(out)] == [1, 2, 3, 4, 5, 6]  # la ligne NaN (step 1) est dans metrics_dropped
+    dropped = [json.loads(line) for line in (out / "metrics_dropped.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert dropped[0]["ppo/policy_loss"] == "nan"
+
+
+def test_stop_propre_si_aucun_checkpoint_sain_n_est_restaurable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Arrange : le gestionnaire ne trouve rien (checkpoints illisibles) au moment de restaurer
+    inject(monkeypatch, lambda n, st: dataclasses.replace(st, policy_loss=float("nan")) if n == 1 else st)
+    monkeypatch.setattr(run_mod.CheckpointManager, "load_latest", lambda self, healthy_only=False: None)
+    out = tmp_path / "run"
+    # Act
+    s = go(cfg_of(), out)
+    # Assert : arrêt propre, cause écrite, checkpoint final non sain conservé pour diagnostic
     assert s.status == "stopped" and "aucun checkpoint sain" in (s.cause or "") and s.nan_detected == 1
     assert s.end_iteration == 1 and s.decisions[0]["action"] == "restore" and s.decisions[0]["rule"] == "nonfinite"
     assert rows(out)[0]["ppo/policy_loss"] == "nan"
-    ck = CheckpointManager(out / "checkpoints").checkpoints()
-    assert len(ck) == 1  # checkpoint final conservé pour diagnostic
+    assert [c["healthy"] for c in s.checkpoints] == [True, False]  # initial (it. 0) puis final non sain
     meta = json.loads((out / "segments.jsonl").read_text(encoding="utf-8").splitlines()[-1])
     assert meta["status"] == "stopped"
-    assert CheckpointManager(out / "checkpoints").load_latest(healthy_only=True) is None  # marqué non sain
 
 
 def test_stop_sur_nan_quand_max_restores_vaut_zero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -256,8 +287,11 @@ def test_restore_sur_nan_reprend_du_dernier_sain_et_termine(tmp_path: Path, monk
     restore_events = [e for e in events(out) if e["event"] == "restore"]
     assert len(restore_events) == 1 and restore_events[0]["to_iteration"] == 4
     assert restore_events[0]["exact_env"] is True and restore_events[0]["reseed"] != 5
-    epochs = [x["train/epoch"] for x in rows(out)]
-    assert epochs == [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0]  # lignes 1-5 avant restauration, puis 5-6 après
+    # revue T6 (A1.2) : la ligne 5 de la trajectoire écartée n'est plus dans metrics.jsonl (une seule ligne par step)
+    assert [x["step"] for x in rows(out)] == [1, 2, 3, 4, 5, 6]
+    assert [x["train/epoch"] for x in rows(out)] == [0.0, 0.0, 0.0, 0.0, 1.0, 1.0]
+    dropped = [json.loads(line) for line in (out / "metrics_dropped.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [d["step"] for d in dropped] == [5] and dropped[0]["train/epoch"] == 0.0  # rien n'est supprimé
     assert all(np.isfinite(c["bytes"]) for c in s.checkpoints)
 
 
@@ -281,6 +315,9 @@ def test_restore_sur_kl_patiente_cinq_iterations_puis_reprend_effectivement(
     # après la restauration, les itérations 4.. sont rejouées (lignes de journal marquées epoch 1)
     after = [x for x in rows(out) if x["train/epoch"] == 1.0]
     assert [x["step"] for x in after] == [4, 5, 6, 7, 8, 9, 10, 11, 12]
+    assert [x["step"] for x in rows(out)] == list(range(1, 13))  # aucun step en double
+    dropped = [json.loads(line)["step"] for line in (out / "metrics_dropped.jsonl").read_text("utf-8").splitlines()]
+    assert dropped == [4, 5, 6, 7, 8]
 
 
 def test_max_restores_arrete_le_run_apres_la_derniere_restauration(
@@ -464,7 +501,7 @@ def test_aucun_fichier_supprime_ou_ecrase_pendant_un_run_avec_rotation(tmp_path:
     # Assert : index strictement croissants, journaux présents
     idx = [c.index for c in CheckpointManager(out / "checkpoints").checkpoints()]
     assert idx == sorted(set(idx)) and len(idx) <= 3
-    assert len(s.checkpoints) == 6  # périodiques 1 à 5 + final (6)
+    assert len(s.checkpoints) == 7  # initial (0) + périodiques 1 à 5 + final (6)
     assert {p.name for p in out.iterdir()} >= {"metrics.jsonl", "events.jsonl", "segments.jsonl", "run_meta.json"}
 
 
@@ -478,3 +515,216 @@ def test_stop_sur_effondrement_d_entropie(tmp_path: Path, monkeypatch: pytest.Mo
     assert s.status == "stopped" and s.decisions[-1]["rule"] == "entropy" and s.end_iteration == 3
     latest = CheckpointManager(out / "checkpoints").load_latest(healthy_only=True)
     assert latest is not None and latest[1]["iteration"] == 2
+
+
+# ---------------------------------------------------------------------------------------------------- A1 : durcissement
+
+
+def test_restauration_remet_les_compteurs_de_buts_et_ne_biaise_pas_le_debit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Arrange : NaN au 5e appel (restauration vers le checkpoint de l'itération 4). Un but au step 21 du simulateur,
+    # collecté par l'itération 5 (écartée) puis rejoué après la restauration (l'état exact du simulateur est restauré).
+    inject(monkeypatch, lambda n, st: dataclasses.replace(st, grad_norm=float("nan")) if n == 5 else st)
+    out = tmp_path / "run"
+    # Act
+    s = go(cfg_of(), out, env_factory=make_factory(goals={(21, 0): ("blue", 1)}))
+    # Assert : le but n'est compté qu'une fois (avant A1.2 : 2, la trajectoire écartée restait comptée)
+    assert s.restores == 1 and s.goals_total == 1.0
+    assert rows(out)[-1]["env/goals_total"] == 1.0
+    # débit : toutes les transitions réellement collectées (2 lots au démarrage + 6 itérations de 1 lot, dont
+    # l'itération 5 rejouée) rapportées à la durée de toutes les itérations ; avant A1.2 : 224 (lots écartés soustraits)
+    assert s.segment_collected_timesteps == 8 * 32 and s.discarded_timesteps == 32
+    assert s.mean_steps_per_s == pytest.approx(8 * 32 / s.loop_s)
+    assert s.collected_timesteps == 7 * 32  # côté trajectoire retenue : inchangé
+    assert s.nan_detected == 1 and s.restores == 1  # compteurs de vie du run : jamais remis en arrière
+
+
+def test_docstring_ne_pretend_pas_qu_aucun_checkpoint_n_est_supprime() -> None:
+    # Revue T6 (A1.7) : la rotation supprime les anciens checkpoints ; la garantie doit le dire.
+    doc = run_mod.__doc__ or ""
+    assert "ROTATION" in doc and "ne supprime ni n'écrase jamais lui-même" in doc
+    assert "aucun checkpoint, journal ou méta n'est supprimé" not in doc
+
+
+def test_reprise_depuis_le_checkpoint_initial_equivaut_a_un_run_continu(tmp_path: Path) -> None:
+    # Arrange : référence continue ; puis run « 0 itération » (seul le checkpoint initial est écrit), puis reprise
+    cfg = cfg_of()
+    a, b = tmp_path / "a", tmp_path / "b"
+    go(cfg, a)
+    s0 = go(cfg, b, max_iterations=0)
+    # Act
+    s1 = go(cfg, b, resume=True)
+    # Assert
+    assert s0.end_iteration == 0 and [c["iteration"] for c in s0.checkpoints] == [0]
+    assert s1.status == "completed" and s1.start_iteration == 0 and s1.exact_env is True
+    assert [_stable(x) for x in rows(a)] == [_stable(x) for x in rows(b)]
+    la, lb = CheckpointManager(a / "checkpoints").load_latest(), CheckpointManager(b / "checkpoints").load_latest()
+    assert la is not None and lb is not None
+    for net in ("policy", "value"):
+        for k, v in la[1]["trainer"]["learner"][net].items():
+            assert torch.equal(v, lb[1]["trainer"]["learner"][net][k]), (net, k)
+
+
+@pytest.mark.parametrize("overlap", [True, False])
+def test_exception_du_learner_tracee_avant_de_remonter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overlap: bool
+) -> None:
+    # Arrange : le learner lève au 3e appel
+    def boom(n: int, st: PPOStats) -> PPOStats:
+        if n == 3:
+            raise RuntimeError("boom learner")
+        return st
+
+    inject(monkeypatch, boom)
+    out = tmp_path / "run"
+    # Act
+    with pytest.raises(LearnerError):
+        go(cfg_of(collection={"steps_per_batch": 4, "overlap": overlap}), out)
+    # Assert : événement et ligne de segment (type, message, itération), thread joint, aucun checkpoint après l'échec
+    ev = [e for e in events(out) if e["event"] == "exception"]
+    assert len(ev) == 1 and ev[0]["type"] == "LearnerError" and ev[0]["iteration"] == 3
+    assert ev[0]["cause_type"] == "RuntimeError" and "boom learner" in ev[0]["cause_message"]
+    seg = [json.loads(line) for line in (out / "segments.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len(seg) == 1 and seg[0]["status"] == "error" and "LearnerError" in seg[0]["cause"]
+    assert seg[0]["error"]["iteration"] == 3 and "boom learner" in seg[0]["error"]["cause_message"]
+    assert all(t.name != "ppo-learner" for t in threading.enumerate())
+    its = [c.iteration for c in CheckpointManager(out / "checkpoints").checkpoints()]
+    assert max(its) == 2  # initial (0) et périodique (2) seulement : aucun checkpoint « sain » de l'état cassé
+    latest = CheckpointManager(out / "checkpoints").load_latest(healthy_only=True)
+    assert latest is not None and latest[1]["iteration"] == 2
+
+
+def test_exception_de_la_collecte_tracee_avant_de_remonter(tmp_path: Path) -> None:
+    # Arrange : le simulateur lève au step 21 (collecte de l'itération 5, pendant que le learner tourne)
+    def hook(step: int) -> None:
+        if step == 21:
+            raise RuntimeError("sim crash")
+
+    out = tmp_path / "run"
+    # Act
+    with pytest.raises(RuntimeError, match="sim crash"):
+        go(cfg_of(), out, env_factory=make_factory(hook=hook))
+    # Assert
+    ev = [e for e in events(out) if e["event"] == "exception"]
+    assert len(ev) == 1 and ev[0]["type"] == "RuntimeError" and ev[0]["message"] == "sim crash"
+    assert ev[0]["iteration"] == 5
+    seg = [json.loads(line) for line in (out / "segments.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert seg[-1]["status"] == "error" and seg[-1]["error"]["type"] == "RuntimeError"
+    assert all(t.name != "ppo-learner" for t in threading.enumerate())
+    assert max(c.iteration for c in CheckpointManager(out / "checkpoints").checkpoints()) == 4
+
+
+def test_max_restores_compte_les_restaurations_cumulees_du_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Arrange : NaN aux appels 3, 8 et 13, séparés par des itérations saines (la série consécutive repart de 0) ;
+    # deux restaurations au total autorisées. Avant A1.4 : le compteur se remettait à 0 et le run finissait.
+    inject(monkeypatch, lambda n, st: dataclasses.replace(st, grad_norm=float("nan")) if n in (3, 8, 13) else st)
+    cfg = cfg_of(
+        budget={"total_timesteps": 20 * 32},
+        checkpoint={"every_iterations": 1, "keep": 2},
+        kill={"max_restores": 2, "max_consecutive_restores": 5},
+    )
+    out = tmp_path / "run"
+    # Act
+    s = go(cfg, out)
+    # Assert
+    assert s.status == "stopped" and s.restores == 2
+    assert [d["action"] for d in s.decisions] == ["restore", "restore", "stop"]
+    assert s.decisions[-1]["rule"] == "max_restores"
+
+
+def test_plafond_de_restaurations_consecutives(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Arrange : NaN aux appels 3 et 4 (la rediffusion de l'itération 3 diverge encore, sans itération saine entre)
+    inject(monkeypatch, lambda n, st: dataclasses.replace(st, grad_norm=float("nan")) if n in (3, 4) else st)
+    cfg = cfg_of(kill={"max_restores": 10, "max_consecutive_restores": 1})
+    # Act
+    s = go(cfg, tmp_path / "run")
+    # Assert
+    assert s.status == "stopped" and s.decisions[-1]["rule"] == "max_consecutive_restores" and s.restores == 1
+
+
+def test_compteur_de_restaurations_dans_le_checkpoint_et_a_la_reprise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Arrange : une restauration (appel 3), pause à l'itération 4 (appels 4 et 5 : rediffusion), puis reprise dont la
+    # 2e itération (appel 7) diverge ; max_restores 1 cumulé
+    inject(monkeypatch, lambda n, st: dataclasses.replace(st, grad_norm=float("nan")) if n in (3, 7) else st)
+    cfg = cfg_of(kill={"max_restores": 1}, checkpoint={"every_iterations": 1, "keep": 3})
+    out = tmp_path / "run"
+    s1 = go(cfg, out, max_iterations=4)
+    state = CheckpointManager(out / "checkpoints").load_latest()
+    assert state is not None and state[1]["extra"]["guard"]["restores_total"] == 1 and s1.restores == 1
+    # Act : la reprise repart avec restores_total = 1 ; un 2e NaN est fatal
+    s2 = go(cfg, out, resume=True)
+    # Assert
+    assert s2.restores == 1 and s2.status == "stopped" and s2.decisions[-1]["rule"] == "max_restores"
+
+
+def test_s1_defaut_jamais_atteint_garde_entropie_active(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    inject(monkeypatch, lambda n, st: dataclasses.replace(st, entropy=0.01) if n == 4 else st)
+    s = go(cfg_of(kill={"entropy_floor_frac": 0.10}), tmp_path / "run")
+    assert s.status == "stopped" and s.decisions[-1]["rule"] == "entropy" and s.s1_reached is False
+
+
+def test_s1_atteint_coupe_la_garde_d_entropie(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Arrange : S1 atteint à l'itération 3 ; entropie effondrée à partir de l'appel 4 (sans S1 : arrêt)
+    inject(monkeypatch, lambda n, st: dataclasses.replace(st, entropy=0.01) if n >= 4 else st)
+    seen: list[int] = []
+
+    def s1(iteration: int) -> bool:
+        seen.append(iteration)
+        return iteration >= 3
+
+    cfg = cfg_of(budget={"total_timesteps": 10 * 32}, kill={"entropy_floor_frac": 0.10})
+    out = tmp_path / "run"
+    # Act
+    s = go(cfg, out, s1_provider=s1)
+    # Assert : pas d'arrêt d'entropie après S1 ; transition journalisée une fois ; fournisseur plus appelé ensuite
+    assert s.status == "completed" and s.s1_reached is True and s.s1_iteration == 3
+    assert [e["iteration"] for e in events(out) if e["event"] == "s1_reached"] == [3]
+    assert seen == [1, 2, 3]
+    assert rows(out)[1]["train/s1_reached"] == 0.0 and rows(out)[2]["train/s1_reached"] == 1.0
+
+
+def test_s1_arme_la_regle_explained_variance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Arrange : EV négative en permanence à partir de l'appel 4 (positive avant : valeur naturelle des obs factices
+    # non pertinente) ; patience 2
+    # (`policy_version` = numéro d'itération : le compteur d'appels est partagé entre les deux runs du test)
+    inject(
+        monkeypatch, lambda n, st: dataclasses.replace(st, explained_variance=-1.0 if st.policy_version >= 4 else 0.5)
+    )
+    cfg = cfg_of(budget={"total_timesteps": 12 * 32}, kill={"entropy_floor_frac": 0.001, "ev_patience": 2})
+    # Act
+    without = go(cfg, tmp_path / "a")
+    with_s1 = go(cfg, tmp_path / "b", s1_provider=lambda it: it >= 3)
+    # Assert : sans S1 la règle n'est jamais armée ; avec S1 (it. 3) : arrêt à la 2e itération négative (appel 5)
+    assert without.status == "completed"
+    assert with_s1.status == "stopped" and with_s1.decisions[-1]["rule"] == "explained_variance"
+    assert with_s1.end_iteration == 5
+
+
+def test_s1_monotone_sauvegarde_dans_le_checkpoint_et_restaure(tmp_path: Path) -> None:
+    # Arrange : atteint à l'itération 2 puis le fournisseur dit « non » ; pause à 3 ; reprise sans fournisseur
+    out = tmp_path / "run"
+    s1 = go(cfg_of(), out, max_iterations=3, s1_provider=lambda it: it == 2)
+    state = CheckpointManager(out / "checkpoints").load_latest()
+    # Act
+    s2 = go(cfg_of(), out, resume=True)
+    # Assert
+    assert s1.s1_reached is True and s1.s1_iteration == 2
+    assert state is not None and state[1]["extra"]["s1_reached"] is True and state[1]["extra"]["s1_iteration"] == 2
+    assert s2.s1_reached is True and s2.s1_iteration == 2
+    assert [e["iteration"] for e in events(out) if e["event"] == "s1_reached"] == [2]  # pas de 2e transition
+
+
+def test_s1_reste_atteint_apres_restauration_vers_un_checkpoint_anterieur(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Arrange : S1 atteint à l'itération 5, qui diverge (NaN au 5e appel) : restauration vers le checkpoint de
+    # l'itération 4, sauvegardé AVANT S1. L'état S1 ne redevient pas faux.
+    inject(monkeypatch, lambda n, st: dataclasses.replace(st, grad_norm=float("nan")) if n == 5 else st)
+    cfg = cfg_of(checkpoint={"every_iterations": 1, "keep": 3})
+    # Act
+    s = go(cfg, tmp_path / "run", s1_provider=lambda it: it >= 5)
+    # Assert
+    assert s.restores == 1 and s.s1_reached is True and s.s1_iteration == 5 and s.status == "completed"

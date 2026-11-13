@@ -7,7 +7,12 @@ défaut viennent de `docs/PLAN.md` (§ Kill criteria préliminaires) :
 - KL approx > 0,05 pendant 5 itérations consécutives -> RESTORE ;
 - entropie < 10 % de ln(n_actions) avant S1 -> STOP ;
 - explained variance < 0 pendant 50 itérations consécutives après S1 -> STOP ;
-- plus de `max_restores` restaurations consécutives sans itération saine entre deux -> STOP (évite une boucle infinie).
+- plus de `max_restores` restaurations au total depuis le début du run (cumulées, une itération saine ne remet PAS ce
+  compteur à zéro : un run qui diverge de temps en temps finit par s'arrêter) -> STOP, règle `max_restores` ;
+- plus de `max_consecutive_restores` restaurations sans itération saine entre deux -> STOP, règle
+  `max_consecutive_restores` (une divergence reproductible depuis le même checkpoint ne boucle pas).
+Valeurs par défaut `max_restores = 3` et `max_consecutive_restores = 2` : choix de l'équipe (PLAN.md ne chiffre pas ces
+plafonds), à réviser au G3. Les deux compteurs sont sauvegardés dans les checkpoints (`GuardState`).
 """
 
 from __future__ import annotations
@@ -37,11 +42,14 @@ class GuardConfig:
     entropy_patience: int = 1
     ev_floor: float = 0.0  # PLAN.md : explained variance < 0
     ev_patience: int = 50  # ... pendant 50 itérations après S1
-    max_restores: int = 3
+    max_restores: int = 3  # restaurations CUMULÉES sur tout le run
+    max_consecutive_restores: int = 2  # restaurations sans itération saine entre deux
 
     def __post_init__(self) -> None:
-        if min(self.kl_patience, self.entropy_patience, self.ev_patience) < 1 or self.max_restores < 0:
-            raise ValueError("patiences >= 1 et max_restores >= 0")
+        if min(self.kl_patience, self.entropy_patience, self.ev_patience) < 1:
+            raise ValueError("patiences >= 1")
+        if self.max_restores < 0 or self.max_consecutive_restores < 0:
+            raise ValueError("max_restores >= 0 et max_consecutive_restores >= 0")
 
     @property
     def entropy_floor(self) -> float:
@@ -54,6 +62,7 @@ class GuardState:
     entropy_streak: int = 0
     ev_streak: int = 0
     restores: int = 0  # restaurations consécutives (remis à 0 par une itération saine)
+    restores_total: int = 0  # restaurations cumulées depuis le début du run (jamais remis à 0)
 
 
 @dataclass(frozen=True)
@@ -71,7 +80,8 @@ class GuardObservation:
 @dataclass(frozen=True)
 class GuardDecision:
     action: Action
-    rule: str | None  # "nonfinite", "kl", "entropy", "explained_variance", "max_restores" ; None si CONTINUE
+    # "nonfinite", "kl", "entropy", "explained_variance", "max_restores", "max_consecutive_restores" ; None si CONTINUE
+    rule: str | None
     reason: str
     healthy: bool  # le checkpoint de cette itération peut devenir le « dernier sain »
 
@@ -139,9 +149,21 @@ def evaluate(cfg: GuardConfig, state: GuardState, obs: GuardObservation) -> tupl
 
 
 def _restore(cfg: GuardConfig, state: GuardState, rule: str, reason: str) -> tuple[GuardState, GuardDecision]:
-    if state.restores >= cfg.max_restores:
+    if state.restores_total >= cfg.max_restores:
         return state, GuardDecision(
-            Action.STOP, "max_restores", f"{reason} ; {state.restores} restaurations déjà tentées", healthy=False
+            Action.STOP,
+            "max_restores",
+            f"{reason} ; {state.restores_total} restaurations déjà effectuées dans ce run (plafond {cfg.max_restores})",
+            healthy=False,
         )
-    fresh = GuardState(restores=state.restores + 1)  # séries remises à zéro : on repart du checkpoint sain
+    if state.restores >= cfg.max_consecutive_restores:
+        return state, GuardDecision(
+            Action.STOP,
+            "max_consecutive_restores",
+            f"{reason} ; {state.restores} restaurations consécutives sans itération saine "
+            f"(plafond {cfg.max_consecutive_restores})",
+            healthy=False,
+        )
+    # séries remises à zéro : on repart du checkpoint sain
+    fresh = GuardState(restores=state.restores + 1, restores_total=state.restores_total + 1)
     return fresh, GuardDecision(Action.RESTORE, rule, reason, healthy=False)

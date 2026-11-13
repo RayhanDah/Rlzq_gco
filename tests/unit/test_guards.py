@@ -96,16 +96,42 @@ def test_ev_streak_resets_on_positive() -> None:
     assert state.ev_streak == 0  # 0 n'est pas < 0
 
 
-def test_max_restores_prevents_endless_loop_and_healthy_iteration_resets() -> None:
+def test_consecutive_restores_cap_prevents_endless_loop_and_healthy_iteration_resets_streak() -> None:
     nan = {**OK, "policy_loss": float("nan")}
     state = GuardState()
-    for _ in range(CFG.max_restores):
+    for _ in range(CFG.max_consecutive_restores):
         state, dec = _run(nan, state)
         assert dec.action is Action.RESTORE
     _, dec = _run(nan, state)
-    assert dec.action is Action.STOP and dec.rule == "max_restores"
+    assert dec.action is Action.STOP and dec.rule == "max_consecutive_restores"
     state, _ = _run(OK, state)
-    assert state.restores == 0
+    assert state.restores == 0 and state.restores_total == CFG.max_consecutive_restores  # le cumul ne se remet pas à 0
+
+
+def test_max_restores_counts_cumulative_restores_across_healthy_iterations() -> None:
+    # Revue T6 (A1.4) : avant, la remise à zéro par une itération saine rendait la limite sans effet sur un run qui
+    # diverge de temps en temps.
+    nan = {**OK, "policy_loss": float("nan")}
+    cfg = replace(CFG, max_restores=2, max_consecutive_restores=5)
+    state = GuardState()
+    for _ in range(2):
+        state, dec = evaluate(cfg, state, GuardObservation(nan))
+        assert dec.action is Action.RESTORE
+        state, dec = evaluate(cfg, state, GuardObservation(OK))  # itération saine entre deux
+        assert dec.action is Action.CONTINUE and state.restores == 0
+    _, dec = evaluate(cfg, state, GuardObservation(nan))
+    assert dec.action is Action.STOP and dec.rule == "max_restores" and "2" in dec.reason
+
+
+def test_restore_limits_are_validated() -> None:
+    with pytest.raises(ValueError):
+        GuardConfig(max_consecutive_restores=-1)
+    assert GuardConfig().max_restores == 3 and GuardConfig().max_consecutive_restores == 2
+
+
+def test_old_guard_state_dict_without_restores_total_still_loads() -> None:
+    # Un checkpoint antérieur à A1 n'a pas `restores_total` : GuardState(**dict) reste valide.
+    assert GuardState(**{"kl_streak": 1, "entropy_streak": 0, "ev_streak": 0, "restores": 1}).restores_total == 0
 
 
 def test_evaluate_is_pure() -> None:

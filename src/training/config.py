@@ -216,10 +216,16 @@ class RunConfig:
         return math.ceil(self.initial_states.anneal_timesteps / self.batch_agent_steps)
 
     def p_kick_at(self, iteration: int) -> float:
-        """`p_kick` à utiliser pour l'itération numéro `iteration` (0 = première) : linéaire puis constant."""
+        """`p_kick` à utiliser pour l'itération numéro `iteration` (0 = première) : linéaire puis constant.
+
+        L'annealing couvre `n = anneal_iterations` itérations (indices 0 à n-1) : l'itération 0 utilise `p_kick_start`,
+        l'itération n-1 (la dernière de l'annealing) utilise `p_kick_end`, et la valeur reste à la cible ensuite.
+        Avant A1 la cible n'était atteinte qu'à l'indice n, soit une itération trop tard (0,767 au lieu de 0,8 à la
+        dernière itération de `configs/smoke.yaml`). Cas dégénérés : n = 0 ou 1 (pas de rampe possible) : cible dès
+        l'itération 0."""
         st = self.initial_states
         n = self.anneal_iterations
-        frac = 1.0 if n == 0 else min(max(iteration, 0) / n, 1.0)
+        frac = 1.0 if n <= 1 else min(max(iteration, 0) / (n - 1), 1.0)
         return st.p_kick_start + frac * (st.p_kick_end - st.p_kick_start)
 
     # ---------------------------------------------------------------------------------------------- hash
@@ -305,6 +311,23 @@ def _build(cls: type[Any], data: Any, path: str) -> Any:
         raise ConfigError(f"{path} : {exc}") from exc
 
 
+_SCI_NO_DOT_RE = re.compile(r"^[+-]?\d+[eE][+-]?\d+$")
+
+
+def _sci_hint(value: Any, tp: type) -> str:
+    """Explication ajoutée au message quand une chaîne est en réalité une notation scientifique sans point : la
+    résolution YAML 1.1 de PyYAML exige un point (`2.0e-4`) et rend sinon `2e-4` comme une chaîne."""
+    if not isinstance(value, str) or not _SCI_NO_DOT_RE.match(value.strip()):
+        return ""
+    head = f" : {value!r} est une notation scientifique sans point, que PyYAML lit comme une chaîne ; "
+    if tp is float:
+        mantissa, exp = value.strip().lower().split("e")
+        return head + f"écrire {mantissa}.0e{exp} (avec un point)"
+    number = float(value)
+    as_int = f"{int(number)}" if number == int(number) else "l'entier en toutes lettres"
+    return head + f"écrire l'entier en toutes lettres ({as_int})"
+
+
 def _coerce(tp: Any, value: Any, path: str) -> Any:
     origin = get_origin(tp)
     if origin is Union or origin is types.UnionType:
@@ -328,11 +351,15 @@ def _coerce(tp: Any, value: Any, path: str) -> Any:
         return value
     if tp is int:
         if isinstance(value, bool) or not isinstance(value, int):
-            raise ConfigError(f"{path} : entier attendu, reçu {type(value).__name__} ({value!r})")
+            raise ConfigError(
+                f"{path} : entier attendu, reçu {type(value).__name__} ({value!r}){_sci_hint(value, int)}"
+            )
         return value
     if tp is float:
         if isinstance(value, bool) or not isinstance(value, int | float):
-            raise ConfigError(f"{path} : nombre attendu, reçu {type(value).__name__} ({value!r})")
+            raise ConfigError(
+                f"{path} : nombre attendu, reçu {type(value).__name__} ({value!r}){_sci_hint(value, float)}"
+            )
         return float(value)
     if tp is str:
         if not isinstance(value, str):
