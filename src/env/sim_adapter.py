@@ -284,6 +284,10 @@ class RocketGPUSimulator:
         grid["ang_vel"][arena_idx] = states.car_ang_vel
         grid["boost"][arena_idx] = states.car_boost
         grid["is_on_ground"][arena_idx] = states.car_on_ground
+        # `air_state` est uploadé tel quel (rocketgpu.cpp:2348-2362, canonicalisation sans effet dessus) :
+        # 0 OnGround, 4 InAir (rocketgpu.h:324) ; recalculé au tick suivant (env_step.hpp:5640). Ainsi `car_on_ground`
+        # reste une pure fonction de l'état sauvegardé.
+        grid["air_state"][arena_idx] = np.where(states.car_on_ground != 0, 0, 4)
         grid["has_jumped"][arena_idx] = states.car_has_jumped
         grid["has_double_jumped"][arena_idx] = states.car_has_double_jumped
         grid["has_flipped"][arena_idx] = states.car_has_flipped
@@ -307,6 +311,4 @@ class RocketGPUSimulator:
         balls["deactivation_time"][arena_idx] = 0.0
         balls["constrained_2d"][arena_idx] = 0
         self._sim.upload_state_array("ball_states", balls.ctypes.data, balls.shape[0])
-        # `air_state` n'est recalculé qu'au prochain tick : jusque-là, `car_on_ground` vaut la valeur injectée.
         self._refresh_on_ground()
-        self._on_ground[arena_idx] = states.car_on_ground

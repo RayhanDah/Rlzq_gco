@@ -73,8 +73,7 @@ Indice -> ligne de la table -> contrôles, et retour exact (90/90, testé) ; boo
    RocketGPU (`rocketgpu.h:324`, calculé en fin de tick `env_step.hpp:5640`), lu par `RocketGPUSimulator` dans un tampon
    u8 rempli sur place après step, reset, `set_states` et `load_state_dict` (une vue directe est impossible : `air_state`
    vaut 0 à 4 ; coût mesuré ~1,4 µs pour 256 arènes, ~2,3 µs pour 1024, contre ~1,6 ms et ~2,7 ms par step). L'écriture de
-   `is_on_ground` dans `set_states` et `state_dict` sont inchangés ; juste après `set_states`, `car_on_ground` vaut la valeur
-   injectée (air_state n'est recalculé qu'au tick suivant). Mesure après correction (`test_parity.py`, seed 7, 150
+   `is_on_ground` dans `set_states` et `state_dict` sont inchangés ; `set_states` écrit aussi `air_state` (0 au sol, 4 InAir sinon ; upload copié tel quel, `rocketgpu.cpp:2348-2362`, recalculé au tick suivant, `env_step.hpp:5640`), donc `car_on_ground` est partout une pure fonction de `air_state`, sans forçage : l'état reste entièrement dans le checkpoint (un forçage donnait un écart de 1,0 sur l'obs après restauration, mesuré en revue). Mesure après correction (`test_parity.py`, seed 7, 150
    décisions, 8 arènes, 2 voitures) : **0 ligne divergente sur 2400** dans chaque scénario (avant : 3 puis 4), colonne de
    l'autre voiture comprise ; le test est strict. `OBS_SCHEMA_VERSION` reste **1** : aucun checkpoint n'existe encore.
 2. **Délai d'action d'un tick de RLBot** (`docs/02_ecosystem.md:191`, `rlbot_delay`) : `BatchEnv` applique l'action sans
