@@ -33,12 +33,12 @@ Mis à jour : 2026-11-13 (**G2 validé**, Phase 3 terminée, Phase 4a à planifi
 
 - **Sprint Phase 3** (`production/sprints/2026-11-11.md`) : T0 à T7 mergés (`src/{obs,actions,env,models,training,
   rlbot_bot}`, `scripts/train.py`, `configs/smoke.yaml` ; ADR-003 et ADR-004 acceptés). Reprise exacte mesurée,
-  simulateur bit à bit (CPU). **Smoke test 1M steps : PASS** le 2026-11-13 sur XPU (,
+  simulateur bit à bit (CPU). **Smoke test 1M steps : PASS** le 2026-11-13 sur XPU (`docs/reports/smoke_test.md`,
   commit ea0e7de : 0 NaN, reprise à l'itération 9, ≈ 82k ts/s sur 13 s, non soutenu). **Phase 3 terminée.**
 
 ## Prochaines actions
-1. **Phase 4a (run court)** : à planifier () ; exige un adversaire gelé et le protocole d'évaluation
-   (), 3 seeds, GCO-S et GCO-std ; durée > 30 min ⇒ smoke test vert sur le même commit.
+1. **Phase 4a (run court)** : à planifier (`/plan-sprint`) ; exige un adversaire gelé et le protocole d'évaluation
+   (`src/eval`), 3 seeds, GCO-S et GCO-std ; durée > 30 min ⇒ smoke test vert sur le même commit.
 2. Avant le run court 4a : points de la revue T6 listés dans le sprint (détection de S1, checkpoint à l'itération 0,
    journal après restauration), délai d'action d'un tick de RLBot en ablation.
 3. Sonde TPU (`rayhanda/rlgco-probe-tpu`) toujours en file le 2026-11-13 : récupérer `probe.json`, compléter M2c.
