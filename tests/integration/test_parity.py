@@ -120,7 +120,6 @@ class ParityStats:
     max_abs: dict[str, float] = field(default_factory=dict)
     mismatch_rows: dict[str, int] = field(default_factory=dict)
     on_ground_diff_rows: int = 0
-    unexplained_on_ground: int = 0
     jump_flag_rows: int = 0
     inactive_pads: int = 0
     flipped_rows: int = 0
@@ -148,9 +147,8 @@ _BLOCKS = {
     "soi_flip": slice(S.SELF.start + S.CAR_HAS_FLIP_OR_JUMP, S.SELF.start + S.CAR_HAS_FLIP_OR_JUMP + 1),
     "soi_demoed": slice(S.SELF.start + S.CAR_IS_DEMOED, S.SELF.start + S.CAR_IS_DEMOED + 1),
     "soi_has_jumped": slice(S.SELF.start + S.CAR_HAS_JUMPED, S.SELF.start + S.CAR_HAS_JUMPED + 1),
-    "autre": slice(S.OTHERS_START, S.OBS_DIM),  # `on_ground` de l'autre voiture exclu (voir `_compare`)
+    "autre": slice(S.OTHERS_START, S.OBS_DIM),  # inclut `on_ground` de l'autre voiture
 }
-_OTHER_ON_GROUND = S.OTHERS_START + S.CAR_ON_GROUND
 
 
 def run_closed_loop(scenario: str, n_decisions: int, seed: int, euler_noise: float = 0.0) -> ParityStats:
@@ -210,15 +208,10 @@ def _compare(stats: ParityStats, sim: RocketGPUSimulator, ref: F32, decided: dic
     got = np.stack([decided[i] for i in range(ref.shape[0])])
     cars = sim.raw_arrays["car_states"]
     diff = np.abs(got - ref)
-    # `on_ground` : RLBot ne l'expose que via AirState, où Jumping (1) et Dodging (3) priment sur « au sol ». Les lignes
-    # où il diffère doivent toutes être de ce type ; sinon l'écart est inexpliqué (`unexplained_on_ground`).
-    air_override = (cars["is_on_ground"] != 0) & np.isin(cars["air_state"], (1, 3))
+    # `on_ground` (soi et autre) comparé comme les autres colonnes : `air_state == 0` des deux côtés (ADR-004 §3.1).
     own_bad = diff[:, S.SELF.start + S.CAR_ON_GROUND] > 0
-    other_bad = diff[:, _OTHER_ON_GROUND] > 0
-    other_override = air_override.reshape(-1, 2)[:, ::-1].reshape(-1)  # l'« autre » voiture, en 1v1
-    stats.unexplained_on_ground += int((own_bad & ~air_override).sum() + (other_bad & ~other_override).sum())
-    stats.on_ground_diff_rows += int(own_bad.sum())
-    diff[:, _OTHER_ON_GROUND] = 0.0
+    other_bad = diff[:, S.OTHERS_START + S.CAR_ON_GROUND] > 0
+    stats.on_ground_diff_rows += int((own_bad | other_bad).sum())
     for name, sl in _BLOCKS.items():
         d = diff[:, sl]
         stats.max_abs[name] = max(stats.max_abs.get(name, 0.0), float(d.max()))
@@ -242,8 +235,7 @@ def stats(request: pytest.FixtureRequest) -> ParityStats:
 def test_obs_adaptateur_egale_obs_entrainement(stats: ParityStats) -> None:
     assert stats.n_compared > 0
     for name in _BLOCKS:
-        if name != "soi_on_ground":
-            assert stats.max_abs[name] <= TOL[name], f"{name}: écart {stats.max_abs[name]:.3g} > {TOL[name]:.3g}"
+        assert stats.max_abs[name] <= TOL[name], f"{name}: écart {stats.max_abs[name]:.3g} > {TOL[name]:.3g}"
 
 
 def test_couverture_non_vide(stats: ParityStats) -> None:
@@ -257,9 +249,10 @@ def test_aller_retour_actions_et_boost_plein_gaz(stats: ParityStats) -> None:
     assert stats.boost_without_gas == 0
 
 
-def test_on_ground_ecart_explique(stats: ParityStats) -> None:
-    """Seul écart attendu : AirState Jumping/Dodging alors que le sim a `is_on_ground = 1` (ADR-004 §2)."""
-    assert stats.unexplained_on_ground == 0
+def test_on_ground_strict(stats: ParityStats) -> None:
+    """`on_ground` est identique des deux côtés, soi et autre voiture : aucun écart toléré (ADR-004 §3.1)."""
+    assert stats.on_ground_diff_rows == 0
+    assert stats.jump_flag_rows > 0  # non vacueux : des lignes avec `is_on_ground = 1` et AirState Jumping existent
 
 
 def test_quantification_des_angles_16_bits() -> None:

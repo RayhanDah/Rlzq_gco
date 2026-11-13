@@ -315,3 +315,87 @@ def test_c_arene_non_reinitialisee_bit_exacte_quand_une_autre_est_teleportee() -
     assert touches_w > 0 and touches_t == touches_w  # le test exerce bien un contact voiture-balle
     for k, (a, b) in enumerate(zip(witness, tested, strict=True)):
         assert np.array_equal(a, b), f"écart au step {k} : max {np.abs(a - b).max()}"
+
+
+def test_car_on_ground_suit_air_state_pendant_un_saut() -> None:
+    """ADR-004 §3.1 : `car_on_ground` = `air_state == 0` (OnGround), y compris quand `is_on_ground = 1` en saut."""
+    n_envs = 4
+    sim = RocketGPUSimulator(n_envs, 2, 1)
+    sim.reset_to_kickoff(np.arange(n_envs, dtype=np.int64), np.arange(n_envs, dtype=np.uint64))
+    st = sim.state()
+    assert (st.car_on_ground == 1).all()
+    jump = int(np.flatnonzero((ACTION_TABLE[:, 5] == 1) & (ACTION_TABLE[:, 6] == 0) & (ACTION_TABLE[:, 0] == 0))[0])
+    actions = np.full(n_envs * 2, jump, dtype=np.int64)
+    cars = sim.raw_arrays["car_states"]
+    saw_override = False  # is_on_ground = 1 alors que air_state != 0
+    for _ in range(40):
+        sim.step(actions)
+        air = cars["air_state"].reshape(n_envs, 2)
+        assert np.array_equal(st.car_on_ground, (air == 0).astype(np.uint8))
+        saw_override |= bool(((cars["is_on_ground"].reshape(n_envs, 2) != 0) & (air != 0)).any())
+    assert (st.car_on_ground == 0).any()  # des voitures ont quitté OnGround
+    assert saw_override  # le cas qui divergeait avant : a bien été traversé
+
+
+def _mixed_states(n: int) -> InitialStates:
+    """`n` arènes, voitures alternativement au sol et en vol (téléportation générique)."""
+    st = still_state((0.0, 0.0, 500.0), (0.0, 0.0, 0.0))
+    fly = (np.arange(n) % 2 == 1)[:, None] & np.ones((n, 2), dtype=bool)
+    pos = np.tile(st.car_pos, (n, 1, 1))
+    pos[fly, 2] = 800.0
+    one = np.ones((n, 2), dtype=np.uint8)
+    zero = np.zeros((n, 2), dtype=np.uint8)
+    return InitialStates(
+        ball_pos=np.tile(st.ball_pos, (n, 1)),
+        ball_vel=np.zeros((n, 3), dtype=np.float32),
+        ball_ang_vel=np.zeros((n, 3), dtype=np.float32),
+        car_pos=pos,
+        car_vel=np.zeros((n, 2, 3), dtype=np.float32),
+        car_ang_vel=np.zeros((n, 2, 3), dtype=np.float32),
+        car_quat=np.tile(st.car_quat, (n, 1, 1)),
+        car_boost=np.full((n, 2), 33.0, dtype=np.float32),
+        car_on_ground=np.where(fly, 0, one).astype(np.uint8),
+        car_has_jumped=zero,
+        car_has_double_jumped=zero,
+        car_has_flipped=zero,
+        car_air_time_since_jump=np.zeros((n, 2), dtype=np.float32),
+    )
+
+
+def test_set_states_car_on_ground_est_air_state_immediatement_et_apres_un_tick() -> None:
+    n = 6
+    sim = RocketGPUSimulator(n, 2, 1)
+    sim.reset_to_kickoff(np.arange(n, dtype=np.int64), np.arange(n, dtype=np.uint64))
+    sim.set_states(np.arange(n, dtype=np.int64), _mixed_states(n))
+    st, cars = sim.state(), sim.raw_arrays["car_states"]
+    air = cars["air_state"].reshape(n, 2)
+    assert np.array_equal(st.car_on_ground, (air == 0).astype(np.uint8))
+    assert st.car_on_ground[0].all() and not st.car_on_ground[1].any()  # sol / vol, tout de suite
+    sim.step(np.full(n * 2, IDLE, dtype=np.int64))
+    air = cars["air_state"].reshape(n, 2)
+    assert np.array_equal(st.car_on_ground, (air == 0).astype(np.uint8))
+    assert st.car_on_ground[0].all() and not st.car_on_ground[1].any()  # cohérent après un tick
+
+
+def test_reset_to_kickoff_remet_car_on_ground_a_1_tout_de_suite() -> None:
+    n = 4
+    sim = RocketGPUSimulator(n, 2, 1)
+    sim.set_states(np.arange(n, dtype=np.int64), _mixed_states(n))
+    st = sim.state()
+    assert not st.car_on_ground.all()
+    sim.reset_to_kickoff(np.arange(n, dtype=np.int64), np.arange(n, dtype=np.uint64))
+    assert (st.car_on_ground == 1).all()
+
+
+def test_sauvegarde_restauration_car_on_ground_et_obs_identiques_avant_tout_step() -> None:
+    env, sim, _ = make_env(n_envs=16, p_kick=0.0)
+    env.reset(3)
+    snap = env.state_dict()
+    env2, sim2, _ = make_env(n_envs=16, p_kick=0.0)
+    env2.reset(99)
+    assert env2.load_state_dict(snap) is None
+    assert np.array_equal(sim2.state().car_on_ground, sim.state().car_on_ground)
+    assert (sim.state().car_on_ground == 0).any()  # non vacueux : des voitures téléportées en vol
+    obs1 = env._build_obs(sim.state(), env._prev_idx)
+    obs2 = env2._build_obs(sim2.state(), env2._prev_idx)
+    assert np.array_equal(obs1, obs2)

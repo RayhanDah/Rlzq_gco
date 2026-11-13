@@ -34,7 +34,7 @@ Machine : Zenbook 14 (Core Ultra 5 125H), RocketGPU CPU `vendor/build/rocketgpu-
   blocs dépendant de l'aller-retour quaternion -> Euler -> quaternion ≤ **7,2e-7** (avant, haut, ang_vel locale,
   balle locale, autre voiture). Tolérances : 1e-6 et 1e-5 (règle `rlbot.md`).
 - Quantification des angles à 2π/65536 (source tierce, non vérifiée) : écart ≤ **1,2e-4** sur ces blocs.
-- Écart `on_ground` : 3 puis 4 lignes sur 2400 (0,13 à 0,17 %), toutes en AirState Jumping avec `is_on_ground = 1`.
+- Écart `on_ground` avant correction : 3 puis 4 lignes sur 2400 (0,13 à 0,17 %), toutes en AirState Jumping avec `is_on_ground = 1` ; après correction (§3.1) : 0.
   Relevé séparé (64 arènes, 1200 ticks, actions aléatoires, seed 3, échantillon tous les 8 ticks) : 18 états sur 858 en
   Jumping ont `is_on_ground = 1` (2,1 %), z de 24 à 258 : non séparables par l'altitude.
 - Couverture (assertée) : pads inactifs, vol, double saut, flip, fenêtre de dodge. Démolition : jamais observée dans le sim.
@@ -69,10 +69,13 @@ Contrôles : `ControllerState(throttle, steer, pitch, yaw, roll: float ; jump, b
 Indice -> ligne de la table -> contrôles, et retour exact (90/90, testé) ; boost => plein gaz au sol (testé).
 
 ### 3. Points à escalader (aucun fichier `src/obs` ni `src/env` modifié ici)
-1. **`on_ground`** : pour que l'entraînement lise la même grandeur que le bot, `BatchState.car_on_ground` devrait venir de
-   `air_state == 0` de RocketGPU (champ présent dans `car_states`, `air_state`) et non de `is_on_ground`. Sinon 0,15 % des
-   obs (2 % des états en saut) diffèrent d'un bit de drapeau. Décision de schéma : `obs-action-engineer` / tech-director.
-   Pas de nouvelle version de schéma nécessaire si la table de pads et le builder restent ; à trancher.
+1. **`on_ground`** : **décision appliquée** (2026-11-13, T7b). `BatchState.car_on_ground` = `air_state == 0` (OnGround) de
+   RocketGPU (`rocketgpu.h:324`, calculé en fin de tick `env_step.hpp:5640`), lu par `RocketGPUSimulator` dans un tampon
+   u8 rempli sur place après step, reset, `set_states` et `load_state_dict` (une vue directe est impossible : `air_state`
+   vaut 0 à 4 ; coût mesuré ~1,4 µs pour 256 arènes, ~2,3 µs pour 1024, contre ~1,6 ms et ~2,7 ms par step). L'écriture de
+   `is_on_ground` dans `set_states` et `state_dict` sont inchangés ; `set_states` écrit aussi `air_state` (0 au sol, 4 InAir sinon ; upload copié tel quel, `rocketgpu.cpp:2348-2362`, recalculé au tick suivant, `env_step.hpp:5640`), donc `car_on_ground` est partout une pure fonction de `air_state`, sans forçage : l'état reste entièrement dans le checkpoint (un forçage donnait un écart de 1,0 sur l'obs après restauration, mesuré en revue). Mesure après correction (`test_parity.py`, seed 7, 150
+   décisions, 8 arènes, 2 voitures) : **0 ligne divergente sur 2400** dans chaque scénario (avant : 3 puis 4), colonne de
+   l'autre voiture comprise ; le test est strict. `OBS_SCHEMA_VERSION` reste **1** : aucun checkpoint n'existe encore.
 2. **Délai d'action d'un tick de RLBot** (`docs/02_ecosystem.md:191`, `rlbot_delay`) : `BatchEnv` applique l'action sans
    délai. Non modélisé ici ; effet à mesurer en Phase 5 ; à arbitrer par infra-perf-lead / rl-algo-lead (délai à l'entraînement ?).
 3. Si une mesure Phase 5 montre un champ faux (ex. `angular_velocity`), le retirer de l'obs = nouveau `OBS_SCHEMA_VERSION`.
