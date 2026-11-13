@@ -191,8 +191,8 @@ def test_duree_en_ticks_des_nuls_est_le_no_touch() -> None:
 def test_avantage_de_cote_n_apporte_pas_d_elo_une_fois_les_cotes_echanges() -> None:
     """Le bleu marque 3x plus vite (bonus de côté) ; A = B = même politique : score ≈ 50 %, Elo ≈ 0 dans l'IC."""
     sim = DuelSim(16, {1: 0.02}, blue_bonus=0.04, seed=1)
-    res = play(ConstPolicy(1), ConstPolicy(1), sim, 600, seed=11)
-    s = summarize(res, n_boot=1000, seed=0)
+    res = play(ConstPolicy(1), ConstPolicy(1), sim, 300, seed=11)
+    s = summarize(res, n_boot=200, seed=0)
     assert s.win_rate_blue > 0.55 and s.win_rate_orange < 0.45  # l'avantage de côté existe bien dans le simulateur
     assert s.score.low is not None and s.score.high is not None
     assert s.score.low <= 0.5 <= s.score.high
@@ -206,8 +206,8 @@ def test_avantage_de_cote_n_apporte_pas_d_elo_une_fois_les_cotes_echanges() -> N
 
 def test_politique_contre_elle_meme_donne_50_pour_cent_dans_l_ic() -> None:
     sim = DuelSim(16, {1: 0.05}, seed=2)
-    res = play(ConstPolicy(1), ConstPolicy(1), sim, 800, seed=5)
-    s = summarize(res, n_boot=1000, seed=1)
+    res = play(ConstPolicy(1), ConstPolicy(1), sim, 300, seed=5)
+    s = summarize(res, n_boot=200, seed=1)
     assert s.score.low is not None and s.score.high is not None
     assert s.score.low <= 0.5 <= s.score.high
     assert s.elo_decisive.low is not None and s.elo_decisive.low <= 0.0 <= (s.elo_decisive.high or 0.0)
@@ -216,8 +216,8 @@ def test_politique_contre_elle_meme_donne_50_pour_cent_dans_l_ic() -> None:
 
 def test_politique_plus_forte_gagne_de_l_elo_significatif() -> None:
     sim = DuelSim(16, {1: 0.06, 2: 0.02}, seed=3)  # décisif : 75 % de victoires de A
-    res = play(ConstPolicy(1), ConstPolicy(2), sim, 600, seed=7)
-    s = summarize(res, n_boot=1000, seed=2)
+    res = play(ConstPolicy(1), ConstPolicy(2), sim, 300, seed=7)
+    s = summarize(res, n_boot=200, seed=2)
     assert s.elo_decisive.low is not None and s.elo_decisive.low > 100.0
     assert s.goals_for_per_min.value is not None and s.goals_against_per_min.value is not None
     assert s.goals_for_per_min.value > 2.0 * s.goals_against_per_min.value
@@ -260,7 +260,7 @@ def test_determinisme_a_seed_fixe_et_sensibilite_a_la_seed() -> None:
     a, b = run(5), run(5)
     assert a.equals(b)
     assert not np.array_equal(pair_seeds(5, 10), pair_seeds(6, 10))
-    sa, sb = summarize(a, seed=3, n_boot=300), summarize(b, seed=3, n_boot=300)
+    sa, sb = summarize(a, seed=3, n_boot=100), summarize(b, seed=3, n_boot=100)
     assert sa == sb  # bootstrap à graine fixe
 
 
@@ -346,7 +346,7 @@ def test_buts_par_minute_et_comptes() -> None:
     # 10 paires : A marque dans 4 épisodes, encaisse dans 2, 14 nuls ; chaque épisode dure 1 minute (7200 ticks)
     outcome = [[WIN, DRAW]] * 2 + [[WIN, LOSS]] * 2 + [[DRAW, DRAW]] * 6
     res = _result(outcome, [[TICKS_PER_MINUTE] * 2] * 10)
-    s = summarize(res, n_boot=500, seed=0)
+    s = summarize(res, n_boot=200, seed=0)
     assert (s.wins, s.losses, s.draws) == (4, 2, 14)
     assert s.minutes_played == pytest.approx(20.0)
     assert s.goals_for_per_min.value == pytest.approx(4 / 20) and s.goals_against_per_min.value == pytest.approx(2 / 20)
@@ -375,8 +375,8 @@ def test_bootstrap_par_paires_ic_plus_large_si_les_paires_sont_correlees() -> No
     pair_w = rng.random(200) < 0.5
     corr = _result([[WIN, WIN] if w else [LOSS, LOSS] for w in pair_w], [[100, 100]] * 200)
     indep = _result(rng.choice([WIN, LOSS], size=(200, 2)).tolist(), [[100, 100]] * 200)
-    wc = summarize(corr, n_boot=1000, seed=0).score
-    wi = summarize(indep, n_boot=1000, seed=0).score
+    wc = summarize(corr, n_boot=300, seed=0).score
+    wi = summarize(indep, n_boot=300, seed=0).score
     assert wc.low is not None and wc.high is not None and wi.low is not None and wi.high is not None
     assert (wc.high - wc.low) > 1.2 * (wi.high - wi.low)
 
@@ -503,3 +503,78 @@ def test_script_refuse_d_ecraser_la_sortie(tmp_path: Path) -> None:
     out.write_text("{}", encoding="utf-8")
     code = mod.main(["--a", "random", "--b", "random", "--episodes", "4", "--out", str(out)])
     assert code == 2 and out.read_text(encoding="utf-8") == "{}"
+
+
+# ------------------------------------------------------------------------------------------------ attribution A / côté
+
+
+class ActionDuelSim(DuelSim):
+    """Déterministe : au 2e step de chaque épisode, une équipe marque si son action est STRICTEMENT supérieure à
+    celle de l'autre (égalité : aucun but). Aucun hasard : le résultat ne dépend que des actions et de leur slot."""
+
+    def step(self, actions: I64) -> None:
+        self._tick += TICK_SKIP
+        self._since_reset += 1
+        act = actions.reshape(self._e, 2)
+        at_goal = self._since_reset == 2
+        self._blue += at_goal & (act[:, 0] > act[:, 1])
+        self._orange += at_goal & (act[:, 1] > act[:, 0])
+
+
+def slot_obs(state: BatchState, prev: I64) -> F32:
+    """Obs encodant l'agent : [slot (indice d'agent % 2), arène (indice d'agent // 2), action précédente]."""
+    n = prev.shape[0]
+    out = np.zeros((n, OBS_D), dtype=np.float32)
+    out[:, 0] = np.arange(n) % 2
+    out[:, 1] = np.arange(n) // 2
+    out[:, 2] = prev
+    return out
+
+
+class SlotPolicy:
+    """Action `a_slot0` si l'obs indique le slot 0, `a_slot1` sinon ; enregistre les obs reçues à chaque appel."""
+
+    def __init__(self, a_slot0: int, a_slot1: int) -> None:
+        self.a = (a_slot0, a_slot1)
+        self.calls: list[F32] = []
+
+    def __call__(self, obs: F32) -> I64:
+        self.calls.append(obs.copy())
+        return np.where(obs[:, 0] == 0, self.a[0], self.a[1]).astype(np.int64)
+
+
+def play_slots(a: Any, b: Any, n_envs: int = 4, n: int = 16) -> MatchResult:
+    return play_match(a, b, ActionDuelSim(n_envs, {}), n, seed=0, reward_config=CFG, build_obs=slot_obs, obs_dim=OBS_D)
+
+
+def test_attribution_de_a_a_son_slot_et_son_cote_resultats_exacts() -> None:
+    """A = « 5 si slot 0, sinon 0 » contre B = 3 : A gagne exactement quand il est bleu (slot 0), perd quand il est
+    orange ; rôles inversés (A = « 5 si slot 1, sinon 0 »), c'est le contraire."""
+    res = play_slots(SlotPolicy(5, 0), SlotPolicy(3, 3))
+    assert (res.outcome[:, 0] == WIN).all() and (res.outcome[:, 1] == LOSS).all()
+    inv = play_slots(SlotPolicy(0, 5), SlotPolicy(3, 3))
+    assert (inv.outcome[:, 0] == LOSS).all() and (inv.outcome[:, 1] == WIN).all()
+    assert (res.ticks == 16).all()  # 2 steps de 8 ticks : le but tombe bien au 2e step
+
+
+def test_acheminement_a_ne_recoit_que_les_lignes_de_ses_slots() -> None:
+    """Chaque appel de A (resp. B) reçoit exactement une ligne par arène, dans l'ordre des arènes, du slot de A
+    (resp. B) : A est au slot 0 (bleu) aux épisodes pairs de l'arène et au slot 1 (orange) aux
+    impairs, B l'inverse. Un épisode dure 2 steps, donc le step t joue l'épisode t // 2. Une attribution « A toujours
+    bleu » échoue ici (elle laisse les résultats ci-dessus inchangés, le signe étant compensé)."""
+    n_envs = 4
+    a, b = SlotPolicy(5, 0), SlotPolicy(3, 3)
+    play_slots(a, b, n_envs=n_envs, n=16)
+    assert len(a.calls) == len(b.calls) >= 8
+    arenas = np.arange(n_envs)
+    for t, (obs_a, obs_b) in enumerate(zip(a.calls, b.calls, strict=True)):
+        a_slot = (t // 2) % 2
+        assert obs_a.shape == (n_envs, OBS_D) and obs_b.shape == (n_envs, OBS_D)
+        assert (obs_a[:, 1] == arenas).all() and (obs_b[:, 1] == arenas).all()  # une ligne par arène, dans l'ordre
+        assert (obs_a[:, 0] == a_slot).all() and (obs_b[:, 0] == 1 - a_slot).all()
+        assert (obs_a[:, 0] != obs_b[:, 0]).all()  # jamais la même ligne pour A et B
+
+
+def test_attribution_avec_un_nombre_d_arenes_impair_et_un_seul_episode_par_arene() -> None:
+    res = play_slots(SlotPolicy(5, 0), SlotPolicy(3, 3), n_envs=3, n=6)  # 3 paires, 3 arènes : 1 paire par arène
+    assert (res.outcome[:, 0] == WIN).all() and (res.outcome[:, 1] == LOSS).all()

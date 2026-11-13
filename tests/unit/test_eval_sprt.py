@@ -1,36 +1,25 @@
-"""SPRT (`eval.sprt`) : bornes de Wald, modèle de nuls, erreurs nominales et nombre d'épisodes par simulation."""
+"""SPRT (`eval.sprt`), intervalle de Wilson et critère sur les décisifs : contrôles déterministes et rapides.
+
+Les simulations Monte-Carlo (erreurs nominales, nombre moyen d'épisodes, nuls, côtés) sont dans
+`tests/integration/test_eval_stats.py`.
+"""
 
 from __future__ import annotations
 
 import math
 
 import numpy as np
-import numpy.typing as npt
 import pytest
 
-from eval.rating import elo_to_score
-from eval.sprt import Decision, SPRTConfig, sprt_scan, sprt_status
-
-N_RUNS = 4000
-SE_FACTOR = 3.0  # tolérance = 3 écarts-types binomiaux (erreur de Monte-Carlo, graine fixe)
-
-
-def _simulate(
-    p_win: float, p_draw: float, cfg: SPRTConfig, seed: int, check_every: int = 1
-) -> list[tuple[Decision, int]]:
-    """N_RUNS tests sur des résultats i.i.d. : victoire p_win, nul p_draw, défaite le reste."""
-    rng = np.random.default_rng(seed)
-    u = rng.random((N_RUNS, cfg.max_episodes))
-    outcomes: npt.NDArray[np.int8] = np.where(u < p_win, 1, np.where(u < p_win + p_draw, 0, -1)).astype(np.int8)
-    out = []
-    for row in outcomes:
-        r = sprt_scan(row, cfg, check_every=check_every)
-        out.append((r.decision, r.n_episodes))
-    return out
-
-
-def _decisive_p(elo: float) -> float:
-    return elo_to_score(elo)
+from eval.rating import wilson_interval
+from eval.sprt import (
+    Decision,
+    DecisiveVerdict,
+    SPRTConfig,
+    decisive_win_test,
+    sprt_scan,
+    sprt_status,
+)
 
 
 def test_bornes_de_wald_et_hypotheses() -> None:
@@ -52,6 +41,8 @@ def test_hypotheses_invalides() -> None:
         SPRTConfig(alpha=0.0)
     with pytest.raises(ValueError):
         SPRTConfig(max_episodes=0)
+    with pytest.raises(ValueError):
+        SPRTConfig(max_decisive=0)
 
 
 def test_les_nuls_ne_changent_pas_le_log_rapport() -> None:
@@ -59,7 +50,7 @@ def test_les_nuls_ne_changent_pas_le_log_rapport() -> None:
     base = sprt_status(30, 0, 20, cfg)
     with_draws = sprt_status(30, 400, 20, cfg)
     assert with_draws.llr == base.llr  # modèle de Davidson : les nuls n'informent pas sur Δ
-    assert with_draws.n_episodes == 450
+    assert with_draws.n_episodes == 450 and with_draws.n_decisive == 50
 
 
 def test_decisions_continuer_h1_h0_plafond() -> None:
@@ -72,6 +63,27 @@ def test_decisions_continuer_h1_h0_plafond() -> None:
     assert sprt_status(20, 60, 19, cfg).decision is Decision.CONTINUE  # 99 épisodes
     with pytest.raises(ValueError):
         sprt_status(-1, 0, 0, cfg)
+
+
+def test_plafond_en_parties_decisives_et_les_deux_compteurs() -> None:
+    cfg = SPRTConfig(max_episodes=10_000, max_decisive=40)
+    r = sprt_status(20, 900, 19, cfg)  # 39 décisifs, 939 épisodes : on continue
+    assert r.decision is Decision.CONTINUE and (r.n_episodes, r.n_decisive) == (939, 39)
+    r = sprt_status(20, 900, 20, cfg)  # 40 décisifs : plafond décisif atteint, loin du plafond d'épisodes
+    assert r.decision is Decision.CAP_REACHED and (r.n_episodes, r.n_decisive) == (940, 40)
+    d = r.as_dict()
+    assert d["n_episodes"] == 940 and d["n_decisive"] == 40
+    # une borne de Wald franchie avant le plafond l'emporte
+    assert sprt_status(40, 0, 0, SPRTConfig(max_decisive=40)).decision is Decision.ACCEPT_H1
+
+
+def test_scan_avec_plafond_decisif_s_arrete_au_bon_episode() -> None:
+    cfg = SPRTConfig(max_episodes=10_000, max_decisive=6)
+    seq = np.array([0, 0, 1, 0, -1, 0, 0, 1, -1, 0, 1, 0, -1, 0], dtype=np.int8)  # 6e décisif à l'épisode 13
+    r = sprt_scan(seq, cfg)
+    assert r.decision is Decision.CAP_REACHED and r.n_decisive == 6 and r.n_episodes == 13
+    r2 = sprt_scan(seq, cfg, check_every=2)  # évalué aux frontières de paires : 14 épisodes, 6 décisifs
+    assert r2.n_episodes == 14 and r2.n_decisive == 6
 
 
 def test_scan_s_arrete_au_premier_franchissement_et_aux_frontieres_de_blocs() -> None:
@@ -95,45 +107,56 @@ def test_plafond_hors_frontiere_de_bloc_evalue_au_plafond() -> None:
     assert r.decision is Decision.CAP_REACHED and r.n_episodes == 7
 
 
-def test_erreur_de_type_i_sous_h0_conforme_a_alpha() -> None:
-    cfg = SPRTConfig()
-    res = _simulate(0.5, 0.0, cfg, seed=1)
-    alpha_hat = sum(d is Decision.ACCEPT_H1 for d, _ in res) / N_RUNS
-    se = math.sqrt(0.05 * 0.95 / N_RUNS)
-    # Wald : α_réel <= α / (1 - β) = 0,0526 (le dépassement des bornes rend le test conservateur) ;
-    # borne basse 0,03 : l'écart au nominal dû au dépassement reste modeste (mesuré 0,043-0,050 dans le doc §13.4).
-    assert 0.03 < alpha_hat <= 0.05 / 0.95 + SE_FACTOR * se
-    assert sum(d is Decision.CAP_REACHED for d, _ in res) / N_RUNS < 0.05  # plafond 1200 rarement atteint
+# ------------------------------------------------------------------------------------------------ Wilson
 
 
-def test_puissance_sous_h1_conforme_a_1_moins_beta() -> None:
-    cfg = SPRTConfig()
-    res = _simulate(_decisive_p(50.0), 0.0, cfg, seed=2)
-    power = sum(d is Decision.ACCEPT_H1 for d, _ in res) / N_RUNS
-    se = math.sqrt(0.95 * 0.05 / N_RUNS)
-    assert power >= 0.95 - SE_FACTOR * se - 0.01 and power < 0.995  # 0,01 : β réel <= β/(1-α) = 0,0526
+def test_wilson_valeur_de_reference_et_bords() -> None:
+    low, high = wilson_interval(8, 10)  # référence calculée à la main : (0,4902 ; 0,9434)
+    assert low == pytest.approx(0.4902, abs=5e-4) and high == pytest.approx(0.9434, abs=5e-4)
+    lo0, hi0 = wilson_interval(0, 20)
+    # défini à 0 succès (Wald donnerait un intervalle nul) ; abs=1e-12 : arrondi flottant ~1e-17
+    assert lo0 == pytest.approx(0.0, abs=1e-12) and 0.0 < hi0 < 0.2
+    lo1, hi1 = wilson_interval(20, 20)
+    assert hi1 == pytest.approx(1.0, abs=1e-12) and lo1 == pytest.approx(1.0 - hi0)  # symétrie p <-> 1 - p
+    low_one, _ = wilson_interval(8, 10, two_sided=False)
+    assert low_one > low  # unilatéral : z = 1,645 contre 1,96
+    narrow = wilson_interval(800, 1000)
+    assert narrow[1] - narrow[0] < high - low
+    for bad in ((1, 0), (-1, 5), (6, 5)):
+        with pytest.raises(ValueError):
+            wilson_interval(*bad)
+    with pytest.raises(ValueError):
+        wilson_interval(1, 2, alpha=1.0)
 
 
-def test_nombre_moyen_d_episodes_ordre_de_grandeur_du_doc() -> None:
-    """docs/01_papers.md §1.9 : ≈ 260 épisodes en moyenne à +50 Elo (Wald : 257 sous H0, 259 sous H1)."""
-    cfg = SPRTConfig()
-    for seed, p in ((3, 0.5), (4, _decisive_p(50.0))):
-        n = np.array([m for _, m in _simulate(p, 0.0, cfg, seed=seed)], dtype=np.float64)
-        assert 257 * 0.9 < n.mean() < 259 * 1.1  # ±10 % (SE de la moyenne ≈ 3, dépassement des bornes en sus)
+# ------------------------------------------------------------------------------------------------ critère décisif
 
 
-def test_avec_nuls_les_erreurs_sont_inchangees_et_n_est_divise_par_la_part_decisive() -> None:
-    cfg = SPRTConfig(max_episodes=4000)
-    res = _simulate(0.5 * 0.5, 0.5, cfg, seed=5)  # 50 % de nuls, H0 vraie
-    alpha_hat = sum(d is Decision.ACCEPT_H1 for d, _ in res) / N_RUNS
-    assert alpha_hat <= 0.05 / 0.95 + SE_FACTOR * math.sqrt(0.05 * 0.95 / N_RUNS)
-    res1 = _simulate(0.5 * _decisive_p(50.0) * 1.0, 0.5, cfg, seed=6)  # H1 vraie, 50 % de nuls
-    n = np.mean([m for _, m in res1])
-    assert 2 * 257 * 0.9 < n < 2 * 259 * 1.1  # deux fois plus d'épisodes à 50 % de nuls
+def test_critere_decisif_trois_issues() -> None:
+    passed = decisive_win_test(40, 10)  # 80 % sur 50 : borne basse de Wilson > 0,5
+    assert passed.verdict is DecisiveVerdict.PASSED and passed.wilson_low is not None and passed.wilson_low > 0.5
+    failed = decisive_win_test(30, 25)  # 55 % sur 55 : borne basse < 0,5
+    assert failed.verdict is DecisiveVerdict.FAILED and failed.wilson_low is not None and failed.wilson_low < 0.5
+    assert decisive_win_test(5, 25).verdict is DecisiveVerdict.FAILED  # franchement moins bon : échoué, pas indéterminé
 
 
-def test_plafond_reduit_donne_cap_reached_et_n_borne() -> None:
-    cfg = SPRTConfig(max_episodes=100)
-    res = _simulate(0.5, 0.0, cfg, seed=7)
-    assert all(m <= 100 for _, m in res)
-    assert any(d is Decision.CAP_REACHED for d, _ in res)
+def test_critere_decisif_jamais_reussi_faute_de_donnees() -> None:
+    for w, lo in ((0, 0), (5, 0), (19, 0), (3, 1)):
+        r = decisive_win_test(w, lo)  # < 20 décisifs
+        assert r.verdict is DecisiveVerdict.INDETERMINATE
+    # 5 sur 5 : la borne de Wilson dépasserait 0,5 mais le seuil min_decisive l'interdit
+    five = decisive_win_test(5, 0)
+    assert five.wilson_low is not None and five.wilson_low > 0.5
+    # mêmes comptes, seuil abaissé : la décision change, ce qui prouve que le seuil est ce qui protège
+    assert decisive_win_test(5, 0, min_decisive=5).verdict is DecisiveVerdict.PASSED
+    assert decisive_win_test(20, 0).verdict is DecisiveVerdict.PASSED  # 20 décisifs : seuil atteint
+    none = decisive_win_test(0, 0)
+    assert none.win_rate is None and none.wilson_low is None and none.decisive == 0
+    assert decisive_win_test(25, 0, alpha=0.05).as_dict()["verdict"] == "passed"
+
+
+def test_critere_decisif_validation() -> None:
+    with pytest.raises(ValueError):
+        decisive_win_test(-1, 3)
+    with pytest.raises(ValueError):
+        decisive_win_test(3, 3, min_decisive=0)

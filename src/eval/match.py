@@ -392,6 +392,12 @@ class MatchSummary:
     """Vrai si 0 victoire ou 0 défaite : Elo avec 0,5 victoire et 0,5 défaite fictives (borne, pas estimation)."""
     goals_for_per_min: Interval
     goals_against_per_min: Interval
+    goal_freq_for: Interval
+    """Fréquence de but de A par épisode (victoires / épisodes, nuls compris)."""
+    goal_freq_against: Interval
+    """Fréquence de but de B par épisode (défaites / épisodes)."""
+    n_decisive: int
+    """Parties décisives (victoires + défaites)."""
     minutes_played: float
     mean_episode_s: float
     n_boot: int
@@ -413,6 +419,9 @@ class MatchSummary:
             "elo_regularized": self.elo_regularized,
             "goals_for_per_min": self.goals_for_per_min.as_dict(),
             "goals_against_per_min": self.goals_against_per_min.as_dict(),
+            "goal_freq_for": self.goal_freq_for.as_dict(),
+            "goal_freq_against": self.goal_freq_against.as_dict(),
+            "n_decisive": self.n_decisive,
             "minutes_played": self.minutes_played,
             "mean_episode_s": self.mean_episode_s,
             "bootstrap": {"n_boot": self.n_boot, "alpha": self.alpha, "seed": self.boot_seed, "unit": "pair"},
@@ -437,7 +446,15 @@ def _elo_vec(w: npt.NDArray[np.float64], lo: npt.NDArray[np.float64]) -> npt.NDA
 def summarize(res: MatchResult, *, n_boot: int = 2000, seed: int = 0, alpha: float = 0.05) -> MatchSummary:
     """Agrégats avec IC percentile (1 - alpha) par bootstrap PAR PAIRES (les deux épisodes d'une paire, corrélés par le
     kickoff commun, restent ensemble), graine fixe. Buts par minute : buts de A (resp. encaissés) / minutes jouées,
-    toutes durées d'épisode comprises (nuls inclus)."""
+    toutes durées d'épisode comprises (nuls inclus). `goal_freq_*` : buts par épisode de chaque camp ; `n_decisive`.
+
+    Lecture de l'Elo « décisif » (`elo_decisive`, `elo_regularized`) :
+    - les réplicats bootstrap mélangent, près du bord (peu de victoires ou de défaites), des valeurs régularisées
+      (0,5 partie fictive par côté quand un réplicat a 0 victoire ou 0 défaite) et non régularisées ; l'IC près du
+      bord est donc approximatif et le drapeau `elo_regularized` ne qualifie que l'estimation ponctuelle ;
+    - l'Elo décisif ne distingue pas un agent qui marque rarement d'un agent qui domine : 3 victoires contre 1 défaite
+      sur 1 000 épisodes (99,6 % de nuls) donnent le même Elo que 750 contre 250. Il se lit toujours avec la fréquence
+      de but (`goal_freq_*`), le taux de nuls et `n_decisive` (cf. `eval.sprt.decisive_win_test`)."""
     out = res.outcome
     n_pairs = res.n_pairs
     w_p = (out == WIN).sum(axis=1).astype(np.float64)
@@ -455,6 +472,8 @@ def summarize(res: MatchResult, *, n_boot: int = 2000, seed: int = 0, alpha: flo
             "elo": _elo_vec(w, lo),
             "gf": _ratio(w, m),
             "ga": _ratio(lo, m),
+            "gfe": w / n,
+            "gae": lo / n,
         }
 
     point = stat(w_p.sum(keepdims=True), l_p.sum(keepdims=True), d_p.sum(keepdims=True), m_p.sum(keepdims=True))
@@ -484,6 +503,9 @@ def summarize(res: MatchResult, *, n_boot: int = 2000, seed: int = 0, alpha: flo
         elo_regularized=(w == 0 or lo_n == 0) and (w + lo_n) > 0,
         goals_for_per_min=interval("gf"),
         goals_against_per_min=interval("ga"),
+        goal_freq_for=interval("gfe"),
+        goal_freq_against=interval("gae"),
+        n_decisive=w + lo_n,
         minutes_played=float(m_p.sum()),
         mean_episode_s=float(res.ticks.mean() / PHYSICS_TICK_RATE_HZ),
         n_boot=n_boot,

@@ -35,7 +35,7 @@ import torch  # noqa: E402
 from env import RocketGPUSimulator, Simulator, SimulatorUnavailableError  # noqa: E402
 from env.batch_env import ObsBuilder  # noqa: E402
 from eval.match import load_policy, play_match, sprt_on_match, summarize  # noqa: E402
-from eval.sprt import SPRTConfig  # noqa: E402
+from eval.sprt import SPRTConfig, decisive_win_test  # noqa: E402
 from obs.schema import obs_dim as schema_obs_dim  # noqa: E402
 from rewards import RewardConfig  # noqa: E402
 from training.checkpoint import git_commit  # noqa: E402
@@ -136,6 +136,7 @@ def evaluate(
         },
         "policies": {"a": dataclasses.asdict(info_a), "b": dataclasses.asdict(info_b)},
         "summary": summary.as_dict(),
+        "decisive_test": decisive_win_test(summary.wins, summary.losses).as_dict(),
         "throughput": {
             "wall_s": res.wall_s,
             "episodes_per_s": res.n_episodes / res.wall_s,

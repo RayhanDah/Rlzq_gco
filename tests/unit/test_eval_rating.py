@@ -1,4 +1,7 @@
-"""Elo / Bradley-Terry (`eval.rating`) : conversions, récupération de forces connues, cas dégénérés explicites."""
+"""Elo / Bradley-Terry (`eval.rating`) : conversions, forces connues, cas dégénérés explicites (contrôles rapides).
+
+Couverture des IC bootstrap, largeur des IC et cas régularisé avec bootstrap : `tests/integration/test_eval_stats.py`.
+"""
 
 from __future__ import annotations
 
@@ -79,24 +82,14 @@ def test_deux_joueurs_egale_la_formule_directe() -> None:
     assert fit.elo[0] == pytest.approx(score_to_elo(0.7), abs=1e-6)
 
 
-def test_ic_bootstrap_couvre_la_verite_et_est_reproductible() -> None:
-    wins = _synthetic_wins(TRUE_ELO, n_games=300, seed=2)
-    r1 = rate_players(wins, anchor=0, n_boot=300, seed=7)
-    r2 = rate_players(wins, anchor=0, n_boot=300, seed=7)
+def test_ic_bootstrap_reproductible_ordonne_et_ancre_exacte() -> None:
+    wins = _synthetic_wins(TRUE_ELO, n_games=100, seed=2)
+    r1 = rate_players(wins, anchor=0, n_boot=30, seed=7)
+    r2 = rate_players(wins, anchor=0, n_boot=30, seed=7)
     assert np.array_equal(r1.ci_low, r2.ci_low) and np.array_equal(r1.ci_high, r2.ci_high)  # graine fixe
     assert r1.ci_low[0] == r1.ci_high[0] == 0.0  # l'ancre est exacte
-    assert (r1.ci_low <= r1.elo).all() and (r1.elo <= r1.ci_high).all()
-    # couverture de la vérité par IC 95 % : non garantie par joueur ; graine fixe, vérifiée à la mesure (ce test fige
-    # le résultat de la graine 2, il ne prouve pas la couverture nominale)
-    assert ((r1.ci_low <= TRUE_ELO) & (TRUE_ELO <= r1.ci_high)).all()
-    width = (r1.ci_high - r1.ci_low)[1:]
-    assert (width > 0).all() and (width < 120).all()
-
-
-def test_largeur_de_l_ic_decroit_avec_le_nombre_de_parties() -> None:
-    small = rate_players(_synthetic_wins(TRUE_ELO, 100, 3), n_boot=200, seed=0)
-    big = rate_players(_synthetic_wins(TRUE_ELO, 1600, 3), n_boot=200, seed=0)
-    assert ((big.ci_high - big.ci_low)[1:] < (small.ci_high - small.ci_low)[1:]).all()
+    assert (r1.ci_low <= r1.ci_high).all() and (r1.ci_high - r1.ci_low)[1:].min() > 0
+    assert list(np.argsort(r1.elo)) == list(np.argsort(TRUE_ELO))
 
 
 def test_joueur_invaincu_leve_par_defaut() -> None:
@@ -106,7 +99,7 @@ def test_joueur_invaincu_leve_par_defaut() -> None:
     with pytest.raises(DegenerateRatingError, match=r"invaincu|MLE inexistant"):
         fit_bradley_terry(wins)
     with pytest.raises(DegenerateRatingError):
-        rate_players(wins, n_boot=20)
+        rate_players(wins, n_boot=5)
 
 
 def test_joueur_sans_victoire_leve_par_defaut() -> None:
@@ -119,11 +112,10 @@ def test_prior_rend_l_elo_fini_et_signale_la_regularisation() -> None:
     wins = np.array([[0.0, 50.0, 50.0], [0.0, 0.0, 30.0], [0.0, 20.0, 0.0]])  # joueur 0 invaincu
     fit = fit_bradley_terry(wins, anchor=1, prior=0.5)
     assert fit.regularized and fit.converged and np.isfinite(fit.elo).all()
-    assert fit.elo[0] > fit.elo[2] > -1e9 and fit.elo[0] > 0  # classé premier, fini
-    res = rate_players(wins, anchor=1, n_boot=100, seed=0, prior=0.5)
-    assert res.regularized
+    assert fit.elo[0] > fit.elo[2] and fit.elo[0] > 0  # classé premier, fini
+    res = rate_players(wins, anchor=1, n_boot=5, seed=0, prior=0.5)
+    assert res.regularized and res.degenerate.tolist() == [True, False, False]  # seul le joueur 0 est invaincu
     assert np.isfinite(res.ci_low).all() and np.isfinite(res.ci_high).all()
-    assert res.degenerate.tolist() == [True, False, False]  # joueur 0 invaincu ; joueur 2 a des victoires (20 sur 1)
 
 
 def test_comparaisons_non_connexes_levent_meme_avec_prior() -> None:

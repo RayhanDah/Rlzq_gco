@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from statistics import NormalDist
 
 import numpy as np
 import numpy.typing as npt
@@ -41,6 +42,22 @@ def score_to_elo(score: float) -> float:
     if not 0.0 < score < 1.0:  # NaN => faux
         raise DegenerateRatingError(f"score {score} hors de ]0, 1[ : différence d'Elo infinie ou indéfinie")
     return ELO_SCALE * math.log10(score / (1.0 - score))
+
+
+def wilson_interval(successes: int, n: int, alpha: float = 0.05, *, two_sided: bool = True) -> tuple[float, float]:
+    """Intervalle de Wilson d'une proportion `successes / n`. `two_sided=True` : IC bilatéral de niveau 1 - alpha ;
+    `two_sided=False` : z = quantile 1 - alpha (borne basse unilatérale de niveau 1 - alpha, la haute est alors
+    prudente). Bien défini pour 0 et n succès (contrairement à l'intervalle de Wald). `n >= 1` exigé."""
+    if n < 1 or not 0 <= successes <= n:
+        raise ValueError(f"successes={successes}, n={n} : 0 <= successes <= n et n >= 1 attendus")
+    if not 0.0 < alpha < 1.0:
+        raise ValueError("alpha dans ]0, 1[")
+    z = NormalDist().inv_cdf(1.0 - alpha / 2.0 if two_sided else 1.0 - alpha)
+    p = successes / n
+    denom = 1.0 + z * z / n
+    centre = (p + z * z / (2.0 * n)) / denom
+    half = z * math.sqrt(p * (1.0 - p) / n + z * z / (4.0 * n * n)) / denom
+    return max(0.0, centre - half), min(1.0, centre + half)
 
 
 def regularized_elo(wins: float, losses: float, prior: float = 0.5) -> float:

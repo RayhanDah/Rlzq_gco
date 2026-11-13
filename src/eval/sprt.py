@@ -29,7 +29,7 @@ from dataclasses import dataclass
 import numpy as np
 import numpy.typing as npt
 
-from eval.rating import elo_to_score
+from eval.rating import elo_to_score, wilson_interval
 
 I8Array = npt.NDArray[np.int8]
 
@@ -39,7 +39,7 @@ class Decision(enum.Enum):
     ACCEPT_H1 = "accept_h1"
     ACCEPT_H0 = "accept_h0"
     CAP_REACHED = "cap_reached"
-    """Plafond d'épisodes atteint sans franchir de borne : ni H0 ni H1 acceptée (pas de promotion)."""
+    """Plafond (épisodes ou parties décisives) atteint sans franchir de borne : ni H0 ni H1 acceptée."""
 
 
 @dataclass(frozen=True)
@@ -50,6 +50,9 @@ class SPRTConfig:
     beta: float = 0.05
     max_episodes: int = 1200
     """Plafond sur le NOMBRE TOTAL d'épisodes (nuls compris) ; `docs/01_papers.md` §1.9 : 1 200."""
+    max_decisive: int | None = None
+    """Plafond optionnel sur le nombre de parties DÉCISIVES (victoires + défaites). Le test s'arrête au premier des deux
+    plafonds. Utile quand la part de nuls est très élevée (l'échantillon utile est alors rare)."""
 
     def __post_init__(self) -> None:
         if not self.elo1 > self.elo0:
@@ -58,6 +61,8 @@ class SPRTConfig:
             raise ValueError("alpha et beta dans ]0, 1[")
         if self.max_episodes < 1:
             raise ValueError("max_episodes >= 1")
+        if self.max_decisive is not None and self.max_decisive < 1:
+            raise ValueError("max_decisive >= 1 ou None")
 
     @property
     def p0(self) -> float:
@@ -94,6 +99,8 @@ class SPRTResult:
     draws: int
     losses: int
     n_episodes: int
+    n_decisive: int
+    """Victoires + défaites (les deux compteurs de plafond : `n_episodes` et `n_decisive`)."""
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -105,6 +112,7 @@ class SPRTResult:
             "draws": self.draws,
             "losses": self.losses,
             "n_episodes": self.n_episodes,
+            "n_decisive": self.n_decisive,
         }
 
 
@@ -123,17 +131,18 @@ def sprt_status(wins: int, draws: int, losses: int, cfg: SPRTConfig) -> SPRTResu
         d = Decision.ACCEPT_H1
     elif s <= cfg.lower:
         d = Decision.ACCEPT_H0
-    elif n >= cfg.max_episodes:
+    elif n >= cfg.max_episodes or (cfg.max_decisive is not None and wins + losses >= cfg.max_decisive):
         d = Decision.CAP_REACHED
     else:
         d = Decision.CONTINUE
-    return SPRTResult(d, s, cfg.lower, cfg.upper, wins, draws, losses, n)
+    return SPRTResult(d, s, cfg.lower, cfg.upper, wins, draws, losses, n, wins + losses)
 
 
 def sprt_scan(outcomes: Sequence[int] | npt.NDArray[np.integer], cfg: SPRTConfig, check_every: int = 1) -> SPRTResult:
     """Rejoue le test séquentiellement sur `outcomes` (+1 victoire, 0 nul, -1 défaite, dans l'ordre de jeu) en
     évaluant la décision après chaque bloc de `check_every` épisodes (2 = frontières de paires) et s'arrête au premier
-    franchissement de borne ou au plafond. Si les résultats s'épuisent avant toute décision : `CONTINUE`."""
+    franchissement de borne ou au premier plafond (épisodes ou décisifs).
+    Si les résultats s'épuisent avant toute décision : `CONTINUE`."""
     if check_every < 1:
         raise ValueError("check_every >= 1")
     o = np.asarray(outcomes)
@@ -148,7 +157,65 @@ def sprt_scan(outcomes: Sequence[int] | npt.NDArray[np.integer], cfg: SPRTConfig
     cw = np.concatenate([[0], np.cumsum(o == 1)])
     cl = np.concatenate([[0], np.cumsum(o == -1)])
     s = cw[ends] * cfg.win_increment + cl[ends] * cfg.loss_increment
-    hit = np.flatnonzero((s >= cfg.upper) | (s <= cfg.lower))
+    stop = (s >= cfg.upper) | (s <= cfg.lower)
+    if cfg.max_decisive is not None:
+        stop |= (cw[ends] + cl[ends]) >= cfg.max_decisive
+    hit = np.flatnonzero(stop)
     n = int(ends[hit[0]]) if hit.size else int(ends[-1])
     w, lo = int(cw[n]), int(cl[n])
     return sprt_status(w, n - w - lo, lo, cfg)
+
+
+class DecisiveVerdict(enum.Enum):
+    PASSED = "passed"
+    FAILED = "failed"
+    INDETERMINATE = "indeterminate"
+
+
+@dataclass(frozen=True)
+class DecisiveTestResult:
+    verdict: DecisiveVerdict
+    wins: int
+    losses: int
+    decisive: int
+    win_rate: float | None
+    """victoires / décisifs ; None sans partie décisive."""
+    wilson_low: float | None
+    wilson_high: float | None
+    min_decisive: int
+    alpha: float
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "verdict": self.verdict.value,
+            "wins": self.wins,
+            "losses": self.losses,
+            "decisive": self.decisive,
+            "win_rate": self.win_rate,
+            "wilson_low": self.wilson_low,
+            "wilson_high": self.wilson_high,
+            "min_decisive": self.min_decisive,
+            "alpha": self.alpha,
+        }
+
+
+def decisive_win_test(wins: int, losses: int, *, min_decisive: int = 20, alpha: float = 0.05) -> DecisiveTestResult:
+    """Critère sur les seules parties décisives : A est meilleur que B si la borne BASSE de Wilson (unilatérale, niveau
+    1 - alpha) de victoires / décisifs dépasse 0,5.
+
+    Issues : `PASSED` (borne basse > 0,5), `FAILED` (décisifs >= `min_decisive` et borne basse <= 0,5, c'est-à-dire
+    « pas démontré meilleur » et non « démontré moins bon »), `INDETERMINATE` (décisifs < `min_decisive`, y compris 0 :
+    jamais « réussi » faute de données, même avec 5 victoires sur 5). Les nuls n'entrent pas."""
+    if wins < 0 or losses < 0:
+        raise ValueError("comptes négatifs")
+    if min_decisive < 1:
+        raise ValueError("min_decisive >= 1")
+    n = wins + losses
+    if n == 0:
+        return DecisiveTestResult(DecisiveVerdict.INDETERMINATE, wins, losses, 0, None, None, None, min_decisive, alpha)
+    low, high = wilson_interval(wins, n, alpha, two_sided=False)
+    if n < min_decisive:
+        verdict = DecisiveVerdict.INDETERMINATE
+    else:
+        verdict = DecisiveVerdict.PASSED if low > 0.5 else DecisiveVerdict.FAILED
+    return DecisiveTestResult(verdict, wins, losses, n, wins / n, low, high, min_decisive, alpha)
