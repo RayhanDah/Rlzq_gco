@@ -1,0 +1,66 @@
+# Smoke test T6 (docs/PLAN.md Phase 3) : 1M timesteps agents sans NaN, reprise depuis un checkpoint en milieu de run,
+# débit mesuré. Lancer : python scripts/train.py configs/smoke.yaml --smoke  (voir scripts/train.py)
+# Cette config sert aussi de modèle de structure à configs/long_run.yaml (G3 exige une section `kill`).
+# Les flottants en notation scientifique s'écrivent 2.0e-4 (PyYAML lit 2e-4 comme une chaîne : refusé par le validateur).
+name: smoke
+seed: 0
+device: auto            # cuda, sinon xpu, sinon cpu (training.ppo.resolve_device)
+
+env:
+  n_envs: 4096          # ADR-001 M4
+  n_cars: 2             # 1v1 : 2 agents par arène
+  tick_skip: 8
+
+reward:
+  variant: GCO-std      # GCO-S | GCO-std | GCO-ext | scorer-only (docs/GCO_SPEC.md §3) ; aucune récompense ajoutée
+  no_touch_timeout_s: 20.0   # spec §2.2
+  max_episode_s: 120.0
+
+initial_states:         # spec §2.3 : p_kick 0,2 au départ, annealing linéaire vers >= 0,8 (GCO-std seulement)
+  p_kick_start: 0.2
+  p_kick_end: 0.8
+  anneal_timesteps: 1000000
+
+ppo:                    # sources : docs/01_papers.md §2 (total_iterations est dérivé du budget)
+  gamma: 0.995
+  gae_lambda: 0.95
+  clip: 0.2
+  lr_start: 2.0e-4
+  lr_end: 5.0e-5
+  ent_coef_start: 0.01
+  ent_coef_end: 0.002
+  max_grad_norm: 0.5
+  epochs: 2
+  minibatch_size: 25000
+  target_batch_size: 57344   # = 4096 arènes x 2 agents x 7 steps (sans effet : `collection.steps_per_batch` fait foi)
+
+collection:
+  steps_per_batch: 7    # ADR-001 M4 : 57 344 timesteps agents par lot
+  overlap: true         # apprentissage du lot k pendant la collecte du lot k+1 (staleness 1)
+
+budget:
+  total_timesteps: 1000000   # arrondi au lot supérieur : 18 itérations = 1 032 192 timesteps
+
+checkpoint:
+  every_iterations: 3   # assez fréquent pour exercer sauvegarde et rotation (keep 2) pendant le smoke test
+  keep: 2
+  include_sim_state: true    # reprise exacte (état du simulateur inclus)
+
+kill:                   # gardes (docs/PLAN.md, kill criteria préliminaires) ; décisions appliquées à chaque itération
+  kl_threshold: 0.05
+  kl_patience: 5        # KL approx > 0,05 pendant 5 itérations -> restauration du dernier checkpoint sain
+  entropy_floor_frac: 0.10   # entropie < 10 % de ln(90) avant S1 -> arrêt
+  n_actions: 90
+  entropy_patience: 1
+  ev_floor: 0.0         # explained variance < 0 pendant 50 itérations après S1 -> arrêt (S1 non détecté au sprint T6)
+  ev_patience: 50
+  max_restores: 3       # restaurations consécutives sans itération saine entre deux -> arrêt
+
+logging:
+  every_iterations: 1
+  fsync: false
+
+smoke:                  # exigences de `scripts/train.py --smoke`
+  resume_at_fraction: 0.5    # arrêt puis reprise depuis le checkpoint final à ~50 % du budget
+  require_resume: true
+  max_nan: 0
