@@ -51,6 +51,8 @@ def test_mini_run_reel_checkpoint_arret_reprise_sans_nan(tmp_path: Path) -> None
     assert second.status == "completed" and second.start_iteration == 3 and second.end_iteration == 6
     assert second.exact_env is True  # état du simulateur restauré bit à bit
     assert second.nan_detected == 0 and second.restores == 0 and second.decisions == []
+    assert first.checkpoints[0]["iteration"] == 0 and first.checkpoints[0]["healthy"] is True  # checkpoint initial (A1)
+    assert second.p_kick_final == pytest.approx(0.8)  # annealing de 6 itérations : la cible est atteinte (A1)
     rows = [json.loads(line) for line in (out / "metrics.jsonl").read_text(encoding="utf-8").splitlines()]
     assert [r["step"] for r in rows] == [1, 2, 3, 4, 5, 6]
     assert all(isinstance(r["ppo/policy_loss"], float) and isinstance(r["ppo/entropy"], float) for r in rows)

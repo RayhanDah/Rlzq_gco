@@ -52,9 +52,10 @@ kill:                   # gardes (docs/PLAN.md, kill criteria préliminaires) ; 
   entropy_floor_frac: 0.10   # entropie < 10 % de ln(90) avant S1 -> arrêt
   n_actions: 90
   entropy_patience: 1
-  ev_floor: 0.0         # explained variance < 0 pendant 50 itérations après S1 -> arrêt (S1 non détecté au sprint T6)
+  ev_floor: 0.0         # explained variance < 0 pendant 50 itérations après S1 -> arrêt (S1 : crochet `s1_provider` de `run`, jamais atteint par défaut)
   ev_patience: 50
-  max_restores: 3       # restaurations consécutives sans itération saine entre deux -> arrêt
+  max_restores: 3       # restaurations CUMULÉES sur tout le run (une itération saine ne remet pas à zéro) -> arrêt
+  max_consecutive_restores: 2   # restaurations sans itération saine entre deux -> arrêt (même divergence rejouée)
 
 logging:
   every_iterations: 1

@@ -2,18 +2,29 @@
 jusqu'au budget avec gardes, checkpoints, journal et reprise (T6, ADR-001 M4, ADR-003 §5–§7).
 
 Garanties :
-- aucun checkpoint, journal ou méta n'est supprimé ni écrasé : les checkpoints suivent `CheckpointManager` (noms
-  jamais réutilisés), `run_meta*.json` et `segments.jsonl` sont créés en mode exclusif ou en ajout ; la seule réécriture
-  est la troncature du journal de métriques à la reprise (les lignes retirées vont dans `metrics_dropped.jsonl`) ;
+- `run` ne supprime ni n'écrase jamais lui-même un checkpoint, un journal ou une méta : les checkpoints sont écrits
+  par `CheckpointManager` (noms jamais réutilisés, écriture atomique), `run_meta*.json` et `segments.jsonl` sont créés
+  en mode exclusif ou en ajout. Deux exceptions, toutes deux sans perte :
+  (1) la ROTATION de `CheckpointManager` supprime les plus anciens checkpoints au-delà de `checkpoint.keep`, hors
+  dernier checkpoint sain intègre, qui est conservé ; (2) le journal `metrics.jsonl` est réécrit (remplacement
+  atomique) pour retirer les lignes d'une trajectoire écartée (à la reprise ou après une restauration par une garde) :
+  les lignes retirées sont ajoutées à `metrics_dropped.jsonl`, jamais supprimées ;
+- un run neuf écrit un checkpoint sain à l'itération 0 (avant la première itération) : une divergence précoce se
+  restaure au lieu de donner « aucun checkpoint sain » ;
 - les gardes (`training.guards`) sont évaluées à chaque itération et leurs décisions sont APPLIQUÉES : CONTINUE ;
   STOP (arrêt propre, checkpoint final marqué non sain, cause écrite) ; RESTORE (dernier checkpoint sain, restauration
-  de l'env et du trainer, arrêt s'il n'y en a pas ou si `max_restores` est dépassé). Après une restauration, les
-  générateurs de la collecte et du learner sont ré-ensemencés (seed, nombre de restaurations) : sans cela la trajectoire
-  déterministe rejouerait exactement la divergence ;
+  de l'env et du trainer, arrêt s'il n'y en a pas ou si `max_restores` (cumulé) ou `max_consecutive_restores` est
+  dépassé). Après une restauration : les générateurs de la collecte et du learner sont ré-ensemencés (seed, nombre de
+  restaurations ; sans cela la trajectoire déterministe rejouerait la divergence), le journal et les compteurs de la
+  trajectoire (buts, fins d'épisode) reviennent au checkpoint restauré, tandis que les compteurs de vie du run
+  (restaurations, NaN, S1) ne reculent jamais ;
+- une exception du learner ou de la collecte est tracée (événement `exception` dans `events.jsonl`, ligne de statut
+  `error` dans `segments.jsonl`), le thread learner est joint, aucun checkpoint n'est écrit, puis l'exception remonte ;
 - Ctrl+C (SIGINT) : l'itération en cours se termine, thread learner joint, checkpoint final, statut `interrupted` ;
   un second Ctrl+C lève `KeyboardInterrupt` immédiatement (pas de checkpoint, l'état serait incohérent) ;
-- GCO strict : aucune récompense ajoutée, aucun signal d'exploration. L'état S1 n'est pas détecté ici : la garde
-  d'entropie reste active (`s1_reached=False`) et la règle « EV < 0 après S1 » n'est jamais armée (hors sprint).
+- GCO strict : aucune récompense ajoutée, aucun signal d'exploration. L'état S1 vient d'un fournisseur injecté
+  (`s1_provider`, défaut : jamais atteint, donc garde d'entropie active et règle « EV < 0 après S1 » non armée) ; son
+  calcul (matchs d'évaluation) n'est pas fait ici.
 """
 
 from __future__ import annotations
@@ -84,7 +95,8 @@ class RunSummary:
     """Résultat d'un appel à `run` (un « segment » : de `start_iteration` à `end_iteration`)."""
 
     status: str
-    """`completed` (budget atteint), `paused` (`max_iterations` atteint), `interrupted` (Ctrl+C), `stopped` (garde)."""
+    """`completed` (budget atteint), `paused` (`max_iterations` atteint), `interrupted` (Ctrl+C), `stopped` (garde),
+    `error` (exception du learner ou de la collecte : écrit dans `segments.jsonl`, puis remontée par `run`)."""
     cause: str | None
     start_iteration: int
     end_iteration: int
@@ -94,11 +106,15 @@ class RunSummary:
     collected_timesteps: int
     """Transitions agents collectées depuis le début du run (en recouvrement : un lot d'avance)."""
     segment_collected_timesteps: int
+    """Transitions agents RÉELLEMENT collectées pendant ce segment, lots des trajectoires écartées par une restauration
+    compris (somme des lots par itération ; `collected_timesteps` ne compte que la trajectoire retenue)."""
     wall_s: float
     loop_s: float
-    """Durée des seules itérations (sans écriture de checkpoint)."""
+    """Durée des seules itérations (sans écriture de checkpoint ni restauration), y compris celles écartées."""
     mean_steps_per_s: float
-    """Transitions agents collectées pendant ce segment / `loop_s` (démarrage et checkpoints exclus)."""
+    """`segment_collected_timesteps` / `loop_s` (démarrage et checkpoints exclus). Numérateur et dénominateur incluent
+    les itérations écartées : le débit n'est pas biaisé par une restauration, mais le temps rejoué n'est pas du
+    progrès (voir `discarded_timesteps`)."""
     steps_per_s: list[float]
     """Débit de chaque itération du segment (la première itération d'un run neuf collecte deux lots)."""
     nan_detected: int
@@ -114,6 +130,13 @@ class RunSummary:
     """Fichier de checkpoint repris (None pour un run neuf)."""
     exact_env: bool | None = None
     """Reprise : True si l'état du simulateur a été restauré bit à bit, False « modulo reset des arènes »."""
+    discarded_timesteps: int = 0
+    """Transitions agents collectées puis écartées par des restaurations dans ce segment."""
+    s1_reached: bool = False
+    s1_iteration: int | None = None
+    """Itération (compteur de la trajectoire) à laquelle `s1_provider` a signalé S1 (None si jamais)."""
+    error: dict[str, Any] | None = None
+    """Statut `error` : type, message, itération et cause de l'exception remontée (None sinon)."""
 
     def as_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -302,6 +325,7 @@ def run(
     should_stop: Callable[[], bool] | None = None,
     handle_sigint: bool = True,
     command: list[str] | None = None,
+    s1_provider: Callable[[int], bool] | None = None,
 ) -> RunSummary:
     """Entraîne jusqu'au budget de `config`.
 
@@ -310,6 +334,14 @@ def run(
     reprend du dernier checkpoint sain et refuse si l'identité ou le hash de config diffère
     (`CheckpointIncompatibleError`). `max_iterations` : plafond ABSOLU du compteur d'itérations (arrêt `paused`).
     `env_factory` et `optimizer_factory` sont injectables (tests sans RocketGPU ni `torch.optim`).
+
+    `s1_provider(iteration) -> bool` : crochet du jalon S1 (`docs/PLAN.md` § kill criteria). Appelé une fois par
+    itération (avec le compteur d'itérations après l'itération), tant que S1 n'est pas atteint ; le premier `True` fige
+    l'état (monotone : il ne redevient jamais faux, même après une restauration vers un checkpoint antérieur), écrit un
+    événement `s1_reached`, et l'état est sauvegardé dans les checkpoints (`extra["s1_reached"]`, `["s1_iteration"]`)
+    puis restauré à la reprise. Il est transmis aux gardes : avant S1 la garde d'entropie est active, après S1 la règle
+    d'explained variance s'arme. Défaut `None` : S1 jamais atteint. Une exception du fournisseur est traitée comme une
+    exception de la boucle (tracée puis remontée).
     """
     cfg = config
     out = Path(out_dir)
@@ -359,6 +391,8 @@ def run(
     start_note = ""
     resumed_from: str | None = None
     exact_env: bool | None = None
+    s1_reached = False
+    s1_iteration: int | None = None
     if resume:
         found = manager.load_latest(healthy_only=True)
         if found is None:
@@ -371,6 +405,10 @@ def run(
         guard_state = GuardState(**info.extra["guard"])
         tally.goals, tally.episode_ends = float(info.extra["goals"]), float(info.extra["episode_ends"])
         tally.restores, tally.nan = int(info.extra["restores"]), int(info.extra["nan"])
+        # checkpoints d'avant A1 : pas de `restores_total` ni d'état S1 dans les extras (valeurs par défaut)
+        guard_state = dataclasses.replace(guard_state, restores_total=max(guard_state.restores_total, tally.restores))
+        s1_reached = bool(info.extra.get("s1_reached", False))
+        s1_iteration = info.extra.get("s1_iteration")
         resumed_from, exact_env = path.name, info.exact_env
         n_dropped = truncate_metrics(metrics_path, iteration, out / DROPPED_FILE)
         start_note = (
@@ -392,7 +430,11 @@ def run(
     total = cfg.total_iterations
     cap = total if max_iterations is None else min(total, max_iterations)
     start_iteration = iteration
-    start_collected = collector.agent_steps
+    raw_collected = 0  # transitions réellement collectées dans ce segment (lots écartés compris)
+    discarded = 0  # dont transitions des trajectoires écartées par une restauration
+    current_iteration = iteration + 1  # itération (1-based) en cours, pour tracer une exception
+    failure: Exception | None = None
+    error_info: dict[str, Any] | None = None
     t_start = time.perf_counter()
     loop_s = 0.0
     sps: list[float] = []
@@ -413,6 +455,8 @@ def run(
             "episode_ends": tally.episode_ends,
             "restores": tally.restores,
             "nan": tally.nan,
+            "s1_reached": s1_reached,
+            "s1_iteration": s1_iteration,
         }
         state = capture(
             trainer,
@@ -454,18 +498,27 @@ def run(
             out / EVENTS_FILE,
             {"event": "start", "t": time.time(), "meta_file": meta_path.name, "note": start_note, "resume": resume},
         )
+        if not resume:
+            save(True)  # checkpoint sain à l'itération 0 : une divergence précoce reste restaurable
         meter.tick(collector.agent_steps)
         while iteration < cap:
             if stop.is_set():
                 status, cause = "interrupted", "arrêt demandé (Ctrl+C ou should_stop)"
                 break
             t_it = time.perf_counter()
+            current_iteration = iteration + 1
             env.set_p_kick(cfg.p_kick_at(iteration))
+            steps_before = collector.agent_steps
             result = trainer.iterate()
             iteration += 1
+            raw_collected += collector.agent_steps - steps_before
             rate = meter.tick(collector.agent_steps)
             loop_s += time.perf_counter() - t_it
             sps.append(rate)
+
+            if not s1_reached and s1_provider is not None and bool(s1_provider(iteration)):
+                s1_reached, s1_iteration = True, iteration  # monotone : plus jamais remis à faux
+                _append_jsonl(out / EVENTS_FILE, {"event": "s1_reached", "t": time.time(), "iteration": iteration})
 
             stats = {k: float(v) for k, v in result.stats.as_dict().items()}
             if iteration % cfg.logging.every_iterations == 0:
@@ -476,13 +529,16 @@ def run(
                 scalars["env/goals_total"] = tally.goals
                 scalars["train/iteration"] = float(iteration)
                 scalars["train/restores_total"] = float(tally.restores)
+                scalars["train/s1_reached"] = float(s1_reached)
                 scalars["train/epoch"] = float(tally.restores)
                 scalars["train/trained_timesteps"] = float(iteration * cfg.batch_agent_steps)
                 writer.write(iteration, scalars)
 
             p_ok, g_ok = params_finite(learner.params), grads_finite(learner.params)
             guard_state, decision = evaluate(
-                cfg.kill, guard_state, GuardObservation(stats=stats, params_finite=p_ok, grads_finite=g_ok)
+                cfg.kill,
+                guard_state,
+                GuardObservation(stats=stats, params_finite=p_ok, grads_finite=g_ok, s1_reached=s1_reached),
             )
             last_healthy = decision.healthy
             if nonfinite_keys(stats) or not p_ok or not g_ok:  # compté même si la décision est STOP (max_restores)
@@ -504,9 +560,19 @@ def run(
                     break
                 path, state = found
                 tally.restores += 1
+                steps_before_restore = collector.agent_steps
                 info = restore(state, trainer, expected=identity, train_config=traj, env=env)
+                discarded += steps_before_restore - collector.agent_steps
                 iteration = info.iteration
                 last_ckpt_iteration = iteration
+                # compteurs de la TRAJECTOIRE : retour à la valeur du checkpoint ; compteurs de VIE du run
+                # (restaurations, NaN, S1) : conservés, ils ne reculent jamais
+                tally.goals, tally.episode_ends = float(info.extra["goals"]), float(info.extra["episode_ends"])
+                # le journal ne garde qu'une ligne par step de la trajectoire retenue ; les autres vont dans
+                # `metrics_dropped.jsonl`. Le fichier est fermé le temps du remplacement atomique (Windows).
+                writer.close()
+                n_dropped = truncate_metrics(metrics_path, iteration, out / DROPPED_FILE)
+                writer = JsonlWriter(metrics_path, fsync=cfg.logging.fsync)
                 seed = cfg.seed + RESTORE_RESEED_PRIME * tally.restores
                 collector.generator.manual_seed(seed)
                 learner.generator.manual_seed(seed)
@@ -519,6 +585,8 @@ def run(
                         "to_iteration": iteration,
                         "reseed": seed,
                         "exact_env": info.exact_env,
+                        "dropped_rows": n_dropped,
+                        "discarded_timesteps": steps_before_restore - collector.agent_steps,
                     },
                 )
                 meter.tick(collector.agent_steps)
@@ -535,6 +603,19 @@ def run(
                 _append_jsonl(out / EVENTS_FILE, {"event": "final_checkpoint_failed", "error": repr(exc)})
         elif status != "stopped" and last_ckpt_iteration != iteration:
             save(last_healthy)
+    except Exception as exc:  # learner, collecte, fournisseur S1, E/S : tracer puis remonter, sans checkpoint
+        failure = exc
+        trainer.close()  # joint le thread learner avant toute écriture
+        cause_exc = exc.__cause__
+        error_info = {
+            "type": type(exc).__name__,
+            "message": str(exc),
+            "iteration": current_iteration,
+            "cause_type": type(cause_exc).__name__ if cause_exc is not None else None,
+            "cause_message": str(cause_exc) if cause_exc is not None else None,
+        }
+        status, cause = "error", f"{type(exc).__name__} : {exc}"
+        _append_jsonl(out / EVENTS_FILE, {"event": "exception", "t": time.time(), **error_info})
     finally:
         trainer.close()
         writer.close()
@@ -542,7 +623,7 @@ def run(
             signal.signal(signal.SIGINT, previous_handler)
 
     wall = time.perf_counter() - t_start
-    seg_steps = collector.agent_steps - start_collected
+    seg_steps = raw_collected
     summary = RunSummary(
         status=status,
         cause=cause,
@@ -566,8 +647,14 @@ def run(
         checkpoint_dir=str(ck_dir),
         resumed_from=resumed_from,
         exact_env=exact_env,
+        discarded_timesteps=discarded,
+        s1_reached=s1_reached,
+        s1_iteration=s1_iteration,
+        error=error_info,
     )
     row = summary.as_dict()
     row["steps_per_s"] = [x if math.isfinite(x) else None for x in sps]
     _append_jsonl(out / SEGMENTS_FILE, {"t": time.time(), **row})
+    if failure is not None:
+        raise failure
     return summary
