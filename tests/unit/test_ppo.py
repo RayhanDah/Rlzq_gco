@@ -17,6 +17,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
+from _helpers import assert_close  # noqa: E402
+
 from models import N_ACTIONS, PolicyNet, ValueNet, log_prob_entropy, sample_actions  # noqa: E402
 from training import (  # noqa: E402
     Collector,
@@ -159,7 +161,8 @@ def test_sampling_is_reproducible_with_generator_and_logp_consistent() -> None:
     a1, lp1 = sample_actions(logits, g1)
     a2, _ = sample_actions(logits, g2)
     assert torch.equal(a1, a2)
-    torch.testing.assert_close(lp1, torch.log_softmax(logits, -1).gather(1, a1[:, None]).squeeze(1))
+    expected = torch.log_softmax(logits, -1).gather(1, a1[:, None]).squeeze(1)
+    assert_close(lp1, expected, atol=1e-5, rtol=1.3e-6)  # défauts float32 de torch.testing.assert_close
 
 
 def test_config_defaults_match_papers_section_2() -> None:
@@ -250,6 +253,8 @@ def test_ppo_solves_corridor_toy_env() -> None:
     0,95 exige p ≳ 0,97. Au départ, ≈ 1 000 épisodes de retour ±1 ou 0 : écart-type de la moyenne ≤ 0,032, d'où
     |·| < 0,2 (> 6σ). Mesuré le 2026-11-11 (CPU, script hors dépôt, seeds 0–4) : retour du premier lot −0,064 à 0,015 ;
     ≥ 0,993 dès l'itération 10 et 1,0 à l'itération 30 pour les 5 seeds ; ≈ 1,4–2,0 s par run de 31 itérations.
+    Allégé le 2026-11-13 à 15 itérations (seuil 0,95 inchangé) : mesuré seeds 0–4, retour final 1,0 pour les 5 (0,971 à
+    0,998 avec 10 itérations seulement), 500 épisodes par lot ; la config garde `total_iterations=30`.
     """
     # Arrange
     env, trainer = _setup()
@@ -257,10 +262,10 @@ def test_ppo_solves_corridor_toy_env() -> None:
     with trainer:
         trainer.iterate()  # lots 0 et 1 collectés par la politique initiale (v0)
         initial = float(np.mean(env.returns))
-        for _ in range(29):
+        for _ in range(13):
             trainer.iterate()
     env.returns.clear()
-    trainer.iterate()  # un lot complet collecté avec la politique finale (version 30)
+    trainer.iterate()  # un lot complet collecté avec la politique finale (version 15)
     # Assert
     assert abs(initial) < 0.2
     assert len(env.returns) > 100
