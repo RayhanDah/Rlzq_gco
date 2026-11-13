@@ -1,6 +1,6 @@
 """Entraînement PPO v0 : tampon de rollout, GAE, mise à jour PPO et recouvrement collecte/apprentissage (ADR-003 §6).
 
-Checkpoints, gardes et journaux (T5) : `checkpoint`, `guards`, `logging`.
+Checkpoints, gardes et journaux (T5) : `checkpoint`, `guards`, `logging`. Boucle de run (T6) : `config`, `run`.
 """
 
 from training.checkpoint import (
@@ -17,6 +17,7 @@ from training.checkpoint import (
     hash_config,
     restore,
 )
+from training.config import ConfigError, RunConfig
 from training.gae import bootstrap_values, gae
 from training.guards import (
     Action,
@@ -50,6 +51,7 @@ from training.ppo import (
     resolve_device,
 )
 from training.rollout import Collector, RolloutBatch, RolloutBuffer, VecEnv
+from training.run import RunError, RunSummary, default_env_factory, make_env, run, truncate_metrics
 
 __all__ = [
     "Action",
@@ -59,6 +61,7 @@ __all__ = [
     "CheckpointIncompatibleError",
     "CheckpointManager",
     "Collector",
+    "ConfigError",
     "GuardConfig",
     "GuardDecision",
     "GuardObservation",
@@ -75,6 +78,9 @@ __all__ = [
     "RestoreInfo",
     "RolloutBatch",
     "RolloutBuffer",
+    "RunConfig",
+    "RunError",
+    "RunSummary",
     "ScalarWriter",
     "StatefulEnv",
     "TensorBoardWriter",
@@ -84,6 +90,7 @@ __all__ = [
     "bootstrap_values",
     "capture",
     "check_identity",
+    "default_env_factory",
     "evaluate",
     "gae",
     "git_commit",
@@ -91,8 +98,11 @@ __all__ = [
     "grads_finite",
     "hash_config",
     "iteration_scalars",
+    "make_env",
     "make_optimizer",
     "params_finite",
     "resolve_device",
     "restore",
+    "run",
+    "truncate_metrics",
 ]

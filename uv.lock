@@ -1040,6 +1040,7 @@ dev = [
     { name = "six" },
 ]
 learn = [
+    { name = "pyyaml" },
     { name = "torch" },
 ]
 native = [
@@ -1066,7 +1067,10 @@ dev = [
     { name = "ruff" },
     { name = "six", specifier = ">=1.17.0" },
 ]
-learn = [{ name = "torch", specifier = "==2.15.0" }]
+learn = [
+    { name = "pyyaml", specifier = "==6.0.3" },
+    { name = "torch", specifier = "==2.15.0" },
+]
 native = [
     { name = "cmake", specifier = ">=3.25" },
     { name = "ninja", specifier = ">=1.13.2" },

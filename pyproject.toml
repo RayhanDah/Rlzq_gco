@@ -16,6 +16,7 @@ dev = [
 ]
 learn = [
     "torch==2.15.0",
+    "pyyaml==6.0.3",  # configs de run (src/training/config.py)
 ]
 native = [
     "cmake>=3.25",
@@ -46,6 +47,10 @@ ignore = ["RUF001", "RUF002", "RUF003"]  # caractères français (é, «, ’) d
 python_version = "3.11"
 strict = true
 files = ["src"]
+
+[[tool.mypy.overrides]]
+module = "yaml"
+ignore_missing_imports = true  # pas de stubs installés (types-PyYAML non ajouté) ; seul `safe_load` est utilisé
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
