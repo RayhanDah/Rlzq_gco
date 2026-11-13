@@ -181,6 +181,7 @@ T4 ne dépend que de `OBS_DIM`, `N_ACTIONS` et §6 : il travaille sur un env jou
 - §4 : contrainte testée « boost = 1 ⇒ throttle = 1 » (écart de physique A1, `docs/reports/physics_parity.md`).
 - Pads : RocketSim place 4 pads à ±2300 là où RocketGPU les place à ±2302 ; la correspondance entre simulateurs se
   fait par plus proche voisin (tolérance 4 uu).
+- §2 (T7b, ADR-004 §3.1) : `car_on_ground` = `air_state == 0` (OnGround) de RocketGPU, comme RLBot, et non `is_on_ground` ; `OBS_SCHEMA_VERSION` reste 1.
 
 ## Hypothèses vérifiées par la mesure (T2, 2026-11-11, RocketGPU CPU @f0508a1, `tests/integration/test_env_rocketgpu.py`)
 - Pads de chaque arène contigus en mémoire (index e·34 + i) ; gros pads aux indices 28 à 33.

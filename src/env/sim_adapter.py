@@ -144,6 +144,11 @@ class RocketGPUSimulator:
 
         e, c = n_envs, n_cars
         cars, balls, pads = self._cars, self._balls, self._pads
+        # `car_on_ground` = `air_state == 0` (OnGround), comme RLBot (ADR-004 §3.1, air_state : rocketgpu.h:324). Pas de
+        # vue directe possible (air_state vaut 0..4) : tampon u8 propre, rempli sur place (même objet) après chaque
+        # écriture de la mémoire du sim.
+        self._on_ground = np.zeros((e, c), dtype=np.uint8)
+        self._air_state = cars["air_state"].reshape(e, c)
         self._state = BatchState(
             ball_pos=balls["pos"],
             ball_vel=balls["vel"],
@@ -153,7 +158,7 @@ class RocketGPUSimulator:
             car_ang_vel=cars["ang_vel"].reshape(e, c, 3),
             car_quat=cars["rot"].reshape(e, c, 4),
             car_boost=cars["boost"].reshape(e, c),
-            car_on_ground=cars["is_on_ground"].reshape(e, c),
+            car_on_ground=self._on_ground,
             car_has_jumped=cars["has_jumped"].reshape(e, c),
             car_has_double_jumped=cars["has_double_jumped"].reshape(e, c),
             car_has_flipped=cars["has_flipped"].reshape(e, c),
@@ -163,6 +168,10 @@ class RocketGPUSimulator:
             pad_cooldown=pads["cooldown"].reshape(e, N_PADS),
             car_team=team,
         )
+        self._refresh_on_ground()
+
+    def _refresh_on_ground(self) -> None:
+        np.equal(self._air_state, 0, out=self._on_ground.view(np.bool_))
 
     @property
     def n_envs(self) -> int:
@@ -219,6 +228,7 @@ class RocketGPUSimulator:
         for name, raw, count in raws:
             self._sim.upload_state_array(name, raw.ctypes.data, count, True)  # True : PreserveInternal
         self._sim.upload_internal_state(blob.ctypes.data)
+        self._refresh_on_ground()
 
     def state(self) -> BatchState:
         return self._state
@@ -228,6 +238,7 @@ class RocketGPUSimulator:
             raise ValueError(f"actions: forme {actions.shape} != {(self._n_envs * self._n_cars,)}")
         write_controls(self._ctrl, actions)  # un seul endroit pour le dtype et l'ordre des champs (src/actions)
         self._sim.step_with_device_controls(self._ctrl.ctypes.data, self._tick_skip, 0)  # tenus tick_skip ticks
+        self._refresh_on_ground()
 
     def scores(self) -> tuple[I64Array, I64Array]:
         return self._env["blue_score"].astype(np.int64), self._env["orange_score"].astype(np.int64)
@@ -255,6 +266,7 @@ class RocketGPUSimulator:
         self._sim.apply_env_commands(cmds[: int(np.max(arena_idx)) + 1])
         for e in arena_idx.tolist():
             cmds[e].reset_to_kickoff = 0  # keep_boost_pads, reset_scoreboard, reset_tick_count restent à 0
+        self._refresh_on_ground()
 
     def set_states(self, arena_idx: I64Array, states: InitialStates) -> None:
         k = int(arena_idx.size)
@@ -295,3 +307,6 @@ class RocketGPUSimulator:
         balls["deactivation_time"][arena_idx] = 0.0
         balls["constrained_2d"][arena_idx] = 0
         self._sim.upload_state_array("ball_states", balls.ctypes.data, balls.shape[0])
+        # `air_state` n'est recalculé qu'au prochain tick : jusque-là, `car_on_ground` vaut la valeur injectée.
+        self._refresh_on_ground()
+        self._on_ground[arena_idx] = states.car_on_ground

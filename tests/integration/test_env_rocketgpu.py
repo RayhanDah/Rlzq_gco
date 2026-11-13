@@ -315,3 +315,23 @@ def test_c_arene_non_reinitialisee_bit_exacte_quand_une_autre_est_teleportee() -
     assert touches_w > 0 and touches_t == touches_w  # le test exerce bien un contact voiture-balle
     for k, (a, b) in enumerate(zip(witness, tested, strict=True)):
         assert np.array_equal(a, b), f"écart au step {k} : max {np.abs(a - b).max()}"
+
+
+def test_car_on_ground_suit_air_state_pendant_un_saut() -> None:
+    """ADR-004 §3.1 : `car_on_ground` = `air_state == 0` (OnGround), y compris quand `is_on_ground = 1` en saut."""
+    n_envs = 4
+    sim = RocketGPUSimulator(n_envs, 2, 1)
+    sim.reset_to_kickoff(np.arange(n_envs, dtype=np.int64), np.arange(n_envs, dtype=np.uint64))
+    st = sim.state()
+    assert (st.car_on_ground == 1).all()
+    jump = int(np.flatnonzero((ACTION_TABLE[:, 5] == 1) & (ACTION_TABLE[:, 6] == 0) & (ACTION_TABLE[:, 0] == 0))[0])
+    actions = np.full(n_envs * 2, jump, dtype=np.int64)
+    cars = sim.raw_arrays["car_states"]
+    saw_override = False  # is_on_ground = 1 alors que air_state != 0
+    for _ in range(40):
+        sim.step(actions)
+        air = cars["air_state"].reshape(n_envs, 2)
+        assert np.array_equal(st.car_on_ground, (air == 0).astype(np.uint8))
+        saw_override |= bool(((cars["is_on_ground"].reshape(n_envs, 2) != 0) & (air != 0)).any())
+    assert (st.car_on_ground == 0).any()  # des voitures ont quitté OnGround
+    assert saw_override  # le cas qui divergeait avant : a bien été traversé
