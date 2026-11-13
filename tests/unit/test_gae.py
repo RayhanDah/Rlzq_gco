@@ -12,6 +12,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
+from _helpers import assert_close  # noqa: E402
+
 from training.gae import bootstrap_values, gae  # noqa: E402
 
 GAMMA, LAM = 0.9, 0.8  # γλ = 0,72
@@ -56,7 +58,7 @@ def test_bootstrap_values_hand_reference() -> None:
             [0.9, -0.25],  # a0 : V(last_obs) ; a1 tronqué en fin de lot : V(final) = −0,25
         ]
     )
-    torch.testing.assert_close(v_next, expected, atol=ATOL, rtol=0)
+    assert_close(v_next, expected, atol=ATOL, rtol=0)
 
 
 def test_gae_hand_reference_terminal_truncation_and_batch_end() -> None:
@@ -77,8 +79,8 @@ def test_gae_hand_reference_terminal_truncation_and_batch_end() -> None:
     #   t1 : but (et timeout) : δ = −1 + 0 − 0,4 = −1,4 ; trace coupée, A = −1,4
     #   t0 : δ = 0 + 0,9·0,4 − 0,2 = 0,16 ; A = 0,16 + 0,72·(−1,4) = −0,848
     expected_adv = torch.tensor([[0.278, -0.848], [0.15, -1.4], [0.5, -0.618], [0.11, -1.025]])
-    torch.testing.assert_close(adv, expected_adv, atol=ATOL, rtol=0)
-    torch.testing.assert_close(ret, expected_adv + c["values"], atol=ATOL, rtol=0)
+    assert_close(adv, expected_adv, atol=ATOL, rtol=0)
+    assert_close(ret, expected_adv + c["values"], atol=ATOL, rtol=0)
 
 
 def test_truncation_bootstraps_on_final_obs_not_on_current_value() -> None:
@@ -92,7 +94,7 @@ def test_truncation_bootstraps_on_final_obs_not_on_current_value() -> None:
     )
     adv, _ = gae(rew, values, v_next, term, trunc, GAMMA, LAM)
     # Assert : A = γ·V(s′) − V(s_t) = 0,45 − 0,3 ; le prototype aurait donné 0,9·0,3 − 0,3 = −0,03.
-    torch.testing.assert_close(adv, torch.tensor([[0.15]]), atol=ATOL, rtol=0)
+    assert_close(adv, torch.tensor([[0.15]]), atol=ATOL, rtol=0)
 
 
 def test_gae_without_cuts_is_discounted_sum_when_lambda_one() -> None:

@@ -10,6 +10,7 @@ import importlib.util
 import json
 import shutil
 import sys
+import time
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -29,6 +30,27 @@ def load(path: Path, name: str) -> ModuleType:
 
 
 kr = load(ROOT / "scripts" / "kaggle_run.py", "kaggle_run")
+
+
+class _FakeClock:
+    """Horloge injectée dans le module du kernel : `sleep` avance le temps sans attendre.
+
+    Le squelette du kernel dort réellement `train_seconds` (1 s par `start` dans ces tests, ≈ 10 s au total) ; les
+    assertions ne portent jamais sur le temps mural. `strftime` et `gmtime` restent ceux de `time`.
+    """
+
+    strftime = staticmethod(time.strftime)
+    gmtime = staticmethod(time.gmtime)
+
+    def __init__(self) -> None:
+        self.now = 1_900_000_000.0
+
+    def time(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
 
 DATASET = "owner1/rlgco-relay-gco-a"
 HEAD = "a" * 40
@@ -121,6 +143,8 @@ class FakeKaggle:
             (mount / name).write_bytes(data)
         work = self.tmp / "kwork" / kid.replace("/", "_") / f"{len(self.calls)}"
         mod.INPUT, mod.WORK = inp, work
+        clock = _FakeClock()
+        mod.time, mod.T0 = clock, clock.time()
         assert mod.main() == 0
         self.outputs[kid] = work
 

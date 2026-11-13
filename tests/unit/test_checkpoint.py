@@ -8,6 +8,7 @@ créer un vrai
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import io
 import struct
@@ -170,10 +171,21 @@ def test_recouvrement_lot_en_attente_fait_partie_de_l_etat(tmp_path: Path) -> No
 # ---------------------------------------------------------------------------------------------- fichier
 
 
+_STATE_TEMPLATE: dict[str, Any] = {}
+
+
 def _state(it: int, cfg: Any = None) -> dict[str, Any]:
-    _, tr, c = _make(0, False)
-    tr.iterate()
-    return capture(tr, identity=IDENT, train_config=c if cfg is None else cfg, iteration=it)
+    """État capturé après une itération (graine 0). Construit une seule fois (≈ 0,2 s : réseaux, collecte, update),
+    puis copié en profondeur à chaque appel : seul `iteration` varie entre les appels, et chaque test reçoit un
+    dictionnaire à lui qu'il peut muter."""
+    if "state" not in _STATE_TEMPLATE:
+        _, tr, c = _make(0, False)
+        tr.iterate()
+        _STATE_TEMPLATE["state"] = capture(tr, identity=IDENT, train_config=c if cfg is None else cfg, iteration=0)
+    assert cfg is None, "le gabarit est capturé avec la config par défaut du test"
+    state: dict[str, Any] = copy.deepcopy(_STATE_TEMPLATE["state"])
+    state["iteration"] = state["counters"]["iteration"] = it
+    return state
 
 
 def test_ecriture_interrompue_laisse_l_ancien_checkpoint_intact(

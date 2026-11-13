@@ -142,7 +142,9 @@ def test_7_3_propriete_aucune_recompense_hors_but(variant: RewardVariant) -> Non
     rng = np.random.default_rng(SEED)
     cfg = RewardConfig(variant=variant)
     fn = RewardFunction(cfg)
-    n_envs, n_steps = 512, 4000
+    # 2500 steps (et non 4000) : les fins « durée » (120 s = 1800 steps) n'apparaissent qu'après ~1800 steps ; mesuré
+    # seed 20261110 : 2500 steps donnent 1401 buts, 827 no-touch, 154 durée (2892 resets) ; seuils 1000 / 50 / 1000.
+    n_envs, n_steps = 512, 2500
     teams = np.array([rng.permutation([0, 0, 1, 1]) for _ in range(n_envs)])
     p_touch = rng.choice([0.002, 0.05, 0.5], size=n_envs)
     p_goal = rng.choice([1e-4, 2e-3], size=n_envs)
