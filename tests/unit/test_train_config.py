@@ -53,10 +53,18 @@ def test_calendrier_p_kick_lineaire_puis_constant() -> None:
     assert cfg.p_kick_at(0) == pytest.approx(0.2)
     assert cfg.p_kick_at(cfg.anneal_iterations) == pytest.approx(0.8)
     assert cfg.p_kick_at(10 * cfg.anneal_iterations) == pytest.approx(0.8)
+    # revue T6 (A1.5) : la dernière itération de l'annealing (indice n - 1) utilise déjà la cible
+    assert cfg.p_kick_at(cfg.anneal_iterations - 1) == pytest.approx(0.8)
     mid = cfg.p_kick_at(cfg.anneal_iterations // 2)
     assert 0.2 < mid < 0.8
     deltas = [cfg.p_kick_at(i + 1) - cfg.p_kick_at(i) for i in range(cfg.anneal_iterations - 1)]
     assert max(deltas) - min(deltas) < 1e-12  # linéaire
+
+
+def test_annealing_d_une_seule_iteration_utilise_la_cible() -> None:
+    # Une rampe d'une itération n'a pas de pas intermédiaire : la cible est utilisée dès l'itération 0.
+    cfg = RunConfig.from_dict(_cfg(initial_states={"p_kick_start": 0.2, "p_kick_end": 0.8, "anneal_timesteps": 32}))
+    assert cfg.anneal_iterations == 1 and cfg.p_kick_at(0) == pytest.approx(0.8)
 
 
 def test_annealing_nul_donne_p_kick_final_des_le_depart() -> None:
@@ -133,6 +141,27 @@ def test_notation_scientifique_yaml_sans_point_refusee(tmp_path: Path) -> None:
         RunConfig.from_yaml(p)
 
 
+@pytest.mark.parametrize(
+    ("raw", "section", "key", "fix"),
+    [("2e-4", "ppo", "lr_start", "2.0e-4"), ("1e6", "budget", "total_timesteps", "1000000")],
+)
+def test_message_notation_scientifique_explicite(raw: str, section: str, key: str, fix: str) -> None:
+    # Revue T6 (A1.8) : PyYAML lit `2e-4` comme une chaîne ; le message doit dire pourquoi et comment corriger.
+    d = copy.deepcopy(BASE)
+    d[section][key] = raw  # ce que yaml.safe_load rend pour « 2e-4 » ou « 1e6 »
+    with pytest.raises(ConfigError, match="notation scientifique") as err:
+        RunConfig.from_dict(d)
+    assert f"{section}.{key}" in str(err.value) and "PyYAML" in str(err.value) and fix in str(err.value)
+
+
+def test_message_chaine_non_numerique_inchange() -> None:
+    d = copy.deepcopy(BASE)
+    d["ppo"]["lr_start"] = "vite"
+    with pytest.raises(ConfigError) as err:
+        RunConfig.from_dict(d)
+    assert "notation scientifique" not in str(err.value)
+
+
 def test_hash_stable_sensible_et_sections_operationnelles_exclues() -> None:
     a = RunConfig.from_dict(BASE)
     b = RunConfig.from_dict(copy.deepcopy(BASE))
@@ -163,10 +192,12 @@ def test_smoke_yaml_se_charge_et_totalise_au_moins_1m_timesteps() -> None:
     # checkpoints assez fréquents pour exercer la rotation, et un checkpoint avant le milieu du run
     assert cfg.checkpoint.every_iterations * cfg.checkpoint.keep < cfg.total_iterations
     assert cfg.p_kick_at(0) == pytest.approx(0.2) and cfg.p_kick_at(cfg.total_iterations) == pytest.approx(0.8)
+    # revue T6 (A1.5) : la dernière itération du run tourne avec la cible (avant : 0,767)
+    assert cfg.p_kick_at(cfg.total_iterations - 1) == pytest.approx(cfg.initial_states.p_kick_end)
     # section kill complète et conforme à docs/PLAN.md
     k = cfg.kill
     assert (k.kl_threshold, k.kl_patience, k.entropy_floor_frac, k.ev_patience) == (0.05, 5, 0.10, 50)
-    assert k.max_restores == 3
+    assert k.max_restores == 3 and k.max_consecutive_restores == 2
 
 
 def test_smoke_yaml_contient_une_section_kill_textuelle() -> None:
