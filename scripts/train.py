@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import datetime
 import gc
 import json
 import math
 import platform
 import statistics
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -48,6 +50,17 @@ def _stats(xs: list[float]) -> dict[str, float | int | None]:
     }
 
 
+def git_dirty(repo: Path) -> bool:
+    """Vrai si l'arbre de travail diffère du commit, ou si git est indisponible (propreté non prouvable)."""
+    try:
+        res = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True, timeout=30, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return res.returncode != 0 or bool(res.stdout.strip())
+
+
 def smoke_report(cfg: RunConfig, first: RunSummary, second: RunSummary | None, command: list[str]) -> dict[str, Any]:
     """Résumé JSON du smoke test et verdict (critères de `docs/PLAN.md` Phase 3 et de la section `smoke`)."""
     assert cfg.smoke is not None
@@ -65,6 +78,7 @@ def smoke_report(cfg: RunConfig, first: RunSummary, second: RunSummary | None, c
         "timesteps_at_least_budget": last.trained_timesteps >= cfg.budget.total_timesteps,
         "no_nan": nan <= cfg.smoke.max_nan,
         "no_guard_stop": all(d["action"] != "stop" for d in decisions),
+        "no_restore": all(s.restores == 0 for s in segments),
         "resumed_mid_run": (
             second is not None
             and second.resumed_from is not None
@@ -74,7 +88,14 @@ def smoke_report(cfg: RunConfig, first: RunSummary, second: RunSummary | None, c
         "resume_exact_env": second is not None and second.exact_env is True,
         "checkpoints_written": len(ckpts) >= 2,
     }
-    required = ["completed_budget", "timesteps_at_least_budget", "no_nan", "no_guard_stop", "checkpoints_written"]
+    required = [
+        "completed_budget",
+        "timesteps_at_least_budget",
+        "no_nan",
+        "no_guard_stop",
+        "no_restore",
+        "checkpoints_written",
+    ]
     if cfg.smoke.require_resume:
         required += ["resumed_mid_run", "resume_exact_env"]
     return {
@@ -82,6 +103,9 @@ def smoke_report(cfg: RunConfig, first: RunSummary, second: RunSummary | None, c
         "config": cfg.name,
         "config_hash": cfg.trajectory_hash(),
         "git_commit": git_commit(ROOT),
+        "git_dirty": git_dirty(ROOT),
+        "date_utc": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
+        "seed": cfg.seed,
         "rocketgpu_commit": rocketgpu_commit(),
         "device": cfg.device,
         "device_resolved": _resolved_device(cfg),

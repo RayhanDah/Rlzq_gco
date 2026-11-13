@@ -31,14 +31,16 @@ Mis à jour : 2026-11-11 (**G2 validé**, Phase 3 ouverte).
   - `docs/research/` (notes sur sources publiques) ; preuves issues des discussions Discord dans `docs/private/` (local, non versionné).
 - Venv `.venv` (uv, Python 3.12) : groupes dev, sim (rocketsim 2.2.1, numpy 2.5.4), native (cmake, ninja, pybind11), learn (torch 2.15.0 CPU) ; `vendor/venv-xpu` : torch 2.15.0+xpu.
 
-- **Sprint Phase 3** (`production/sprints/2026-11-11.md`) : T0 à T5 et T7 mergés (`src/{obs,actions,env,models,
-  training,rlbot_bot}`, ADR-003 et ADR-004 acceptés). Reprise exacte mesurée, simulateur bit à bit (CPU).
-  Reste T6 : boucle de run, config et **smoke test 1M steps (à la demande de l'utilisateur)**.
+- **Sprint Phase 3** (`production/sprints/2026-11-11.md`) : T0 à T7 mergés (`src/{obs,actions,env,models,training,
+  rlbot_bot}`, `scripts/train.py`, `configs/smoke.yaml` ; ADR-003 et ADR-004 acceptés). Reprise exacte mesurée,
+  simulateur bit à bit (CPU). **Aucun entraînement n'a encore tourné** : le smoke test 1M steps attend la demande de
+  l'utilisateur.
 
 ## Prochaines actions
-1. Décisions utilisateur : ADR-004 (adaptateur maison ; `on_ground` défini comme RLBot, ce qui change le sens d'un
-   champ d'obs) et traitement du délai d'action d'un tick de RLBot (non modélisé, non mesuré).
-2. T6 : `scripts/train.py`, `configs/smoke.yaml`, application des gardes, puis smoke test et `docs/reports/smoke_test.md`.
+1. Smoke test : `scripts/train.py configs/smoke.yaml --smoke` (XPU : installer `pyyaml==6.0.3` dans `vendor/venv-xpu`
+   d'abord), puis `docs/reports/smoke_test.md`. Critère de sortie de la Phase 3 (`docs/PLAN.md`).
+2. Avant le run court 4a : points de la revue T6 listés dans le sprint (détection de S1, checkpoint à l'itération 0,
+   journal après restauration), délai d'action d'un tick de RLBot en ablation.
 3. Sonde TPU (`rayhanda/rlgco-probe-tpu`) toujours en file le 2026-11-13 : récupérer `probe.json`, compléter M2c.
 4. Prochain gate : **G3**, avant le premier run long (smoke test, run court 4a, config et kill criteria).
 
