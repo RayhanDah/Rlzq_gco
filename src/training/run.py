@@ -22,6 +22,11 @@ Garanties :
   `error` dans `segments.jsonl`), le thread learner est joint, aucun checkpoint n'est écrit, puis l'exception remonte ;
 - Ctrl+C (SIGINT) : l'itération en cours se termine, thread learner joint, checkpoint final, statut `interrupted` ;
   un second Ctrl+C lève `KeyboardInterrupt` immédiatement (pas de checkpoint, l'état serait incohérent) ;
+- pool d'adversaires (section `pool`, ADR-005 D5, `training.selfplay`) : θ₀ entre dans le pool avant le checkpoint
+  de l'itération 0, puis un instantané toutes les `pool.snapshot_every` itérations (avant le checkpoint de la même
+  itération) ; l'état du pool voyage dans l'état du collecteur (checkpoint, reprise et restauration exactes). Le
+  budget, `trained_timesteps` et `train/trained_timesteps` sont en timesteps APPRIS (agents gelés exclus, D3) ;
+  `train/collected_timesteps` donne le collecté ;
 - GCO strict : aucune récompense ajoutée, aucun signal d'exploration. L'état S1 vient d'un fournisseur injecté
   (`s1_provider`, défaut : jamais atteint, donc garde d'entropie active et règle « EV < 0 après S1 » non armée) ; son
   calcul (matchs d'évaluation) n'est pas fait ici.
@@ -74,12 +79,14 @@ from training.guards import (
 from training.logging import JsonlWriter, ThroughputMeter, batch_scalars, iteration_scalars
 from training.ppo import Learner, OptimizerLike, OverlapTrainer, make_optimizer, resolve_device
 from training.rollout import Collector, RolloutBatch
+from training.selfplay import PastOpponents, QualityPool, make_layout
 
 METRICS_FILE = "metrics.jsonl"
 EVENTS_FILE = "events.jsonl"
 SEGMENTS_FILE = "segments.jsonl"
 DROPPED_FILE = "metrics_dropped.jsonl"
 RESTORE_RESEED_PRIME = 1_000_003
+POOL_SEED_OFFSET = 7_919  # flux du tirage des adversaires distinct de celui de la collecte (même seed de run)
 
 
 class RunError(RuntimeError):
@@ -102,7 +109,8 @@ class RunSummary:
     end_iteration: int
     total_iterations: int
     trained_timesteps: int
-    """Transitions agents apprises : `end_iteration` × transitions par lot."""
+    """Transitions agents APPRISES (entrées dans la perte, unité du budget, ADR-005 D3) : `end_iteration` ×
+    `RunConfig.batch_learned_steps`. Avec le pool, inférieur au collecté (agents gelés exclus)."""
     collected_timesteps: int
     """Transitions agents collectées depuis le début du run (en recouvrement : un lot d'avance)."""
     segment_collected_timesteps: int
@@ -157,9 +165,16 @@ class _TalliedCollector(Collector):
     """`Collector` qui compte buts et fins d'épisode de chaque lot collecté (le premier lot compris)."""
 
     def __init__(
-        self, env: BatchEnv, policy: PolicyNet, n_steps: int, device: torch.device, seed: int, tally: _Tally
+        self,
+        env: BatchEnv,
+        policy: PolicyNet,
+        n_steps: int,
+        device: torch.device,
+        seed: int,
+        tally: _Tally,
+        opponents: PastOpponents | None = None,
     ) -> None:
-        super().__init__(env, policy, n_steps, device, seed)
+        super().__init__(env, policy, n_steps, device, seed, opponents=opponents)
         self.tally = tally
         self._cars = env.n_cars
 
@@ -381,7 +396,16 @@ def run(
     optimizer = (optimizer_factory or _default_optimizer)([*policy.parameters(), *value.parameters()], cfg.ppo, device)
     learner = Learner(policy, value, cfg.ppo, device, optimizer=optimizer, seed=cfg.seed)
     tally = _Tally()
-    collector = _TalliedCollector(env, actor, cfg.collection.steps_per_batch, device, cfg.seed, tally)
+    # pool d'adversaires (ADR-005 D5) : None sans section `pool` (self-play contre la version courante seule)
+    pool: PastOpponents | None = None
+    if cfg.pool is not None:
+        pool = PastOpponents(
+            make_layout(cfg.env.n_envs, cfg.env.n_cars, cfg.pool.past_fraction),
+            QualityPool(cfg.pool.max_size, cfg.pool.quality_lr, cfg.seed + POOL_SEED_OFFSET),
+            lambda: PolicyNet(env.obs_dim, env.n_actions, **p_kw),
+            device,
+        )
+    collector = _TalliedCollector(env, actor, cfg.collection.steps_per_batch, device, cfg.seed, tally, pool)
     trainer = OverlapTrainer(learner, collector, overlap=cfg.collection.overlap)
 
     # --- état initial : neuf ou repris
@@ -499,6 +523,8 @@ def run(
             {"event": "start", "t": time.time(), "meta_file": meta_path.name, "note": start_note, "resume": resume},
         )
         if not resume:
+            if pool is not None:
+                pool.add_snapshot(learner.policy, 0)  # θ₀ : premier adversaire passé, avant toute collecte
             save(True)  # checkpoint sain à l'itération 0 : une divergence précoce reste restaurable
         meter.tick(collector.agent_steps)
         while iteration < cap:
@@ -531,7 +557,10 @@ def run(
                 scalars["train/restores_total"] = float(tally.restores)
                 scalars["train/s1_reached"] = float(s1_reached)
                 scalars["train/epoch"] = float(tally.restores)
-                scalars["train/trained_timesteps"] = float(iteration * cfg.batch_agent_steps)
+                scalars["train/trained_timesteps"] = float(iteration * cfg.batch_learned_steps)  # appris (D3)
+                scalars["train/collected_timesteps"] = float(collector.agent_steps)
+                if pool is not None:
+                    scalars.update(pool.scalars())
                 writer.write(iteration, scalars)
 
             p_ok, g_ok = params_finite(learner.params), grads_finite(learner.params)
@@ -576,6 +605,8 @@ def run(
                 seed = cfg.seed + RESTORE_RESEED_PRIME * tally.restores
                 collector.generator.manual_seed(seed)
                 learner.generator.manual_seed(seed)
+                if pool is not None:
+                    pool.reseed(seed + POOL_SEED_OFFSET)
                 _append_jsonl(
                     out / EVENTS_FILE,
                     {
@@ -591,6 +622,13 @@ def run(
                 )
                 meter.tick(collector.agent_steps)
                 continue
+            if (
+                pool is not None
+                and cfg.pool is not None
+                and iteration % cfg.pool.snapshot_every == 0
+                and decision.healthy  # une itération non saine (KL haut) n'entre pas dans le pool à q = max
+            ):
+                pool.add_snapshot(learner.policy, iteration)  # avant le checkpoint de la même itération
             if iteration % cfg.checkpoint.every_iterations == 0 and iteration < cap:
                 save(decision.healthy)
             meter.tick(collector.agent_steps)  # rebase : l'écriture du checkpoint n'entre pas dans le débit
@@ -630,7 +668,7 @@ def run(
         start_iteration=start_iteration,
         end_iteration=iteration,
         total_iterations=total,
-        trained_timesteps=iteration * cfg.batch_agent_steps,
+        trained_timesteps=iteration * cfg.batch_learned_steps,
         collected_timesteps=collector.agent_steps,
         segment_collected_timesteps=seg_steps,
         wall_s=wall,

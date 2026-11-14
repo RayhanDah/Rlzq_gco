@@ -4,6 +4,8 @@
 - `RolloutBuffer` : stockage préalloué, rempli pas à pas par le collecteur.
 - `Collector` : fait tourner un `VecEnv` (contrat de `BatchEnv`, §5) avec une politique « acteur » et alterne deux
   tampons (double tampon) : le lot k reste intact pendant la collecte du lot k+1 (recouvrement, ADR-001 §3).
+  Avec un crochet `opponents` (pool d'adversaires, `training.selfplay.PastOpponents`), les agents gelés jouent leur
+  instantané et sont exclus de la perte par le `learn_mask` du crochet (ADR-005 D5).
 Aucune récompense n'est calculée ici : `rew` est recopié tel que l'env le rend (GCO strict, `GCO_SPEC.md` §2).
 """
 
@@ -174,11 +176,30 @@ class RolloutBuffer:
         return batch
 
 
+class OpponentHook(Protocol):
+    """Crochet d'adversaires gelés (`training.selfplay.PastOpponents`)."""
+
+    learn_mask: BOOL
+
+    def override_logits(self, obs: torch.Tensor, logits: torch.Tensor) -> torch.Tensor: ...
+
+    def after_step(self, term: BOOL, trunc: BOOL, info: Mapping[str, Any]) -> None: ...
+
+    def state_dict(self) -> dict[str, Any]: ...
+
+    def load_state_dict(self, state: Mapping[str, Any]) -> None: ...
+
+
 class Collector:
     """Collecte des lots de `n_steps` × `n_agents` avec une politique acteur (copie de π, ADR-001 §3).
 
     `policy` est l'acteur : en recouvrement, il ne doit pas être le module mis à jour par le learner. Le collecteur
     garde l'observation courante entre deux lots (les épisodes enjambent les frontières de lot).
+
+    `opponents` : crochet optionnel ; son `learn_mask` remplace `learn_mask` (les deux ensemble : refusé). Les logits
+    des agents gelés sont remplacés avant l'échantillonnage (un seul tirage, même générateur) ; sans crochet, la
+    collecte est identique bit à bit à celle d'avant le pool. `learnable_steps` compte les transitions collectées qui
+    entreront dans la perte (agents de `learn_mask`), `agent_steps` toutes les transitions collectées.
     """
 
     def __init__(
@@ -189,9 +210,15 @@ class Collector:
         device: torch.device,
         seed: int,
         learn_mask: BOOL | None = None,
+        opponents: OpponentHook | None = None,
     ) -> None:
         self.env, self.policy, self.n_steps, self.device = env, policy, n_steps, device
+        self.opponents = opponents
         n, d = env.n_agents, env.obs_dim
+        if opponents is not None:
+            if learn_mask is not None:
+                raise ValueError("learn_mask et opponents sont exclusifs (le masque vient du crochet)")
+            learn_mask = opponents.learn_mask
         self.learn_mask = np.ones(n, dtype=np.bool_) if learn_mask is None else np.array(learn_mask, dtype=np.bool_)
         if self.learn_mask.shape != (n,):
             raise ValueError(f"learn_mask {self.learn_mask.shape} ≠ ({n},)")
@@ -203,23 +230,36 @@ class Collector:
         if self._obs.shape != (n, d):
             raise ValueError(f"reset : obs {self._obs.shape} ≠ ({n}, {d})")
         self.agent_steps = 0
+        self.learnable_steps = 0
+        self._n_learn = int(self.learn_mask.sum())
 
     def state_dict(self) -> dict[str, Any]:
-        """État du collecteur pour la reprise (T5) : générateur d'échantillonnage, observation courante, compteur."""
-        return {
+        """État du collecteur pour la reprise (T5) : générateur d'échantillonnage, observation courante, compteurs et,
+        avec un crochet, état complet du pool (poids, scores, tirage, affectation)."""
+        state: dict[str, Any] = {
             "generator": self.generator.get_state(),
             "obs": np.array(self._obs, dtype=np.float32),
             "agent_steps": self.agent_steps,
+            "learnable_steps": self.learnable_steps,
         }
+        if self.opponents is not None:
+            state["opponents"] = self.opponents.state_dict()
+        return state
 
     def load_state_dict(self, state: Mapping[str, Any], obs: F32 | None = None) -> None:
         """`obs` remplace l'observation sauvegardée (env restauré « modulo reset des arènes »)."""
         cur = np.array(state["obs"] if obs is None else obs, dtype=np.float32)
         if cur.shape != self._obs.shape:
             raise ValueError(f"obs {cur.shape} ≠ {self._obs.shape}")
+        if (self.opponents is not None) != ("opponents" in state):
+            raise ValueError("état de pool d'adversaires présent XOR collecteur avec pool : incohérent")
+        if self.opponents is not None:
+            self.opponents.load_state_dict(state["opponents"])
         self.generator.set_state(state["generator"].cpu())
         self._obs = cur
         self.agent_steps = int(state["agent_steps"])
+        # checkpoints d'avant le pool : tout agent apprenait
+        self.learnable_steps = int(state.get("learnable_steps", self.agent_steps))
 
     def collect(self, policy_version: int) -> RolloutBatch:
         """Joue `n_steps` steps et rend le lot. Le lot rendu reste valide jusqu'au début du collect suivant le suivant
@@ -231,14 +271,20 @@ class Collector:
         for _ in range(self.n_steps):
             obs = self._obs
             with torch.inference_mode():
-                logits = self.policy(torch.from_numpy(obs).to(self.device))
+                obs_t = torch.from_numpy(obs).to(self.device)
+                logits = self.policy(obs_t)
+                if self.opponents is not None:
+                    logits = self.opponents.override_logits(obs_t, logits)
                 act_t, logp_t = sample_actions(logits, self.generator)
                 act = act_t.cpu().numpy().astype(np.int64, copy=False)
                 logp = logp_t.cpu().numpy().astype(np.float32, copy=False)
             nxt, rew, term, trunc, info = self.env.step(act)
+            if self.opponents is not None:
+                self.opponents.after_step(term, trunc, info)
             final_obs = np.asarray(info.get("final_obs", empty_obs), dtype=np.float32)
             final_agent = np.asarray(info.get("final_agent", empty_idx), dtype=np.int64)
             buf.add(obs, act, logp, rew, term, trunc, final_obs, final_agent)
             self._obs = np.array(nxt, dtype=np.float32)
             self.agent_steps += n
+            self.learnable_steps += self._n_learn
         return buf.finish(self._obs, self.learn_mask, policy_version)
