@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import sys
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
@@ -56,6 +57,32 @@ class JsonlWriter:
     def close(self) -> None:
         if not self._f.closed:
             self._f.close()
+
+
+def append_jsonl(path: str | Path, obj: Mapping[str, Any], *, fsync: bool = True) -> None:
+    """Ajoute une ligne JSON (clés triées, `default=str`) à `path`, vidée et, si `fsync`, synchronisée sur disque."""
+    line = json.dumps(dict(obj), sort_keys=True, default=str) + "\n"
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(line)
+        f.flush()
+        if fsync:
+            os.fsync(f.fileno())
+
+
+def try_append_jsonl(path: str | Path, obj: Mapping[str, Any], *, fsync: bool = True) -> Exception | None:
+    """`append_jsonl` qui ne lève JAMAIS d'`Exception` : à utiliser dans un gestionnaire d'erreur, où une erreur
+    d'écriture du journal (disque plein, fichier verrouillé, objet non sérialisable) masquerait l'exception d'origine.
+    Rend l'exception d'écriture (None si la ligne est écrite) et la signale sur stderr ; à l'appelant de la rattacher
+    (p. ex. `exc.add_note`) s'il le souhaite. `BaseException` (Ctrl+C) n'est pas avalée."""
+    try:
+        append_jsonl(path, obj, fsync=fsync)
+    except Exception as err:
+        try:
+            print(f"[journal] écriture impossible dans {path} : {err!r}", file=sys.stderr, flush=True)
+        except Exception:  # stderr fermé ou illisible : rien d'autre à faire
+            pass
+        return err
+    return None
 
 
 class TensorBoardWriter:

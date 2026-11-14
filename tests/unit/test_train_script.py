@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -82,3 +83,26 @@ def test_resume_contient_la_provenance() -> None:
     assert isinstance(report["git_dirty"], bool)
     assert report["date_utc"].endswith("+00:00")
     assert report["command"] == ["python", "scripts/train.py"]
+
+
+def test_hook_d_evaluation_construit_depuis_la_config_et_etat_recharge(tmp_path: Path) -> None:
+    from test_env import fake_obs
+    from test_run import StatefulFakeSim, cfg_of
+
+    from training.evalhook import STATE_FILE, EvalHookConfig
+
+    script = _load_script()
+    cfg = cfg_of()
+    hcfg = EvalHookConfig(every_timesteps=32, frozen_lag_timesteps=64, episodes_random=4, episodes_frozen=4, n_envs=2)
+    kw: dict[str, Any] = {"sim_factory": lambda n: StatefulFakeSim(n, 2), "build_obs": fake_obs, "obs_dim": 7}
+    # Act : run neuf, puis état présent -> refus sans --resume, rechargé avec
+    hook = script.build_eval_hook(cfg, hcfg, tmp_path / "out", tmp_path / "ck", resume=False, **kw)
+    assert hook.snapshot_dir == tmp_path / "ck" / "eval_snapshots" and hook.learned_steps_per_iteration == 32
+    (tmp_path / "out" / STATE_FILE).write_text(json.dumps(hook.state_dict()) + "\n", encoding="utf-8")
+    try:
+        script.build_eval_hook(cfg, hcfg, tmp_path / "out", tmp_path / "ck", resume=False, **kw)
+        raise AssertionError("état existant accepté pour un run neuf")
+    except script.RunError:
+        pass
+    again = script.build_eval_hook(cfg, hcfg, tmp_path / "out", tmp_path / "ck", resume=True, **kw)
+    assert again.state_dict() == hook.state_dict()

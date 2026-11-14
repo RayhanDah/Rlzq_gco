@@ -99,3 +99,25 @@ def test_iteration_scalars_full_set() -> None:
 def test_tensorboard_writer_fails_clearly_when_package_missing(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="tensorboard"):
         TensorBoardWriter(tmp_path)
+
+
+def test_try_append_jsonl_ne_masque_jamais_l_exception_d_origine(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from training.logging import append_jsonl, try_append_jsonl
+
+    # Arrange : un chemin impossible (dossier inexistant) ; une exception « d'origine » en cours de traitement
+    bad = tmp_path / "absent" / "events.jsonl"
+    good = tmp_path / "events.jsonl"
+    # Act
+    with pytest.raises(ValueError, match="origine"):
+        try:
+            raise ValueError("origine")
+        except ValueError:
+            err = try_append_jsonl(bad, {"event": "exception"})
+            raise
+    # Assert : l'erreur d'écriture est rendue et signalée, l'exception d'origine remonte intacte
+    assert isinstance(err, OSError) and "écriture impossible" in capsys.readouterr().err
+    assert try_append_jsonl(good, {"b": 1, "a": float("nan")}) is None
+    append_jsonl(good, {"c": 2}, fsync=False)
+    assert [json.loads(x) for x in good.read_text(encoding="utf-8").splitlines()][1] == {"c": 2}

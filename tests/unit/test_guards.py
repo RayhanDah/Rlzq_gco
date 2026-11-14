@@ -158,3 +158,22 @@ def test_params_and_grads_finite_helpers() -> None:
     with torch.no_grad():
         p[1] = float("nan")
     assert not params_finite([p, q])
+
+
+def test_alerte_k2_sous_50_pourcent_de_ln90_sans_action() -> None:
+    # Arrange : ln 90 = 4,50 ; seuil d'alerte 2,25 ; arrêt sous 0,45 (avant S1)
+    assert CFG.entropy_alert == pytest.approx(0.5 * math.log(90))
+    # Act / Assert : 2,0 -> alerte, décision CONTINUE (aucune action)
+    _, d = _run({**OK, "entropy": 2.0})
+    assert d.action is Action.CONTINUE and len(d.alerts) == 1 and d.alerts[0].startswith("entropy_low")
+    assert _run({**OK, "entropy": 2.3})[1].alerts == ()
+    # après S1 aussi (la règle d'arrêt est coupée, l'alerte reste)
+    assert _run({**OK, "entropy": 0.1}, s1_reached=True)[1].alerts != ()
+    # portée aussi par le STOP d'entropie et par une restauration KL ; jamais sur une décision « nonfinite »
+    assert _run({**OK, "entropy": 0.1})[1].action is Action.STOP and _run({**OK, "entropy": 0.1})[1].alerts != ()
+    kl = GuardState(kl_streak=CFG.kl_patience - 1)
+    _, dk = _run({**OK, "entropy": 1.0, "approx_kl": 0.2}, kl)
+    assert dk.action is Action.RESTORE and dk.alerts != ()
+    assert _run({**OK, "entropy": float("nan")})[1].alerts == ()
+    with pytest.raises(ValueError, match="entropy_alert_frac"):
+        GuardConfig(entropy_alert_frac=1.5)
