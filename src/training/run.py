@@ -441,7 +441,6 @@ def run(
     exact_env: bool | None = None
     s1_reached = False
     s1_iteration: int | None = None
-    resume_warning: str | None = None
     if resume:
         found = manager.load_latest(healthy_only=True)
         if found is None:
@@ -467,11 +466,10 @@ def run(
             eval_hook.load_state_dict(info.extra["evalhook"])
             eval_hook.note_checkpoint(iteration, True)
         elif eval_hook is not None:
-            resume_warning = (
-                f"checkpoint {path.name} sans état d'évaluation (run lancé sans hook) : θ₀ pris sur les poids "
-                f"courants de l'itération {iteration}, ce n'est PAS le vrai θ₀ ; S1 repart de zéro"
+            raise RunError(
+                f"checkpoint {path.name} sans état d'évaluation (run lancé sans hook) : reprise avec évaluation "
+                f"refusée, θ₀ serait pris sur les poids de l'itération {iteration} et fausserait S1 (ADR-005 D2)"
             )
-            eval_hook.note_checkpoint(iteration, True)
         resumed_from, exact_env = path.name, info.exact_env
         n_dropped = truncate_metrics(metrics_path, iteration, out / DROPPED_FILE)
         start_note = (
@@ -584,11 +582,6 @@ def run(
             out / EVENTS_FILE,
             {"event": "start", "t": time.time(), "meta_file": meta_path.name, "note": start_note, "resume": resume},
         )
-        if resume_warning is not None:
-            _append_jsonl(
-                out / EVENTS_FILE,
-                {"event": "evalhook_warning", "t": time.time(), "iteration": iteration, "message": resume_warning},
-            )
         if not resume:
             if pool is not None:
                 pool.add_snapshot(learner.policy, 0)  # θ₀ : premier adversaire passé, avant toute collecte

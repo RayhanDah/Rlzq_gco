@@ -31,6 +31,7 @@ from eval.match import RandomPolicy  # noqa: E402
 from models import PolicyNet  # noqa: E402
 from training.checkpoint import CheckpointIdentity, CheckpointManager  # noqa: E402
 from training.evalhook import EVALS_FILE, EvalHook, EvalHookConfig  # noqa: E402
+from training.run import RunError  # noqa: E402
 
 hook_mod = importlib.import_module("training.evalhook")
 
@@ -270,14 +271,14 @@ def test_reprise_depuis_le_seul_checkpoint_0_gele_theta0_aux_bons_poids(
     assert len(seen) == 1 and all(torch.equal(seen[0][k], theta0[k]) for k in theta0)
 
 
-def test_reprise_sans_etat_d_evaluation_avertit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_reprise_sans_etat_d_evaluation_refusee(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Arrange : run sans hook, puis reprise avec hook (le checkpoint n'a pas extra["evalhook"])
     monkeypatch.setattr(hook_mod, "play_match", Script("F" * 10))
     cfg = cfg_of()
     out = tmp_path / "run"
     go(cfg, out, max_iterations=2)
-    # Act
-    go(cfg, out, eval_hook=run_hook(out, cfg, EVERY), resume=True)
-    # Assert
-    w = [e for e in events(out) if e["event"] == "evalhook_warning"]
-    assert len(w) == 1 and "θ₀" in w[0]["message"] and w[0]["iteration"] == 2
+    n_rows = len(rows(out))
+    # Act, Assert : refus (un faux θ₀ fausserait le critère (b) de S1), rien n'est écrit ni évalué
+    with pytest.raises(RunError, match="sans état d'évaluation"):
+        go(cfg, out, eval_hook=run_hook(out, cfg, EVERY), resume=True)
+    assert len(rows(out)) == n_rows and not (out / EVALS_FILE).exists()
