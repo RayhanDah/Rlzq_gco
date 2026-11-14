@@ -329,6 +329,12 @@ class EvalHook:
             self._copy_live()
             self._theta0_pending = {k: v.detach().clone() for k, v in self._net.state_dict().items()}
 
+    def write_theta0(self) -> None:
+        """Écrit l'instantané θ₀ retenu par `bind_policy` s'il ne l'est pas encore (idempotent). `run` l'appelle avant
+        le checkpoint de l'itération 0, qui contient ainsi θ₀ (reprise autosuffisante dans un nouveau processus)."""
+        if self._theta0_pending is not None:
+            self._write_theta0()
+
     def note_checkpoint(self, iteration: int, healthy: bool) -> None:
         """À appeler par `run` après chaque checkpoint écrit (remplace `healthy_probe`)."""
         if healthy:
@@ -342,8 +348,7 @@ class EvalHook:
     def on_iteration(self, iteration: int) -> bool:
         """Retour en arrière éventuel, θ₀, évaluation si due, confirmation de S1. Rend `s1_reached`."""
         self._sync(iteration)
-        if self._theta0_pending is not None:
-            self._write_theta0()
+        self.write_theta0()
         if self.is_due(iteration):
             self._evaluate_or_trace(iteration)
         if not self.s1_reached:
@@ -377,8 +382,10 @@ class EvalHook:
         if int(state["seed"]) != self.seed or steps != self.learned_steps_per_iteration:
             raise EvalHookError("graine ou transitions par itération différentes de l'état sauvegardé")
         self.history = [dict(r) for r in state["history"]]
-        self.theta0 = dict(state["theta0"]) if state["theta0"] is not None else None
-        if self.theta0 is not None:
+        # θ₀ déjà connu (écrit sur disque) : jamais effacé par un état qui ne le contient pas encore (seconde revue
+        # A4 : restauration vers un checkpoint capturé avant l'écriture de θ₀)
+        if state["theta0"] is not None:
+            self.theta0 = dict(state["theta0"])
             self._theta0_pending = None
         self.s1_iteration = state["s1_iteration"]
         self.s1_eval_iteration = state["s1_eval_iteration"]
@@ -538,6 +545,7 @@ class EvalHook:
                 "passed": False,
                 "reason": f"erreur d'évaluation : {type(exc).__name__}",
                 "snapshot": None,
+                "k7_bad": None,  # erreur : ignorée par K7 (ni mauvaise, ni remise à zéro de la série)
             }
             self._log(
                 {
@@ -625,10 +633,12 @@ class EvalHook:
             after = [r for r in self.history if r["iteration"] > (self.s1_eval_iteration or 0)]
             n = 0
             for r in reversed(after):
+                if r["k7_bad"] is None:
+                    continue  # évaluation en erreur : sans mesure, ignorée
                 if not r["k7_bad"]:
                     break
                 n += 1
-            if n == self.cfg.k7_consecutive:
+            if n == self.cfg.k7_consecutive and rec["k7_bad"]:
                 self._log({"event": "k7_alert", "iteration": rec["iteration"], "consecutive": n})
         self._persist()
 

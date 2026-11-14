@@ -362,6 +362,28 @@ def test_alerte_k7_apres_s1(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     assert len(k7) == 1 and k7[0]["iteration"] == 12
 
 
+def test_erreur_d_evaluation_ignoree_par_k7(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Arrange : après S1 (évaluations 2, 4, 6), mauvaise à 8, ERREUR à 10, mauvaises à 12 et 14
+    monkeypatch.setattr(hook_mod, "play_match", Script("PPP"))
+    probe = Healthy()
+    hook = make_hook(tmp_path, probe=probe)
+    bound(hook)
+    drive(hook, probe, range(1, 8))
+
+    def bad(a: Any, b: Any, s: Any, n: int, **kw: Any) -> MatchResult:
+        if kw["seed"] == hook._seed_for(5, 0):
+            raise RuntimeError("panne")
+        return _result(0, 30) if isinstance(b, RandomPolicy) else PASS_FROZEN
+
+    monkeypatch.setattr(hook_mod, "play_match", bad)
+    # Act
+    drive(hook, probe, range(8, 15))
+    # Assert : l'erreur ne remet pas la série à zéro et ne compte pas : alerte à la 3e mauvaise (14), pas avant
+    log = evals(tmp_path)
+    assert [e["iteration"] for e in log if e["event"] == "eval_error"] == [10]
+    assert [e["iteration"] for e in log if e["event"] == "k7_alert"] == [14]
+
+
 def test_config_validee() -> None:
     assert EvalHookConfig().lag_evals == 2
     d = EvalHookConfig().to_dict()

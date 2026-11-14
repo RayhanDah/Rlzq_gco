@@ -365,6 +365,12 @@ def run(
     restauration par une garde le rechargent) ; chaque checkpoint écrit lui est notifié (`note_checkpoint`). Ses
     transitions par itération doivent valoir `batch_learned_steps` (pas d'évaluation en timesteps collectés).
 
+    Double état S1 après une restauration (ou une reprise) vers un checkpoint antérieur au verrou : `s1_reached` de
+    `run` est monotone et reste vrai (il gouverne les gardes), tandis que le hook, rechargé depuis le checkpoint, n'est
+    plus armé ; il refait ses évaluations et peut se réarmer, d'où un événement `s1_reached` possible deux fois dans
+    `evals.jsonl` (un par trajectoire), contre un seul dans `events.jsonl`. Le verdict officiel (S1-seed, hors ligne)
+    part des instantanés de la trajectoire retenue.
+
     Alertes de garde (`GuardDecision.alerts`, K2 sous 50 % de ln 90) : événement `alert` en passant sous le seuil,
     `alert_cleared` à la sortie, rien entre les deux. Le calendrier de `p_kick` (version `P_KICK_SCHEDULE_VERSION`) est
     écrit dans les checkpoints ; une reprise d'un checkpoint d'une autre version est refusée.
@@ -435,6 +441,7 @@ def run(
     exact_env: bool | None = None
     s1_reached = False
     s1_iteration: int | None = None
+    resume_warning: str | None = None
     if resume:
         found = manager.load_latest(healthy_only=True)
         if found is None:
@@ -458,6 +465,12 @@ def run(
             )
         if eval_hook is not None and "evalhook" in info.extra:
             eval_hook.load_state_dict(info.extra["evalhook"])
+            eval_hook.note_checkpoint(iteration, True)
+        elif eval_hook is not None:
+            resume_warning = (
+                f"checkpoint {path.name} sans état d'évaluation (run lancé sans hook) : θ₀ pris sur les poids "
+                f"courants de l'itération {iteration}, ce n'est PAS le vrai θ₀ ; S1 repart de zéro"
+            )
             eval_hook.note_checkpoint(iteration, True)
         resumed_from, exact_env = path.name, info.exact_env
         n_dropped = truncate_metrics(metrics_path, iteration, out / DROPPED_FILE)
@@ -571,9 +584,16 @@ def run(
             out / EVENTS_FILE,
             {"event": "start", "t": time.time(), "meta_file": meta_path.name, "note": start_note, "resume": resume},
         )
+        if resume_warning is not None:
+            _append_jsonl(
+                out / EVENTS_FILE,
+                {"event": "evalhook_warning", "t": time.time(), "iteration": iteration, "message": resume_warning},
+            )
         if not resume:
             if pool is not None:
                 pool.add_snapshot(learner.policy, 0)  # θ₀ : premier adversaire passé, avant toute collecte
+            if eval_hook is not None:
+                eval_hook.write_theta0()  # avant le checkpoint 0 : il contient θ₀ (restauration vers 0, reprise)
             save(True)  # checkpoint sain à l'itération 0 : une divergence précoce reste restaurable
         meter.tick(collector.agent_steps)
         while iteration < cap:

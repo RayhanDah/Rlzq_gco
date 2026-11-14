@@ -226,3 +226,58 @@ def test_erreur_d_evaluation_tracee_le_run_continue(tmp_path: Path, monkeypatch:
     with pytest.raises(Exception, match="erreurs d'évaluation"):
         go(cfg, tmp_path / "run2", eval_hook=hook2)
     assert any(e["event"] == "exception" for e in events(tmp_path / "run2"))
+
+
+def test_restauration_vers_l_iteration_0_conserve_theta0(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Arrange : NaN au 1er update -> RESTORE vers le checkpoint de l'itération 0 (seconde revue A4, majeur)
+    inject(monkeypatch, lambda n, st: dataclasses.replace(st, grad_norm=float("nan")) if n == 1 else st)
+    monkeypatch.setattr(hook_mod, "play_match", Script("P" * 20))
+    cfg = cfg_of()
+    hook = run_hook(tmp_path / "run", cfg, EVERY)
+    # Act
+    s = go(cfg, tmp_path / "run", eval_hook=hook)
+    # Assert : aucune erreur d'évaluation, θ₀ connu, le checkpoint 0 contient déjà θ₀
+    assert s.status == "completed" and s.restores == 1
+    assert not [e for e in log(tmp_path / "run") if e["event"] == "eval_error"]
+    assert hook.theta0 is not None and all(r["passed"] for r in hook.history)
+    assert [e["to_iteration"] for e in events(tmp_path / "run") if e["event"] == "restore"] == [0]
+    assert [r["iteration"] for r in hook.history] == [1, 2, 3, 4, 5, 6]  # le checkpoint 0 a été tourné ensuite
+
+
+def test_reprise_depuis_le_seul_checkpoint_0_gele_theta0_aux_bons_poids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Arrange : run arrêté avant la 1re itération (seul le checkpoint 0 existe), reprise dans de nouveaux objets
+    seen: list[dict[str, Any]] = []
+
+    def match(a: Any, b: Any, sim: Any, n: int, **kw: Any) -> Any:
+        if not isinstance(b, RandomPolicy):
+            seen.append({k: v.clone() for k, v in b.net.state_dict().items()})
+        return _result(30, 0) if isinstance(b, RandomPolicy) else PASS_FROZEN
+
+    monkeypatch.setattr(hook_mod, "play_match", match)
+    cfg = cfg_of()
+    out = tmp_path / "run"
+    go(cfg, out, eval_hook=run_hook(out, cfg, EVERY), max_iterations=0)
+    ck0 = CheckpointManager(out / "checkpoints").load_latest()
+    assert ck0 is not None and ck0[1]["iteration"] == 0
+    assert ck0[1]["extra"]["evalhook"]["theta0"] is not None  # checkpoint 0 autosuffisant
+    theta0 = ck0[1]["trainer"]["learner"]["policy"]
+    # Act : nouveau hook dont la politique liée a d'autres poids que θ₀ au moment de bind_policy
+    torch.manual_seed(1234)
+    go(cfg, out, eval_hook=run_hook(out, cfg, EVERY), resume=True, max_iterations=1)
+    # Assert : le gelé de la 1re évaluation a exactement les poids de θ₀
+    assert len(seen) == 1 and all(torch.equal(seen[0][k], theta0[k]) for k in theta0)
+
+
+def test_reprise_sans_etat_d_evaluation_avertit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Arrange : run sans hook, puis reprise avec hook (le checkpoint n'a pas extra["evalhook"])
+    monkeypatch.setattr(hook_mod, "play_match", Script("F" * 10))
+    cfg = cfg_of()
+    out = tmp_path / "run"
+    go(cfg, out, max_iterations=2)
+    # Act
+    go(cfg, out, eval_hook=run_hook(out, cfg, EVERY), resume=True)
+    # Assert
+    w = [e for e in events(out) if e["event"] == "evalhook_warning"]
+    assert len(w) == 1 and "θ₀" in w[0]["message"] and w[0]["iteration"] == 2
