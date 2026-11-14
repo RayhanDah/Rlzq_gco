@@ -323,6 +323,30 @@ celui d'un pool plein, la dynamique de jeu non. Non comparable tranche à tranch
   dernières tranches). **Un run de 1B ne tient pas dans une session de 8 h** dans la configuration de l'ADR-005
   (seuil : 34,7k/s) ; en 8 h à 26,6k/s : ≈ 0,77B (extrapolé).
 
+### M7 — Coût du pool et croissance mémoire : causes et correctifs (2026-11-14, commit b43211d)
+Même laptop, sur secteur, XPU. Sondes jetables (hors dépôt) sur les vrais composants, puis banc court.
+
+- **Coût du pool** (sonde : acteur + 100 instantanés, 8 192 agents dont 819 gelés, 1 500 steps) : acteur seul
+  3,7 ms/step ; avec un passage de réseau par instantané 72–82 ms/step (≈ 0,7 ms par réseau : coût de lancement des
+  opérations XPU, pas du calcul). Correctif : un seul passage groupé sur les poids empilés
+  (`training.selfplay._Stack`, `torch.baddbmm`) : **9–12 ms/step**. Logits égaux à ≈ 1e-5 près à ceux d'un passage
+  par réseau (ordre des additions) : trajectoires non identiques bit à bit à celles d'avant b43211d, reprise exacte
+  conservée (tests).
+- **Croissance mémoire** (M6 : mémoire privée +95 Mo/min, linéaire, ≈ 2,3 Mo par itération) : ni le simulateur ni la
+  collecte (sondes de 75 s : +0 Mo), ni le learner dans le thread principal (150 mises à jour : +5 Mo à K fixe,
+  plateau à +75 Mo à K variable). **Cause : un thread learner neuf par itération** (`OverlapTrainer`) : +339 Mo en
+  150 mises à jour, soit ≈ 2,3 Mo par thread, contre un plateau à +35 Mo avec un thread persistant. Correctif :
+  thread learner persistant, arrêté par `close()`.
+- **Banc court après correctifs** : `vendor/venv-xpu/Scripts/python scripts/bench_run.py --minutes 10 --prefill-pool
+  100 --slice-min 2` ; seed 0 ; commit b43211d (arbre propre, smoke test PASS : `runs/smoke_b43211d/`) ; 19:53 →
+  20:03 UTC ; données `runs/bench_4a_20261114T195348Z/`. **58,9k appris/s en moyenne sur 10 min à pool plein**
+  (M6 : 35,3k sur les 5 premières minutes) ; par tranche de 2 min : 54,2k ; 53,3k ; 63,2k ; 62,0k ; 61,8k.
+  Mémoire privée entre 5,9 et 6,3 Go de 1 à 10 min, sans pente (M6 : 5,7 → 6,6 Go sur la même durée). Les deux
+  premières tranches coïncident avec ≈ 1,5 Go de mémoire disponible (autre processus, non identifié), puis 4 Go.
+  « Inférence acteur + pool + tampons » : 50,6 % du temps mural (M6 : 76,0 %).
+- **Limites** : 10 min, un seul passage, K6 non concluant ; le débit soutenu (throttling au-delà de 10 min) et la
+  tenue mémoire sur 8 h ne sont **pas mesurés** après correctifs. 1B en 4,7 h au débit de ce banc (extrapolé).
+
 ## Temps de calcul
 Base **mesurée** : plateau soutenu du laptop ≈ 50k timesteps/s (M4, 57 min, politique aléatoire). Seconde colonne :
 facteur ×0,7, **estimé, non mesuré**, pour les critiques d'exploration GCO-std et l'évaluation (spec §6.2).
