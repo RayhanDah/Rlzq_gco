@@ -1,12 +1,14 @@
 """Évalue deux politiques par matchs appariés (kickoff -> premier but, côtés échangés) et écrit un JSON avec provenance.
 
     python scripts/eval.py --a <checkpoint|random> --b <checkpoint|random> --episodes N --out resultat.json
-        [--sprt-elo 50] [--device cpu] [--seed 0] [--mode sample|argmax] [--n-envs 64]
+        [--sprt-elo 50] [--sprt-max-decisive 1200] [--device cpu] [--seed 0] [--mode sample|argmax] [--n-envs 64]
 
 A est la politique évaluée, B la référence : l'Elo rapporté est celui de A sur B (parties décisives, nuls exclus).
 `--episodes` est le nombre d'épisodes joués (arrondi à une paire) ET le plafond du SPRT. `--sprt-elo X` rejoue après
 coup, dans l'ordre des paires, un SPRT H0 : Δ = 0 contre H1 : Δ = +X (α, β : `--sprt-alpha`, `--sprt-beta`) : la
 décision et le nombre d'épisodes qu'elle aurait consommés sont rapportés, les épisodes suivants restent dans le résumé.
+`--sprt-max-decisive N` ajoute le plafond de parties décisives (`SPRTConfig.max_decisive`) : le test s'arrête au
+premier des deux plafonds (ADR-005 D2, S1-seed : 1 200 décisives et 20 000 épisodes).
 Le fichier de sortie est le SEUL fichier écrit ; il n'est jamais écrasé (erreur s'il existe).
 
 Variables d'environnement RocketGPU : `ROCKETGPU_PY_DIR`, `ROCKETGPU_COLLISION_MESH_DIR` (et `ROCKETGPU_DLL_DIR`).
@@ -100,6 +102,7 @@ def evaluate(
     sprt_elo: float | None = None,
     sprt_alpha: float = 0.05,
     sprt_beta: float = 0.05,
+    sprt_max_decisive: int | None = None,
     n_boot: int = 2000,
     reward_config: RewardConfig | None = None,
     sim: Simulator | None = None,
@@ -147,13 +150,21 @@ def evaluate(
         "per_pair": {"outcome": res.outcome.tolist(), "ticks": res.ticks.tolist()},
     }
     if sprt_elo is not None:
-        sprt_cfg = SPRTConfig(elo0=0.0, elo1=sprt_elo, alpha=sprt_alpha, beta=sprt_beta, max_episodes=res.n_episodes)
+        sprt_cfg = SPRTConfig(
+            elo0=0.0,
+            elo1=sprt_elo,
+            alpha=sprt_alpha,
+            beta=sprt_beta,
+            max_episodes=res.n_episodes,
+            max_decisive=sprt_max_decisive,
+        )
         report["sprt"] = {
             "h0_elo": sprt_cfg.elo0,
             "h1_elo": sprt_cfg.elo1,
             "alpha": sprt_cfg.alpha,
             "beta": sprt_cfg.beta,
             "max_episodes": sprt_cfg.max_episodes,
+            "max_decisive": sprt_cfg.max_decisive,
             "draw_model": "nuls ignorés (Davidson) : test sur les parties décisives, voir eval.sprt",
             "mode": "rejoué après coup dans l'ordre des paires, évalué aux frontières de paires",
             **sprt_on_match(res, sprt_cfg).as_dict(),
@@ -171,6 +182,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--sprt-elo", type=float, default=None, help="H1 : +X Elo (H0 : 0) ; absent : pas de SPRT")
     ap.add_argument("--sprt-alpha", type=float, default=0.05)
     ap.add_argument("--sprt-beta", type=float, default=0.05)
+    ap.add_argument(
+        "--sprt-max-decisive", type=int, default=None, help="plafond de parties décisives du SPRT (absent : aucun)"
+    )
     ap.add_argument("--device", default="cpu", help="device torch des politiques (cpu, xpu, cuda)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--mode", choices=["sample", "argmax"], default="sample", help="choix d'action des checkpoints")
@@ -178,6 +192,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--n-boot", type=int, default=2000)
     ap.add_argument("--out", required=True, help="fichier JSON de sortie (créé, jamais écrasé)")
     args = ap.parse_args(argv)
+    if args.sprt_max_decisive is not None and (args.sprt_elo is None or args.sprt_max_decisive < 1):
+        print("--sprt-max-decisive exige --sprt-elo et une valeur >= 1", file=sys.stderr)
+        return 2
     out = Path(args.out)
     if out.exists():
         print(f"refus : {out} existe déjà (jamais écrasé)", file=sys.stderr)
@@ -194,6 +211,7 @@ def main(argv: list[str] | None = None) -> int:
             sprt_elo=args.sprt_elo,
             sprt_alpha=args.sprt_alpha,
             sprt_beta=args.sprt_beta,
+            sprt_max_decisive=args.sprt_max_decisive,
             n_boot=args.n_boot,
             command=[sys.executable, *(argv if argv is not None else sys.argv)],
         )

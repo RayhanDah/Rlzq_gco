@@ -578,3 +578,41 @@ def test_acheminement_a_ne_recoit_que_les_lignes_de_ses_slots() -> None:
 def test_attribution_avec_un_nombre_d_arenes_impair_et_un_seul_episode_par_arene() -> None:
     res = play_slots(SlotPolicy(5, 0), SlotPolicy(3, 3), n_envs=3, n=6)  # 3 paires, 3 arènes : 1 paire par arène
     assert (res.outcome[:, 0] == WIN).all() and (res.outcome[:, 1] == LOSS).all()
+
+
+def test_script_plafond_de_parties_decisives_du_sprt(tmp_path: Path) -> None:
+    # Arrange : A gagne souvent ; plafond de 4 décisives (ADR-005 D2 : S1-seed plafonné en décisives)
+    mod = _load_script()
+    ckpt = _write_ckpt(tmp_path / "ck", PolicyNet(OBS_D, hidden=(8,)))
+    kw: dict[str, Any] = {
+        "seed": 1,
+        "reward_config": CFG,
+        "build_obs": duel_obs,
+        "obs_dim": OBS_D,
+        "sprt_elo": 400.0,
+        "n_boot": 10,
+        "command": ["x"],
+    }
+    # Act
+    rep = mod.evaluate(str(ckpt), "random", 40, sim=DuelSim(8, {a: 0.3 for a in range(90)}), sprt_max_decisive=4, **kw)
+    # Assert
+    s = rep["sprt"]
+    assert s["max_decisive"] == 4 and s["n_decisive"] <= 5  # arrêt à la frontière de paire qui atteint le plafond
+    assert s["decision"] in ("cap_reached", "accept_h1", "accept_h0")
+    assert (
+        mod.main(
+            [
+                "--a",
+                "random",
+                "--b",
+                "random",
+                "--episodes",
+                "4",
+                "--sprt-max-decisive",
+                "3",
+                "--out",
+                str(tmp_path / "o.json"),
+            ]
+        )
+        == 2
+    )

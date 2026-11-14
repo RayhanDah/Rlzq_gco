@@ -135,3 +135,21 @@ def test_entrees_invalides() -> None:
         fit_bradley_terry(np.array([[1.0, 2.0], [2.0, 0.0]]))
     with pytest.raises(ValueError):
         fit_bradley_terry(np.array([[0.0, 2.0], [2.0, 0.0]]), anchor=5)
+
+
+def test_garwood_valeurs_de_table_et_definition() -> None:
+    from eval.rating import garwood_interval, poisson_cdf
+
+    # tables de Garwood (IC bilatéral 95 %) ; k = 0 : borne haute -ln(0,025)
+    assert garwood_interval(0) == (0.0, pytest.approx(-math.log(0.025), rel=1e-9))
+    assert garwood_interval(1) == (pytest.approx(0.0253, abs=1e-4), pytest.approx(5.5716, abs=1e-4))
+    assert garwood_interval(10) == (pytest.approx(4.7954, abs=1e-4), pytest.approx(18.3904, abs=1e-4))
+    assert garwood_interval(0, two_sided=False)[1] == pytest.approx(-math.log(0.05), rel=1e-9)
+    # définition : P(X >= k | L) = P(X <= k | U) = alpha / 2 (tolérance : précision de la bissection 1e-12 relative)
+    for k in (1, 7, 59, 400):
+        lo, hi = garwood_interval(k)
+        assert 1.0 - poisson_cdf(k - 1, lo) == pytest.approx(0.025, abs=1e-9)
+        assert poisson_cdf(k, hi) == pytest.approx(0.025, abs=1e-9)
+        assert lo < k < hi
+    with pytest.raises(ValueError):
+        garwood_interval(-1)

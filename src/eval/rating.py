@@ -16,6 +16,7 @@ sens à chaque paire ayant joué (régularisation vers l'égalité), l'Elo reste
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from statistics import NormalDist
 
@@ -58,6 +59,56 @@ def wilson_interval(successes: int, n: int, alpha: float = 0.05, *, two_sided: b
     centre = (p + z * z / (2.0 * n)) / denom
     half = z * math.sqrt(p * (1.0 - p) / n + z * z / (4.0 * n * n)) / denom
     return max(0.0, centre - half), min(1.0, centre + half)
+
+
+def poisson_cdf(k: int, mu: float) -> float:
+    """P(X <= k) pour X ~ Poisson(mu), somme des termes en log (stable jusqu'à des comptes de quelques milliers)."""
+    if mu < 0 or not math.isfinite(mu):
+        raise ValueError(f"mu={mu} : réel fini >= 0 attendu")
+    if k < 0:
+        return 0.0
+    if mu == 0.0:
+        return 1.0
+    log_mu = math.log(mu)
+    logs = [-mu + i * log_mu - math.lgamma(i + 1) for i in range(k + 1)]
+    top = max(logs)
+    return min(1.0, math.exp(top) * math.fsum(math.exp(x - top) for x in logs))
+
+
+def _bisect(f: Callable[[float], float], lo: float, hi: float) -> float:
+    """Racine de `f` croissante sur [lo, hi] (f(lo) <= 0 <= f(hi)), précision relative 1e-12."""
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        if f(mid) < 0:
+            lo = mid
+        else:
+            hi = mid
+        if hi - lo <= 1e-12 * max(1.0, hi):
+            break
+    return 0.5 * (lo + hi)
+
+
+def garwood_interval(count: int, alpha: float = 0.05, *, two_sided: bool = True) -> tuple[float, float]:
+    """Intervalle exact de Garwood (1936) de la moyenne d'une loi de Poisson observée `count` fois.
+
+    Borne basse L : P(X >= count | L) = a ; borne haute U : P(X <= count | U) = a, avec a = alpha / 2 si
+    `two_sided` (IC bilatéral de niveau 1 - alpha, convention usuelle « Garwood 95 % »), a = alpha sinon (bornes
+    unilatérales de niveau 1 - alpha). Équivaut aux quantiles du χ² (L = χ²(a ; 2k) / 2, U = χ²(1 - a ; 2k + 2) / 2),
+    calculés ici par bissection sur la fonction de répartition de Poisson (scipy absent du venv). `count = 0` : L = 0.
+    Pour un taux par minute, diviser les deux bornes par la durée d'exposition (fixe)."""
+    if count < 0:
+        raise ValueError("count >= 0")
+    if not 0.0 < alpha < 1.0:
+        raise ValueError("alpha dans ]0, 1[")
+    a = alpha / 2.0 if two_sided else alpha
+    hi = count + 10.0 * math.sqrt(count + 1.0) + 10.0
+    while poisson_cdf(count, hi) > a:
+        hi *= 2.0
+    upper = _bisect(lambda mu: a - poisson_cdf(count, mu), float(count), hi)
+    if count == 0:
+        return 0.0, upper
+    lower = _bisect(lambda mu: (1.0 - poisson_cdf(count - 1, mu)) - a, 0.0, float(count))
+    return lower, upper
 
 
 def regularized_elo(wins: float, losses: float, prior: float = 0.5) -> float:

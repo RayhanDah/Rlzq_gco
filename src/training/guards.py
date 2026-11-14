@@ -6,6 +6,8 @@ défaut viennent de `docs/PLAN.md` (§ Kill criteria préliminaires) :
 - NaN/Inf (pertes, gradients, paramètres) -> RESTORE ;
 - KL approx > 0,05 pendant 5 itérations consécutives -> RESTORE ;
 - entropie < 10 % de ln(n_actions) avant S1 -> STOP ;
+- ALERTE sans action (ADR-005 D6, K2) : entropie < 50 % de ln(n_actions) (2,25 pour 90 actions), avant comme après
+  S1 ; portée par `GuardDecision.alerts`, journalisée par l'appelant ;
 - explained variance < 0 pendant 50 itérations consécutives après S1 -> STOP ;
 - plus de `max_restores` restaurations au total depuis le début du run (cumulées, une itération saine ne remet PAS ce
   compteur à zéro : un run qui diverge de temps en temps finit par s'arrêter) -> STOP, règle `max_restores` ;
@@ -40,6 +42,7 @@ class GuardConfig:
     entropy_floor_frac: float = 0.10  # PLAN.md : entropie < 10 % de ln(90) avant S1
     n_actions: int = N_ACTIONS_V0
     entropy_patience: int = 1
+    entropy_alert_frac: float = 0.50  # ADR-005 D6 K2 : alerte journalisée sous 50 % de ln(90) = 2,25
     ev_floor: float = 0.0  # PLAN.md : explained variance < 0
     ev_patience: int = 50  # ... pendant 50 itérations après S1
     max_restores: int = 3  # restaurations CUMULÉES sur tout le run
@@ -50,10 +53,16 @@ class GuardConfig:
             raise ValueError("patiences >= 1")
         if self.max_restores < 0 or self.max_consecutive_restores < 0:
             raise ValueError("max_restores >= 0 et max_consecutive_restores >= 0")
+        if not 0.0 <= self.entropy_alert_frac <= 1.0:
+            raise ValueError("entropy_alert_frac dans [0, 1]")
 
     @property
     def entropy_floor(self) -> float:
         return self.entropy_floor_frac * math.log(self.n_actions)
+
+    @property
+    def entropy_alert(self) -> float:
+        return self.entropy_alert_frac * math.log(self.n_actions)
 
 
 @dataclass(frozen=True)
@@ -84,6 +93,9 @@ class GuardDecision:
     rule: str | None
     reason: str
     healthy: bool  # le checkpoint de cette itération peut devenir le « dernier sain »
+    alerts: tuple[str, ...] = ()
+    """Alertes sans action (`entropy_low`, K2 à 50 %), une chaîne « règle : détail » par alerte ; l'appelant les
+    journalise. Vide sur une décision `nonfinite` (statistiques inexploitables)."""
 
 
 LOSS_KEYS = ("policy_loss", "value_loss", "entropy", "approx_kl", "grad_norm", "explained_variance")
@@ -105,6 +117,17 @@ def grads_finite(params: Iterable[torch.nn.Parameter]) -> bool:
     return bool(torch.stack(flags).all().item()) if flags else True
 
 
+def entropy_alert(cfg: GuardConfig, stats: Mapping[str, float]) -> str | None:
+    """Alerte K2 (ADR-005 D6) si l'entropie est finie et sous `entropy_alert_frac` · ln(n_actions), sinon None."""
+    ent = stats.get("entropy")
+    if ent is None or not math.isfinite(ent) or ent >= cfg.entropy_alert:
+        return None
+    return (
+        f"entropy_low : entropie {ent:.4g} < {cfg.entropy_alert:.4g} "
+        f"({cfg.entropy_alert_frac:.0%} de ln {cfg.n_actions}, ADR-005 K2)"
+    )
+
+
 def evaluate(cfg: GuardConfig, state: GuardState, obs: GuardObservation) -> tuple[GuardState, GuardDecision]:
     s = obs.stats
     bad = nonfinite_keys(s)
@@ -121,20 +144,24 @@ def evaluate(cfg: GuardConfig, state: GuardState, obs: GuardObservation) -> tupl
     ev_neg = obs.s1_reached and s["explained_variance"] < cfg.ev_floor
     ev_streak = state.ev_streak + 1 if ev_neg else 0
     new = replace(state, kl_streak=kl_streak, entropy_streak=entropy_streak, ev_streak=ev_streak)
+    alert = entropy_alert(cfg, s)
+    alerts = (alert,) if alert is not None else ()
 
     if kl_streak >= cfg.kl_patience:
-        return _restore(
+        st, dec = _restore(
             cfg,
             new,
             "kl",
             f"KL approx > {cfg.kl_threshold} depuis {kl_streak} itérations (dernier {s['approx_kl']:.4g})",
         )
+        return st, replace(dec, alerts=alerts)
     if entropy_streak >= cfg.entropy_patience:
         return new, GuardDecision(
             Action.STOP,
             "entropy",
             f"entropie {s['entropy']:.4g} < {cfg.entropy_floor:.4g} (effondrement avant S1)",
             healthy=False,
+            alerts=alerts,
         )
     if ev_streak >= cfg.ev_patience:
         return new, GuardDecision(
@@ -142,10 +169,11 @@ def evaluate(cfg: GuardConfig, state: GuardState, obs: GuardObservation) -> tupl
             "explained_variance",
             f"explained variance < {cfg.ev_floor} depuis {ev_streak} itérations après S1",
             healthy=False,
+            alerts=alerts,
         )
     healthy = kl_streak == 0
     new = replace(new, restores=0) if healthy else new
-    return new, GuardDecision(Action.CONTINUE, None, "ok", healthy=healthy)
+    return new, GuardDecision(Action.CONTINUE, None, "ok", healthy=healthy, alerts=alerts)
 
 
 def _restore(cfg: GuardConfig, state: GuardState, rule: str, reason: str) -> tuple[GuardState, GuardDecision]:
