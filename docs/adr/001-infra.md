@@ -267,6 +267,38 @@ Lecture :
 - CPU et GPU intégré partagent la même enveloppe de puissance : les gains mesurés sur 30 s surestiment le régime de
   croisière. **Le chiffre de planification est le plateau soutenu**, pas les mesures courtes (M3, M4 hors banc soutenu).
 
+### M5 — Banc soutenu de la vraie boucle, pool et évaluation actifs (2026-11-14, tâche A5)
+Commande : `vendor/venv-xpu/Scripts/python scripts/bench_run.py --minutes 45 --checkpoint-probe` ; seed 0 ; commit
+dce396b (arbre propre) ; laptop Core Ultra 5 125H + Arc (XPU), 16 Go, sur secteur ; 2026-11-14 15:49 → 16:34 UTC ;
+configs `configs/bench_4a.yaml` et `configs/bench_4a_eval.yaml` (paramètres de l'ADR-005). Smoke test PASS sur le même
+commit (`runs/smoke_dce396b/smoke_summary.json`). Données brutes et résumé : `runs/bench_4a_20261114T154909Z/`.
+Un seul passage : pas de répétition, thermique non contrôlée.
+
+- **Débit** (timesteps appris/s, mural = évaluations, checkpoints et journal compris) : **46,0k en moyenne sur 45 min**
+  (collecté : 51,2k), 2 409 itérations, 124,3M appris, 0 restauration. Par tranche de 5 min : 57,3k ; 49,9k ; 51,2k ;
+  46,1k ; 45,9k ; 43,8k ; 39,8k ; 39,7k ; 40,8k. Dernière tranche / première = 0,68 (débit de boucle).
+  **Le débit baisse encore à 30 min et n'est stable (≈ 40k) que sur les 15 dernières minutes** ; le pool grandit
+  pendant tout le banc (7 → 49 instantanés, plafond 100 non atteint) : la part due au throttling et celle due au pool
+  ne sont **pas séparées** par cette mesure, et le débit à pool plein (100) n'est **pas mesuré**.
+- **K6** (< 25k appris/s pendant 30 min) : non déclenché, mesure concluante (45 min de boucle). Critère de révision
+  de cet ADR (≥ 25k timesteps/s) : tenu.
+- **Décomposition** (fil principal) : collecte 96,9 % du temps mural, dont simulation 17,2 %, obs + récompense + resets
+  18,4 %, **inférence acteur + pool + tampons 61,3 %** (non décomposé : pas de point de mesure dans `Collector`).
+  Apprentissage en recouvrement : 34,7 % (fil learner). Le poste dominant n'est ni le simulateur ni `build_obs`.
+- **Évaluations** (512 + 512 épisodes, 256 arènes) : 2, à 13,1 s et 15,7 s, 165–169k steps d'arène/s, **1,1 %** du
+  temps mural. Aucune évaluation lente : le cas à 179 s d'un mini-run d'A4 n'est pas reproduit (ni ici ni sur
+  l'essai de 3 min) et reste inexpliqué. Politique encore quasi initiale : des épisodes plus longs coûteront plus.
+- **Checkpoints** : 115,8 Mo à l'itération 0, 186,9 Mo à 49 instantanés (+0,7 Mo par instantané), écriture 1,1–1,7 s,
+  **0,6 %** du temps à un checkpoint toutes les 250 itérations. Sonde directe à 100 instantanés : 224,3 Mo, écriture
+  1,30 s, relecture 0,39 s (l'estimation de 74 Mo du sprint était fausse d'un facteur 3).
+- **RAM** : RSS max 7,86 Go, mémoire privée max 11,8 Go, **mémoire disponible minimale 588 Mo sur 16 Go** ; XPU
+  réservé max 464 Mo. La RSS finit à 3,9 Go alors que la mémoire privée reste haute : le système a vraisemblablement
+  réduit l'ensemble de travail sous pression mémoire (interprétation, non vérifiée). La pente de RSS calculée par
+  le script (négative) n'a donc pas de sens et n'est pas reprise.
+- **Journaux** : 3,7 Mo en 45 min, ≈ 29 Mo à 1B (extrapolé).
+- **Durée d'un run de 1B** (extrapolé) : 6,0 h au débit moyen du banc, **6,9 h à 40k/s** (dernières tranches) ;
+  au-delà de 8 h si le débit descend sous ≈ 34,7k/s à pool plein, ce que ce banc ne permet pas d'exclure.
+
 ## Temps de calcul
 Base **mesurée** : plateau soutenu du laptop ≈ 50k timesteps/s (M4, 57 min, politique aléatoire). Seconde colonne :
 facteur ×0,7, **estimé, non mesuré**, pour les critiques d'exploration GCO-std et l'évaluation (spec §6.2).

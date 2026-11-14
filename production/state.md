@@ -1,6 +1,6 @@
 # État du projet RL-GCO
 
-Mis à jour : 2026-11-14 (**G2 validé**, Phase 3 terminée, Phase 4a : A0 à A4 faits, A5 à lancer).
+Mis à jour : 2026-11-14 (**G2 validé**, Phase 3 terminée, Phase 4a : A0 à A5 faits, A6 à faire).
 
 ## Où on en est
 - Phase 0 terminée. **Gate G1 validé** le 2026-11-10 (décisions : `docs/GCO_SPEC.md` §10).
@@ -39,7 +39,7 @@ Mis à jour : 2026-11-14 (**G2 validé**, Phase 3 terminée, Phase 4a : A0 à A4
 ## Prochaines actions
 1. **Phase 4a (run court)** : sprint `production/sprints/2026-11-13.md` : A0 (ADR-005, **accepté** le 2026-11-13 : 4 runs de 1B,
    un par session de 8 h), A1 à A4 mergés (A3 pool : 445385a ; A4 évaluation en cours de run : dbd504e,
-   revues faites) ; restent A5 (banc ≥ 30 min, à la demande), A6, A7. Choix d'A4 validés par l'utilisateur
+   revues faites) ; A5 fait (M5 : 46,0k appris/s sur 45 min, ≈ 40k en fin de banc) ; restent A6, A7. Choix d'A4 validés par l'utilisateur
    le 2026-11-14 (ADR-005, « Précisions validées »). Prévu au départ :
    protocole (ADR-005), durcissement de la boucle, évaluation (`src/eval`), pool d'adversaires, banc soutenu ≥ 30 min,
    puis 6 runs (2 variantes × 3 seeds). Bancs et runs à la demande de l'utilisateur.
@@ -54,7 +54,9 @@ Mis à jour : 2026-11-14 (**G2 validé**, Phase 3 terminée, Phase 4a : A0 à A4
   gaz) ; à tester dans T1 et T7. Aucune comparaison au jeu avant la Phase 5.
 - **R1** : amorçage de l'exploration en GCO à petit budget (aucune preuve publique sous 0,35B steps).
 - **R2** : throttling **mesuré** : 75k ts/s les 6 premières minutes, plateau ≈ 45–50k ensuite, moyenne 50,3k sur
-  57 min (M4, politique aléatoire). RAM (16 Go partagés) non mesurée.
+  57 min (M4, politique aléatoire). Vraie boucle avec pool et évaluation (M5, 2026-11-14) : 46,0k appris/s sur
+  45 min, ≈ 40k sur les 15 dernières minutes, encore en baisse à 30 min, pool plein non mesuré. **RAM : 588 Mo
+  disponibles au minimum sur 16 Go** (privée max 11,8 Go).
 - **R3** : parité RLBot : cohérence adaptateur ↔ obs **testée** (écart ≤ 7,2e-7), mais conventions réelles du jeu
   (ordre d'Euler, signe du roll, ordre des pads, délai d'action) non vérifiées avant la Phase 5. `rlbot` 2.0.0b56
   est une pré-version.
