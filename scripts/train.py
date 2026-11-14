@@ -6,8 +6,8 @@
     python scripts/train.py <config> --eval                     # + évaluation en cours de run (S1-léger, ADR-005 D2)
     python scripts/train.py <config> --eval-config eval.yaml    # idem, paramètres de `EvalHookConfig` en YAML
 
-Évaluation en cours de run (`training.evalhook`) : alimente `s1_reached` de `run` via `s1_provider` ; journal
-`<out-dir>/evals.jsonl`, état `<out-dir>/evalhook_state.jsonl` (rechargé par `--resume`), instantanés de politique dans
+Évaluation en cours de run (`training.evalhook`) : alimente `s1_reached` de `run` via `eval_hook` ; journal
+`<out-dir>/evals.jsonl`, état dans les checkpoints (copie dans `evalhook_state.jsonl`), instantanés dans
 `<checkpoint-dir>/eval_snapshots/` (hors rotation). Désactivée par défaut (smoke test inchangé).
 
 Sorties (jamais supprimées ni écrasées) : journaux dans `runs/<name>/` (`--out-dir`), checkpoints dans
@@ -43,10 +43,8 @@ from training.checkpoint import CheckpointIdentity, git_commit  # noqa: E402
 from training.evalhook import (  # noqa: E402
     EvalHook,
     EvalHookConfig,
-    latest_healthy_iteration,
     load_latest_state,
 )
-from training.ppo import make_optimizer  # noqa: E402
 from training.run import rocketgpu_commit  # noqa: E402
 
 
@@ -181,8 +179,8 @@ def build_eval_hook(
     obs_dim: int | None = None,
 ) -> EvalHook:
     """Hook S1-léger d'un run : politique de même architecture, simulateur RocketGPU dédié (1v1, `n_envs` du hook),
-    confirmation par le dernier checkpoint sain de `ck_dir`. `resume` : recharge l'état de `evalhook_state.jsonl` ;
-    run neuf : refuse un état déjà présent (jamais d'écrasement ni de mélange de deux runs)."""
+    confirmation par le dernier checkpoint sain notifié par `run`. `resume` : l'état vient du checkpoint repris
+    (`extra["evalhook"]`) ; run neuf : refuse un `evalhook_state.jsonl` déjà présent."""
     from actions import N_ACTIONS
     from models import PolicyNet
     from obs import obs_dim as schema_obs_dim
@@ -205,7 +203,7 @@ def build_eval_hook(
 
     hook = EvalHook(
         hook_cfg,
-        batch_agent_steps=cfg.batch_agent_steps,
+        learned_steps_per_iteration=cfg.batch_learned_steps,
         run_seed=cfg.seed,
         out_dir=out_dir,
         snapshot_dir=snapshot_dir or ck_dir / "eval_snapshots",
@@ -215,20 +213,13 @@ def build_eval_hook(
         reward_config=reward_cfg,
         build_obs=build_obs,
         obs_dim=obs_dim,
-        healthy_probe=lambda: latest_healthy_iteration(ck_dir),
         train_config_hash=cfg.trajectory_hash(),
         git_commit_id=git_commit(ROOT),
     )
-    state = load_latest_state(out_dir)
-    if state is not None:
-        if not resume:
-            raise RunError(f"{out_dir} contient déjà un état d'évaluation : relancer avec --resume")
-        hook.load_state_dict(state)
+    # à la reprise, l'état de référence est celui du checkpoint repris (`run` le recharge depuis extra["evalhook"])
+    if not resume and load_latest_state(out_dir) is not None:
+        raise RunError(f"{out_dir} contient déjà un état d'évaluation : relancer avec --resume")
     return hook
-
-
-def _default_optimizer(params: list[torch.nn.Parameter], ppo: Any, device: torch.device) -> Any:
-    return make_optimizer(params, ppo, device)
 
 
 def _eval_summary(hook: EvalHook | None) -> dict[str, Any] | None:
@@ -288,7 +279,7 @@ def main(argv: list[str] | None = None) -> int:
             hook = build_eval_hook(
                 cfg, hook_cfg, out_dir, ck_dir, resume=args.resume, snapshot_dir=args.eval_snapshot_dir
             )
-            hook_kw = {"s1_provider": hook, "optimizer_factory": hook.wrap_optimizer_factory(_default_optimizer)}
+            hook_kw = {"eval_hook": hook}
         if not args.smoke:
             summary = run(
                 cfg,

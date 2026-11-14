@@ -88,7 +88,7 @@ def make_hook(tmp: Path, cfg: EvalHookConfig | None = None, probe: Any = None, *
     ident = CheckpointIdentity.current(reward_config_hash="r", obs_dim=OBS_D, tick_skip=8)
     hook = EvalHook(
         cfg or EvalHookConfig(every_timesteps=2, frozen_lag_timesteps=4, episodes_random=64, episodes_frozen=64),
-        batch_agent_steps=1,
+        learned_steps_per_iteration=1,
         run_seed=3,
         out_dir=tmp / "out",
         snapshot_dir=tmp / "snap",
@@ -104,7 +104,7 @@ def make_hook(tmp: Path, cfg: EvalHookConfig | None = None, probe: Any = None, *
 def bound(hook: EvalHook, seed: int = 0) -> PolicyNet:
     torch.manual_seed(seed)
     live = PolicyNet(OBS_D, 90, (4,))
-    hook.bind_params(list(live.parameters()))
+    hook.bind_policy(live)
     return live
 
 
@@ -379,5 +379,5 @@ def test_config_validee() -> None:
 
 def test_parametres_de_forme_differente_refuses(tmp_path: Path) -> None:
     hook = make_hook(tmp_path)
-    with pytest.raises(EvalHookError, match="forme"):
-        hook.bind_params(list(PolicyNet(OBS_D, 90, (5,)).parameters()))
+    with pytest.raises(EvalHookError, match="incompatible"):
+        hook.bind_policy(PolicyNet(OBS_D, 90, (5,)))

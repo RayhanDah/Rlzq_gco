@@ -38,7 +38,7 @@ def _hook(tmp: Path, sims: list[Any]) -> tuple[EvalHook, PolicyNet]:
 
     hook = EvalHook(
         CFG,
-        batch_agent_steps=1,
+        learned_steps_per_iteration=1,
         run_seed=0,
         out_dir=tmp / "out",
         snapshot_dir=tmp / "snap",
@@ -50,7 +50,7 @@ def _hook(tmp: Path, sims: list[Any]) -> tuple[EvalHook, PolicyNet]:
     )
     torch.manual_seed(0)
     live = PolicyNet(D, N_ACTIONS, (32, 32))
-    hook.bind_params(list(live.parameters()))
+    hook.bind_policy(live)
     return hook, live
 
 

@@ -29,8 +29,18 @@ Instantanés d'évaluation : poids de politique seuls, dans `snapshot_dir`, au f
 `scripts/eval.py --a <fichier>`), sans rotation (jamais supprimés). Journal par évaluation (ADR-005 D7) :
 `evals.jsonl` (score contre l'aléatoire avec Wilson, buts/min pour et contre le gelé avec Garwood, R0 rappelé, durées).
 
-Aucun générateur global n'est consommé (politiques, kickoffs et agent aléatoire ont leurs générateurs dédiés) : la
-trajectoire d'entraînement est identique avec ou sans évaluation (testé sur simulateur factice). GCO strict : rien de
+Aucun générateur global n'est consommé : politiques, kickoffs et agent aléatoire ont leurs générateurs dédiés, et
+les deux réseaux d'évaluation (courant, gelé) sont construits UNE fois, dans `torch.random.fork_rng` (l'init
+orthogonale de `PolicyNet` tire dans le RNG global torch, restauré à la sortie) ; la
+trajectoire d'entraînement ET l'état des RNG globaux sont identiques avec ou sans évaluation (testé sur simulateur
+factice).
+
+Pas d'évaluation en timesteps APPRIS (`RunConfig.batch_learned_steps`, pool compris), pas en collecté.
+Erreur pendant une évaluation : événement `eval_error` (type, message, trace), évaluation comptée comme ÉCHOUÉE (S1
+ne peut pas s'armer sur une mesure absente ; la série repart de zéro), le run continue ; au-delà de
+`max_consecutive_errors` erreurs d'affilée, `EvalHookError` remonte et `run` la trace comme toute exception. Raison :
+une évaluation ratée ne corrompt pas l'entraînement, et perdre une session de 8 h pour elle coûterait plus qu'un S1
+retardé ; une erreur répétée est un bug, qui doit arrêter le run. GCO strict : rien de
 ce module n'entre dans la perte ni dans la récompense.
 """
 
@@ -39,7 +49,7 @@ from __future__ import annotations
 import dataclasses
 import math
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -63,7 +73,7 @@ from training.checkpoint import (
 )
 from training.logging import append_jsonl
 
-STATE_VERSION = 1
+STATE_VERSION = 2
 EVALS_FILE = "evals.jsonl"
 STATE_FILE = "evalhook_state.jsonl"
 SNAPSHOT_KEEP = 1_000_000_000
@@ -106,6 +116,8 @@ class EvalHookConfig:
     """"sample" (comme à l'entraînement) ou "argmax"."""
     seed: int | None = None
     """Graine de l'évaluation ; None = graine du run."""
+    max_consecutive_errors: int = 3
+    """Erreurs d'évaluation d'affilée tolérées (tracées, évaluation échouée) avant de faire remonter l'exception."""
 
     def __post_init__(self) -> None:
         bad: list[str] = []
@@ -125,6 +137,8 @@ class EvalHookConfig:
             bad.append("n_envs >= 1")
         if self.mode not in ("sample", "argmax"):
             bad.append("mode : 'sample' ou 'argmax'")
+        if self.max_consecutive_errors < 0:
+            bad.append("max_consecutive_errors >= 0")
         if self.seed is not None and self.seed < 0:
             bad.append("seed >= 0")
         if bad:
@@ -147,7 +161,7 @@ class EvalHookConfig:
         if unknown:
             raise ValueError(f"évaluation : clés inconnues {unknown} (connues : {sorted(known)})")
         ints = {"every_timesteps", "frozen_lag_timesteps", "episodes_random", "episodes_frozen", "min_decisive"}
-        ints |= {"consecutive", "k7_consecutive", "n_envs"}
+        ints |= {"consecutive", "k7_consecutive", "n_envs", "max_consecutive_errors"}
         floats = {"wilson_alpha", "garwood_alpha", "r0_goals_per_min"}
         for k, v in data.items():
             ok = True
@@ -212,9 +226,9 @@ def load_latest_state(out_dir: str | Path) -> dict[str, Any] | None:
 class EvalHook:
     """Fournisseur S1 pour `training.run(..., s1_provider=hook)` : `hook(iteration) -> bool`.
 
-    Cycle : `bind_params(params)` (paramètres VIVANTS de la politique apprise, ordre de `PolicyNet.parameters()`),
+    Cycle : `bind_policy(module)` (politique apprise VIVANTE, copiée par noms de paramètres à chaque évaluation),
     puis un appel par itération. Paramètres :
-    - `batch_agent_steps` : transitions apprises par itération (`RunConfig.batch_agent_steps`) ;
+    - `learned_steps_per_iteration` : transitions APPRISES par itération (`RunConfig.batch_learned_steps`) ;
     - `policy_factory` : construit un `PolicyNet` de même architecture (CPU) ;
     - `sim_factory(n_envs)` : simulateur 1v1 DÉDIÉ, construit au premier besoin puis réutilisé ;
     - `identity`, `train_config_hash`, `git_commit_id` : provenance écrite dans les instantanés ;
@@ -226,7 +240,7 @@ class EvalHook:
         self,
         cfg: EvalHookConfig,
         *,
-        batch_agent_steps: int,
+        learned_steps_per_iteration: int,
         run_seed: int,
         out_dir: str | Path,
         snapshot_dir: str | Path,
@@ -241,10 +255,10 @@ class EvalHook:
         git_commit_id: str = "unknown",
         clock: Callable[[], float] = time.perf_counter,
     ) -> None:
-        if batch_agent_steps < 1:
-            raise ValueError("batch_agent_steps >= 1")
+        if learned_steps_per_iteration < 1:
+            raise ValueError("learned_steps_per_iteration >= 1")
         self.cfg = cfg
-        self.batch_agent_steps = batch_agent_steps
+        self.learned_steps_per_iteration = learned_steps_per_iteration
         self.seed = cfg.seed if cfg.seed is not None else run_seed
         self.out_dir = Path(out_dir)
         self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -261,8 +275,11 @@ class EvalHook:
         self.train_config_hash = train_config_hash
         self.git_commit_id = git_commit_id
         self._clock = clock
-        self._net = policy_factory()
-        self._live: list[torch.Tensor] | None = None
+        with torch.random.fork_rng(devices=[]):  # init des réseaux sans toucher au RNG global (CPU)
+            self._net = policy_factory()
+            self._frozen_net = policy_factory()
+        self._live: torch.nn.Module | None = None
+        self._errors = 0
         self._theta0_pending: dict[str, torch.Tensor] | None = None
         # --- état sérialisable
         self.history: list[dict[str, Any]] = []
@@ -282,7 +299,7 @@ class EvalHook:
 
     def eval_index(self, iteration: int) -> int:
         """Indice k de la dernière évaluation due au plus tard à l'itération `iteration` (0 avant la première)."""
-        return (iteration * self.batch_agent_steps) // self.cfg.every_timesteps
+        return (iteration * self.learned_steps_per_iteration) // self.cfg.every_timesteps
 
     def is_due(self, iteration: int) -> bool:
         return iteration >= 1 and self.eval_index(iteration) > self.eval_index(iteration - 1)
@@ -298,31 +315,19 @@ class EvalHook:
 
     # ------------------------------------------------------------------------------------------- liaison
 
-    def bind_params(self, params: Sequence[torch.Tensor]) -> None:
-        """Lie le hook aux paramètres VIVANTS de la politique apprise (les `len(PolicyNet.parameters())` premiers de
-        `params`, formes vérifiées) ; les copie au moment de l'évaluation. Au premier appel sans θ₀ dans l'état, retient
-        leur valeur courante comme θ₀ (écrit au premier appel du hook). Rappelable (nouveau run, même processus)."""
-        mine = list(self._net.parameters())
-        given = list(params)
-        if len(given) < len(mine):
-            raise EvalHookError(f"{len(given)} paramètres fournis, {len(mine)} attendus pour la politique")
-        for i, (a, b) in enumerate(zip(mine, given, strict=False)):
-            if tuple(a.shape) != tuple(b.shape):
-                raise EvalHookError(f"paramètre {i} : forme {tuple(b.shape)} != {tuple(a.shape)} (politique)")
-        self._live = given[: len(mine)]
+    def bind_policy(self, policy: torch.nn.Module) -> None:
+        """Lie le hook à la politique apprise VIVANTE (même architecture que `policy_factory()`, vérifié par noms et
+        formes des tenseurs du `state_dict`, l'ordre des paramètres n'intervient pas) ; elle est copiée sur CPU au
+        moment de chaque évaluation. Sans θ₀ dans l'état, retient sa valeur courante comme θ₀ (écrit au premier appel ;
+        un `load_state_dict` ultérieur, à la reprise, le remplace par celui de l'état). Rappelable."""
+        mine = {k: tuple(v.shape) for k, v in self._net.state_dict().items()}
+        given = {k: tuple(v.shape) for k, v in policy.state_dict().items()}
+        if mine != given:
+            raise EvalHookError(f"politique liée incompatible : {sorted(given.items())} != {sorted(mine.items())}")
+        self._live = policy
         if self.theta0 is None and self._theta0_pending is None:
             self._copy_live()
             self._theta0_pending = {k: v.detach().clone() for k, v in self._net.state_dict().items()}
-
-    def wrap_optimizer_factory(self, factory: Callable[..., Any]) -> Callable[..., Any]:
-        """Enveloppe d'`optimizer_factory` de `run` : lie le hook aux paramètres reçus (politique en tête, voir
-        `run` : `[*policy.parameters(), *value.parameters()]`), puis délègue à `factory`."""
-
-        def wrapped(params: list[torch.nn.Parameter], ppo: Any, device: torch.device) -> Any:
-            self.bind_params(params)
-            return factory(params, ppo, device)
-
-        return wrapped
 
     def note_checkpoint(self, iteration: int, healthy: bool) -> None:
         """À appeler par `run` après chaque checkpoint écrit (remplace `healthy_probe`)."""
@@ -340,7 +345,7 @@ class EvalHook:
         if self._theta0_pending is not None:
             self._write_theta0()
         if self.is_due(iteration):
-            self._evaluate(iteration)
+            self._evaluate_or_trace(iteration)
         if not self.s1_reached:
             self._try_latch(iteration)
         return self.s1_reached
@@ -352,7 +357,7 @@ class EvalHook:
             "version": STATE_VERSION,
             "config": self.cfg.to_dict(),
             "seed": self.seed,
-            "batch_agent_steps": self.batch_agent_steps,
+            "learned_steps_per_iteration": self.learned_steps_per_iteration,
             "history": [dict(r) for r in self.history],
             "theta0": dict(self.theta0) if self.theta0 is not None else None,
             "s1_iteration": self.s1_iteration,
@@ -368,7 +373,8 @@ class EvalHook:
             raise EvalHookError(f"version d'état {state.get('version')} != {STATE_VERSION}")
         if dict(state["config"]) != self.cfg.to_dict():
             raise EvalHookError(f"config d'évaluation différente de l'état sauvegardé : {state['config']}")
-        if int(state["seed"]) != self.seed or int(state["batch_agent_steps"]) != self.batch_agent_steps:
+        steps = int(state["learned_steps_per_iteration"])
+        if int(state["seed"]) != self.seed or steps != self.learned_steps_per_iteration:
             raise EvalHookError("graine ou transitions par itération différentes de l'état sauvegardé")
         self.history = [dict(r) for r in state["history"]]
         self.theta0 = dict(state["theta0"]) if state["theta0"] is not None else None
@@ -417,6 +423,10 @@ class EvalHook:
         return self._healthy_iteration
 
     def _try_latch(self, iteration: int) -> None:
+        """Arme S1 sur la PREMIÈRE série de `consecutive` réussites dont la dernière est couverte par un checkpoint
+        sain. Une évaluation POSTÉRIEURE à la série qui a échoué avant la confirmation ne l'annule pas : la série a
+        bien eu lieu sur la trajectoire retenue (elle est couverte), et ce qui suit relève de K7, pas de S1. En pratique
+        le cas ne se présente que si les checkpoints sont plus espacés que les évaluations."""
         candidates: list[dict[str, Any]] = []
         n = 0
         for rec in self.history:
@@ -450,10 +460,8 @@ class EvalHook:
 
     def _copy_live(self) -> None:
         if self._live is None:
-            raise EvalHookError("hook non lié : appeler bind_params (ou wrap_optimizer_factory) avant le run")
-        with torch.no_grad():
-            for dst, src in zip(self._net.parameters(), self._live, strict=True):
-                dst.copy_(src.detach().to("cpu"))
+            raise EvalHookError("hook non lié : appeler bind_policy avant le run (fait par `run(eval_hook=...)`)")
+        self._net.load_state_dict({k: v.detach().to("cpu") for k, v in self._live.state_dict().items()})
 
     def _save_snapshot(self, weights: Mapping[str, torch.Tensor], iteration: int, k: int) -> str:
         state = {
@@ -462,7 +470,7 @@ class EvalHook:
             "identity": dataclasses.asdict(self.identity),
             "iteration": int(iteration),
             "eval_index": int(k),
-            "trained_timesteps": int(iteration) * self.batch_agent_steps,
+            "trained_timesteps": int(iteration) * self.learned_steps_per_iteration,
             "train_config_hash": self.train_config_hash,
             "trainer": {"learner": {"policy": {n: t.detach().cpu().clone() for n, t in weights.items()}}},
             "versions": {"git_commit": self.git_commit_id, "torch": str(torch.__version__)},
@@ -478,7 +486,7 @@ class EvalHook:
     def _write_theta0(self) -> None:
         assert self._theta0_pending is not None
         name = self._save_snapshot(self._theta0_pending, 0, 0)
-        self.theta0 = {"snapshot": name, "source": "bind_params"}
+        self.theta0 = {"snapshot": name, "source": "bind_policy"}
         self._theta0_pending = None
         self._persist()
 
@@ -515,6 +523,39 @@ class EvalHook:
             obs_dim=self._obs_dim,
         )
 
+    def _evaluate_or_trace(self, iteration: int) -> None:
+        try:
+            self._evaluate(iteration)
+        except Exception as exc:
+            import traceback
+
+            self._errors += 1
+            rec: dict[str, Any] = {
+                "event": "eval",
+                "k": self.eval_index(iteration),
+                "iteration": iteration,
+                "trained_timesteps": iteration * self.learned_steps_per_iteration,
+                "passed": False,
+                "reason": f"erreur d'évaluation : {type(exc).__name__}",
+                "snapshot": None,
+            }
+            self._log(
+                {
+                    "event": "eval_error",
+                    "iteration": iteration,
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                    "traceback": traceback.format_exc(),
+                    "consecutive_errors": self._errors,
+                }
+            )
+            self.history = [r for r in self.history if r["iteration"] != iteration]
+            self._finish(rec, self._clock(), {})
+            if self._errors > self.cfg.max_consecutive_errors:
+                raise EvalHookError(f"{self._errors} erreurs d'évaluation d'affilée") from exc
+            return
+        self._errors = 0
+
     def _evaluate(self, iteration: int) -> None:
         cfg = self.cfg
         k = self.eval_index(iteration)
@@ -524,7 +565,7 @@ class EvalHook:
             "event": "eval",
             "k": k,
             "iteration": iteration,
-            "trained_timesteps": iteration * self.batch_agent_steps,
+            "trained_timesteps": iteration * self.learned_steps_per_iteration,
             "r0_goals_per_min": cfg.r0_goals_per_min,
             "rollbacks": self.rollbacks,
             "s1_reached_before": self.s1_reached,
@@ -544,7 +585,7 @@ class EvalHook:
         t_rand = self._clock()
 
         fk, fit, fname = self._frozen_for(k)
-        frozen_net = self._policy_factory()
+        frozen_net = self._frozen_net
         frozen_net.load_state_dict(self._load_snapshot(fname))
         current = NetPolicy(self._net, mode, self._seed_for(k, _ROLE_CURRENT_VS_FROZEN))
         frozen = NetPolicy(frozen_net, mode, self._seed_for(k, _ROLE_FROZEN_AGENT))

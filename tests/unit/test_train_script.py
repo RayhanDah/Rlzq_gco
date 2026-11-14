@@ -97,7 +97,7 @@ def test_hook_d_evaluation_construit_depuis_la_config_et_etat_recharge(tmp_path:
     kw: dict[str, Any] = {"sim_factory": lambda n: StatefulFakeSim(n, 2), "build_obs": fake_obs, "obs_dim": 7}
     # Act : run neuf, puis état présent -> refus sans --resume, rechargé avec
     hook = script.build_eval_hook(cfg, hcfg, tmp_path / "out", tmp_path / "ck", resume=False, **kw)
-    assert hook.snapshot_dir == tmp_path / "ck" / "eval_snapshots" and hook.batch_agent_steps == 32
+    assert hook.snapshot_dir == tmp_path / "ck" / "eval_snapshots" and hook.learned_steps_per_iteration == 32
     (tmp_path / "out" / STATE_FILE).write_text(json.dumps(hook.state_dict()) + "\n", encoding="utf-8")
     try:
         script.build_eval_hook(cfg, hcfg, tmp_path / "out", tmp_path / "ck", resume=False, **kw)

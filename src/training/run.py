@@ -49,7 +49,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from types import FrameType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
@@ -58,6 +58,10 @@ from env import BatchEnv, InitialStateSampler, RocketGPUSimulator, Simulator
 from env.batch_env import ObsBuilder
 from models import PolicyNet, ValueNet
 from rewards import RewardFunction
+
+if TYPE_CHECKING:
+    from training.evalhook import EvalHook
+import training.logging as training_logging
 from training.checkpoint import (
     CheckpointIdentity,
     CheckpointManager,
@@ -65,7 +69,7 @@ from training.checkpoint import (
     git_commit,
     restore,
 )
-from training.config import RunConfig
+from training.config import P_KICK_SCHEDULE_VERSION, RunConfig
 from training.guards import (
     Action,
     GuardDecision,
@@ -76,7 +80,7 @@ from training.guards import (
     nonfinite_keys,
     params_finite,
 )
-from training.logging import JsonlWriter, ThroughputMeter, batch_scalars, iteration_scalars
+from training.logging import JsonlWriter, ThroughputMeter, batch_scalars, iteration_scalars, try_append_jsonl
 from training.ppo import Learner, OptimizerLike, OverlapTrainer, make_optimizer, resolve_device
 from training.rollout import Collector, RolloutBatch
 from training.selfplay import PastOpponents, QualityPool, make_layout
@@ -226,11 +230,7 @@ def rocketgpu_commit() -> str:
 
 
 def _append_jsonl(path: Path, obj: dict[str, Any]) -> None:
-    line = json.dumps(obj, sort_keys=True, default=str) + "\n"
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(line)
-        f.flush()
-        os.fsync(f.fileno())
+    training_logging.append_jsonl(path, obj, fsync=True)
 
 
 def _write_new_json(path: Path, obj: dict[str, Any]) -> Path:
@@ -341,6 +341,7 @@ def run(
     handle_sigint: bool = True,
     command: list[str] | None = None,
     s1_provider: Callable[[int], bool] | None = None,
+    eval_hook: EvalHook | None = None,
 ) -> RunSummary:
     """Entraîne jusqu'au budget de `config`.
 
@@ -357,6 +358,16 @@ def run(
     puis restauré à la reprise. Il est transmis aux gardes : avant S1 la garde d'entropie est active, après S1 la règle
     d'explained variance s'arme. Défaut `None` : S1 jamais atteint. Une exception du fournisseur est traitée comme une
     exception de la boucle (tracée puis remontée).
+
+    `eval_hook` (`training.evalhook.EvalHook`, A4) : évaluation en cours de run. Lié à la politique apprise, appelé à
+    CHAQUE itération, y compris après S1 (journal D7, alerte K7) ; son verdict arme S1 comme `s1_provider` (les deux
+    peuvent coexister, le premier vrai l'emporte). Son état voyage dans `extra["evalhook"]` des checkpoints (reprise et
+    restauration par une garde le rechargent) ; chaque checkpoint écrit lui est notifié (`note_checkpoint`). Ses
+    transitions par itération doivent valoir `batch_learned_steps` (pas d'évaluation en timesteps collectés).
+
+    Alertes de garde (`GuardDecision.alerts`, K2 sous 50 % de ln 90) : événement `alert` en passant sous le seuil,
+    `alert_cleared` à la sortie, rien entre les deux. Le calendrier de `p_kick` (version `P_KICK_SCHEDULE_VERSION`) est
+    écrit dans les checkpoints ; une reprise d'un checkpoint d'une autre version est refusée.
     """
     cfg = config
     out = Path(out_dir)
@@ -384,6 +395,11 @@ def run(
     reward_hash = RewardFunction(cfg.reward.build()).config_hash
     identity = CheckpointIdentity.current(reward_config_hash=reward_hash, obs_dim=env.obs_dim, tick_skip=env.tick_skip)
     traj = cfg.trajectory_dict()
+    if eval_hook is not None and eval_hook.learned_steps_per_iteration != cfg.batch_learned_steps:
+        raise RunError(
+            f"eval_hook : {eval_hook.learned_steps_per_iteration} transitions par itération != "
+            f"batch_learned_steps {cfg.batch_learned_steps} (le pas d'évaluation compte en timesteps appris)"
+        )
 
     m = cfg.model
     p_kw: dict[str, Any] = {} if m.policy_hidden is None else {"hidden": m.policy_hidden}
@@ -407,6 +423,8 @@ def run(
         )
     collector = _TalliedCollector(env, actor, cfg.collection.steps_per_batch, device, cfg.seed, tally, pool)
     trainer = OverlapTrainer(learner, collector, overlap=cfg.collection.overlap)
+    if eval_hook is not None:
+        eval_hook.bind_policy(learner.policy)  # par noms de paramètres ; copie au moment de chaque évaluation
 
     # --- état initial : neuf ou repris
     guard_state = GuardState()
@@ -433,6 +451,14 @@ def run(
         guard_state = dataclasses.replace(guard_state, restores_total=max(guard_state.restores_total, tally.restores))
         s1_reached = bool(info.extra.get("s1_reached", False))
         s1_iteration = info.extra.get("s1_iteration")
+        saved_schedule = info.extra.get("p_kick_schedule_version")
+        if saved_schedule is not None and saved_schedule != P_KICK_SCHEDULE_VERSION:
+            raise RunError(
+                f"calendrier de p_kick du checkpoint (version {saved_schedule}) != code ({P_KICK_SCHEDULE_VERSION})"
+            )
+        if eval_hook is not None and "evalhook" in info.extra:
+            eval_hook.load_state_dict(info.extra["evalhook"])
+            eval_hook.note_checkpoint(iteration, True)
         resumed_from, exact_env = path.name, info.exact_env
         n_dropped = truncate_metrics(metrics_path, iteration, out / DROPPED_FILE)
         start_note = (
@@ -481,7 +507,10 @@ def run(
             "nan": tally.nan,
             "s1_reached": s1_reached,
             "s1_iteration": s1_iteration,
+            "p_kick_schedule_version": P_KICK_SCHEDULE_VERSION,
         }
+        if eval_hook is not None:
+            extra["evalhook"] = eval_hook.state_dict()
         state = capture(
             trainer,
             identity=identity,
@@ -496,6 +525,8 @@ def run(
         path = manager.save(state, healthy=healthy)
         t2 = time.perf_counter()
         last_ckpt_iteration = iteration
+        if eval_hook is not None:
+            eval_hook.note_checkpoint(iteration, healthy)
         rec = {
             "iteration": iteration,
             "file": path.name,
@@ -506,6 +537,24 @@ def run(
         }
         ckpts.append(rec)
         _append_jsonl(out / EVENTS_FILE, {"event": "checkpoint", "t": time.time(), **rec})
+
+    active_alerts: dict[str, str] = {}
+
+    def log_alerts(decision: GuardDecision) -> None:
+        """Une ligne à l'entrée dans une alerte et une à la sortie, pas une par itération (revue A4, M2)."""
+        now = {a.split(" :", 1)[0]: a for a in decision.alerts}
+        for rule, text in now.items():
+            if rule not in active_alerts:
+                _append_jsonl(
+                    out / EVENTS_FILE,
+                    {"event": "alert", "t": time.time(), "iteration": iteration, "rule": rule, "detail": text},
+                )
+        for rule in [r for r in active_alerts if r not in now]:
+            _append_jsonl(
+                out / EVENTS_FILE, {"event": "alert_cleared", "t": time.time(), "iteration": iteration, "rule": rule}
+            )
+        active_alerts.clear()
+        active_alerts.update(now)
 
     def log_decision(decision: GuardDecision) -> None:
         rec = {
@@ -542,7 +591,8 @@ def run(
             loop_s += time.perf_counter() - t_it
             sps.append(rate)
 
-            if not s1_reached and s1_provider is not None and bool(s1_provider(iteration)):
+            hook_s1 = eval_hook(iteration) if eval_hook is not None else False  # à chaque itération (D7, K7)
+            if not s1_reached and (hook_s1 or (s1_provider is not None and bool(s1_provider(iteration)))):
                 s1_reached, s1_iteration = True, iteration  # monotone : plus jamais remis à faux
                 _append_jsonl(out / EVENTS_FILE, {"event": "s1_reached", "t": time.time(), "iteration": iteration})
 
@@ -570,6 +620,7 @@ def run(
                 GuardObservation(stats=stats, params_finite=p_ok, grads_finite=g_ok, s1_reached=s1_reached),
             )
             last_healthy = decision.healthy
+            log_alerts(decision)
             if nonfinite_keys(stats) or not p_ok or not g_ok:  # compté même si la décision est STOP (max_restores)
                 tally.nan += 1
             if decision.action is Action.STOP:
@@ -597,6 +648,9 @@ def run(
                 # compteurs de la TRAJECTOIRE : retour à la valeur du checkpoint ; compteurs de VIE du run
                 # (restaurations, NaN, S1) : conservés, ils ne reculent jamais
                 tally.goals, tally.episode_ends = float(info.extra["goals"]), float(info.extra["episode_ends"])
+                if eval_hook is not None and "evalhook" in info.extra:
+                    eval_hook.load_state_dict(info.extra["evalhook"])  # évaluations écartées avec la trajectoire
+                    eval_hook.note_checkpoint(iteration, True)
                 # le journal ne garde qu'une ligne par step de la trajectoire retenue ; les autres vont dans
                 # `metrics_dropped.jsonl`. Le fichier est fermé le temps du remplacement atomique (Windows).
                 writer.close()
@@ -653,7 +707,8 @@ def run(
             "cause_message": str(cause_exc) if cause_exc is not None else None,
         }
         status, cause = "error", f"{type(exc).__name__} : {exc}"
-        _append_jsonl(out / EVENTS_FILE, {"event": "exception", "t": time.time(), **error_info})
+        # jamais d'exception ici : une erreur d'écriture masquerait l'exception d'origine (revue A4, M2)
+        try_append_jsonl(out / EVENTS_FILE, {"event": "exception", "t": time.time(), **error_info})
     finally:
         trainer.close()
         writer.close()
@@ -692,7 +747,8 @@ def run(
     )
     row = summary.as_dict()
     row["steps_per_s"] = [x if math.isfinite(x) else None for x in sps]
-    _append_jsonl(out / SEGMENTS_FILE, {"t": time.time(), **row})
     if failure is not None:
+        try_append_jsonl(out / SEGMENTS_FILE, {"t": time.time(), **row})
         raise failure
+    _append_jsonl(out / SEGMENTS_FILE, {"t": time.time(), **row})
     return summary

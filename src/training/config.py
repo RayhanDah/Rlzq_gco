@@ -38,6 +38,13 @@ _DEVICE_RE = re.compile(r"^(auto|cpu|cuda(:\d+)?|xpu(:\d+)?)$")
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 # Sections qui ne changent pas la trajectoire d'entraînement : exclues du hash vérifié à la reprise.
 OPERATIONAL_SECTIONS = ("checkpoint", "kill", "logging", "smoke")
+P_KICK_SCHEDULE_VERSION = 2
+"""Version de la FORMULE de `RunConfig.p_kick_at` (les paramètres, eux, sont dans le hash de trajectoire). 1 : avant
+A1 (cible atteinte une itération trop tard) ; 2 : A1 (cible à l'indice n - 1) puis A3 (annealing en timesteps appris,
+identique sans pool). Choix (revue A1 vers A4) : la version n'entre PAS dans `trajectory_hash`, ce qui changerait le
+hash de toutes les configs existantes ; elle est écrite dans `extra["p_kick_schedule_version"]` des checkpoints et
+`training.run` refuse une reprise d'une autre version. Un checkpoint sans cette clé (antérieur à A4) est accepté : sa
+version ne peut pas être prouvée. Changer la formule de `p_kick_at` => incrémenter cette constante."""
 
 
 class ConfigError(ValueError):
