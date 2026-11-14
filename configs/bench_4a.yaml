@@ -38,7 +38,7 @@ ppo:                    # identique à configs/smoke.yaml (docs/01_papers.md §2
   target_batch_size: 57344   # = 4096 x 2 x 7 (sans effet : collection.steps_per_batch fait foi)
 
 collection:
-  steps_per_batch: 7    # 57 344 collectés par lot, 51 610 appris avec le pool (ADR-005 D3)
+  steps_per_batch: 7    # 57 344 collectés par lot, 51 611 appris avec le pool (RunConfig.batch_learned_steps ; l'ADR-005 D3 arrondit à 51 610)
   overlap: true
 
 pool:                   # ADR-005 D5
@@ -48,7 +48,7 @@ pool:                   # ADR-005 D5
   quality_lr: 0.01
 
 budget:
-  total_timesteps: 1000000000   # 1B appris (ADR-005 D3) : 19 377 itérations
+  total_timesteps: 1000000000   # 1B appris (ADR-005 D3) : 19 376 itérations (RunConfig.total_iterations)
 
 checkpoint:
   # Proposition pour A6 : toutes les 250 itérations (≈ 12,9M appris ; ≈ 5 min à 1,2–1,3 s par itération, estimé

@@ -5,10 +5,15 @@ puis arrêt propre par le crochet `should_stop` de `run` (l'itération en cours 
     vendor/venv-xpu/Scripts/python scripts/bench_run.py                      # 40 min, configs/bench_4a.yaml, XPU
     vendor/venv-xpu/Scripts/python scripts/bench_run.py --minutes 45 --checkpoint-probe
     vendor/venv-xpu/Scripts/python scripts/bench_run.py --probe-only <checkpoint.pt>   # sonde seule, sans run
+    python scripts/bench_run.py --summarize runs/<nom>            # résumé recalculé hors ligne (fichiers bruts)
 
-Sorties (jamais écrasées ni supprimées) : `runs/<nom>/` (journaux du run, `bench_ticks.jsonl` : une ligne par
-itération, `bench_samples.jsonl` : RAM et alimentation, `bench_summary.json`, `bench_summary.txt`) et
-`checkpoints/<nom>/`, avec `<nom>` = `bench_4a_<horodatage UTC>` unique. Le banc refuse un arbre git sale (sauf
+`--minutes` porte sur la BOUCLE (après assemblage, θ₀ et checkpoint 0). Sorties (jamais écrasées ni supprimées) :
+`runs/<nom>/` (journaux du run et fichiers bruts du banc, écrits au fil de l'eau : `bench_meta.json` avant le run,
+`bench_ticks.jsonl` une ligne par itération, `bench_samples.jsonl` RAM et alimentation, `bench_pool.jsonl` ajouts au
+pool, `bench_end.json` au retour de `run`, `bench_probe.json` ; puis `bench_summary.json` et `bench_summary.txt`,
+suffixés `_001`... s'ils existent) et `checkpoints/<nom>/`, avec `<nom>` = `bench_4a_<horodatage UTC>` unique. Le
+résumé ne lit que ces fichiers : s'il échoue, `bench_summary_error.json` est écrit, le code de sortie est 1, et
+`--summarize` le recalcule sans relancer le run. Le banc refuse un arbre git sale (sauf
 `--allow-dirty`, alors signalé dans le résumé).
 
 Instrumentation (dans ce script seulement, `src/` n'est pas modifié) : des enveloppes de chronométrage sont posées sur
@@ -61,7 +66,13 @@ TARGET_LEARNED = 1_000_000_000
 """Budget d'un run 4a en timesteps appris (ADR-005 D3) : horizon des extrapolations."""
 TARGET_POOL = 100
 """Plafond du pool (ADR-005 D5) : horizon de l'extrapolation de taille de checkpoint."""
-BENCH_FILES = ("bench_ticks.jsonl", "bench_samples.jsonl", "bench_summary.json", "bench_summary.txt")
+BENCH_META = "bench_meta.json"
+"""Écrit avant le run : provenance, constantes de la config, origine des horloges (le résumé hors ligne en dépend)."""
+BENCH_END = "bench_end.json"
+"""Écrit au retour de `run` : résumé du run, erreur éventuelle, fin de provenance."""
+BENCH_POOL = "bench_pool.jsonl"
+BENCH_PROBE = "bench_probe.json"
+# Tout fichier `bench_*` est exclu de la mesure de taille des journaux du run.
 CADENCES = (100, 250, 500, 1000)
 SLOW_EVAL_FACTOR = 2.0
 """Une évaluation est signalée lente si elle dure plus de ce facteur fois la médiane des évaluations du banc."""
@@ -81,6 +92,24 @@ def percentile(xs: Sequence[float], q: float) -> float | None:
     lo = math.floor(pos)
     hi = min(lo + 1, len(s) - 1)
     return float(s[lo] + (s[hi] - s[lo]) * (pos - lo))
+
+
+def num(x: Any) -> float | None:
+    """`x` en flottant fini, sinon None (valeur absente, chaîne, NaN, booléen)."""
+    if isinstance(x, bool) or not isinstance(x, int | float) or not math.isfinite(x):
+        return None
+    return float(x)
+
+
+def integer(x: Any) -> int | None:
+    """`x` en entier, sinon None (un flottant entier est accepté, un booléen non)."""
+    if isinstance(x, bool):
+        return None
+    if isinstance(x, int):
+        return x
+    if isinstance(x, float) and math.isfinite(x) and x == int(x):
+        return int(x)
+    return None
 
 
 def dist(xs: Sequence[float]) -> dict[str, float | int | None]:
@@ -214,21 +243,31 @@ def k6_check(
     *,
     threshold: float = K6_THRESHOLD,
     window_s: float = K6_WINDOW_S,
+    rate_key: str | None = None,
 ) -> dict[str, Any]:
-    """K6 : débit appris (mural, par tranche) sous `threshold` pendant plus de `window_s` d'affilée. Les tranches sont
-    supposées contiguës (elles le sont : elles pavent le temps de la boucle)."""
+    """K6 : débit (mural, par tranche) sous `threshold` pendant plus de `window_s` d'affilée. `rate_key` None : drapeau
+    `below_threshold` des tranches (débit appris) ; sinon débit lu dans `slice[rate_key]` (p. ex. `collected_wall`).
+    `global_learned_wall` : débit global de même nature. Les tranches sont contiguës (elles pavent la boucle)."""
+
+    def below(s: Mapping[str, Any]) -> bool:
+        if rate_key is None:
+            return bool(s["below_threshold"])
+        v = num(s.get(rate_key))
+        return v is not None and v < threshold
+
     longest = cur = 0.0
     for s in slices:
-        cur = cur + float(s["duration_s"]) if s["below_threshold"] else 0.0
+        cur = cur + float(s["duration_s"]) if below(s) else 0.0
         longest = max(longest, cur)
     observed = sum(float(s["duration_s"]) for s in slices)
     return {
+        "rate": rate_key or "learned_wall",
         "threshold_learned_per_s": threshold,
         "window_s": window_s,
         "global_learned_wall": global_learned_wall,
         "global_below": global_learned_wall is not None and global_learned_wall < threshold,
         "longest_below_s": longest,
-        "slices_below": [int(s["slice"]) for s in slices if s["below_threshold"]],
+        "slices_below": [int(s["slice"]) for s in slices if below(s)],
         "triggered": longest > window_s,
         "observed_s": observed,
         "conclusive": observed > window_s,
@@ -273,13 +312,13 @@ def checkpoint_projection(
     mesuré : + (target − nets) × `unit_bytes` (taille sérialisée d'une politique) ; durées proportionnelles à la
     taille (hypothèse, étiquetée « extrapolé »). Pente mesurée (octets par instantané) si au moins deux tailles de pool
     distinctes. Coût relatif par cadence : durée projetée / (cadence × durée d'une itération)."""
-    valid = [c for c in ckpts if c.get("nets") is not None and c.get("bytes")]
+    valid = [c for c in ckpts if integer(c.get("nets")) is not None and num(c.get("bytes"))]
     if not valid:
         return {"available": False}
     last = valid[-1]
     nets, size = int(last["nets"]), float(last["bytes"])
     # le checkpoint de l'itération 0 n'a pas encore de lot en attente (plus petit) : hors de l'ajustement
-    later = [c for c in valid if int(c.get("iteration") or 0) > 0]
+    later = [c for c in valid if (integer(c.get("iteration")) or 0) > 0]
     fit = fit_slope([float(c["nets"]) for c in later], [float(c["bytes"]) for c in later])
     per_net = unit_bytes if unit_bytes is not None else (fit[0] if fit else None)
     out: dict[str, Any] = {
@@ -297,8 +336,8 @@ def checkpoint_projection(
         return out
     proj = size + max(target_nets - nets, 0) * per_net
     scale = proj / size if size > 0 else None
-    cap = float(last.get("capture_s") or 0.0)
-    wr = float(last.get("write_s") or 0.0)
+    cap = num(last.get("capture_s")) or 0.0
+    wr = num(last.get("write_s")) or 0.0
     out["bytes"] = proj
     out["capture_s"] = cap * scale if scale else None
     out["write_s"] = wr * scale if scale else None
@@ -321,7 +360,8 @@ def nets_at(pool_adds: Sequence[Mapping[str, Any]], iteration: int) -> int | Non
     """Poids d'instantanés en mémoire après le dernier ajout au pool d'itération <= `iteration` (None avant le 1er)."""
     best: Mapping[str, Any] | None = None
     for a in pool_adds:
-        if int(a["iteration"]) <= iteration:
+        it = integer(a.get("iteration"))
+        if it is not None and it <= iteration and integer(a.get("nets")) is not None:
             best = a
     return None if best is None else int(best["nets"])
 
@@ -337,18 +377,18 @@ def eval_analysis(
     simulés) ou temps hors simulation (politique, observations)."""
     rows: list[dict[str, Any]] = []
     for e in evals:
-        if e.get("event") != "eval":
-            continue
-        it = int(e["iteration"])
+        it = integer(e.get("iteration"))
+        if e.get("event") != "eval" or it is None:
+            continue  # autres événements, ou ligne incomplète (comptée par `summarize_bench`)
         timing = e.get("timing") or {}
         rnd, frz = e.get("random") or {}, e.get("frozen") or {}
         tk = tick_by_iteration.get(it, {})
-        steps = tk.get("eval_arena_steps")
-        sim_s = tk.get("eval_sim_s")
-        env_s = tk.get("eval_env_step_s")
-        total = timing.get("total_s")
-        minutes = float(rnd.get("minutes", 0.0)) + float(frz.get("minutes", 0.0))
-        episodes = int(rnd.get("episodes", 0)) + int(frz.get("episodes", 0))
+        steps = integer(tk.get("eval_arena_steps"))
+        sim_s = num(tk.get("eval_sim_s"))
+        env_s = num(tk.get("eval_env_step_s"))
+        total = num(timing.get("total_s"))
+        minutes = (num(rnd.get("minutes")) or 0.0) + (num(frz.get("minutes")) or 0.0)
+        episodes = (integer(rnd.get("episodes")) or 0) + (integer(frz.get("episodes")) or 0)
         rows.append(
             {
                 "k": e.get("k"),
@@ -357,9 +397,9 @@ def eval_analysis(
                 "passed": e.get("passed"),
                 "reason": e.get("reason"),
                 "total_s": total,
-                "snapshot_s": timing.get("snapshot_s"),
-                "random_s": timing.get("random_s"),
-                "frozen_s": timing.get("frozen_s"),
+                "snapshot_s": num(timing.get("snapshot_s")),
+                "random_s": num(timing.get("random_s")),
+                "frozen_s": num(timing.get("frozen_s")),
                 "episodes": episodes,
                 "game_minutes": minutes,
                 "decisive_random": rnd.get("decisive"),
@@ -415,7 +455,14 @@ def ram_summary(
         fit = fit_slope([t for t, _ in late], [v for _, v in late]) if len(late) >= 3 else None
         out["rss_slope_bytes_per_h"] = fit[0] * 3600.0 if fit else None
         out["rss_at_horizon_extrapolated"] = (fit[0] * horizon_h * 3600.0 + fit[1]) if fit else None
+        out["rss_at_horizon_label"] = (
+            "extrapolé, pessimiste : le pool sature à 100 instantanés, la RSS ne croît plus linéairement ensuite"
+        )
         out["horizon_h"] = horizon_h
+    xpu = [float(s["xpu_reserved"]) for s in samples if num(s.get("xpu_reserved")) is not None]
+    if xpu:
+        out["xpu_reserved_max"] = max(xpu)
+        out["xpu_note"] = "mémoire de l'iGPU prise sur la RAM système partagée (16 Go)"
     if avail:
         out["avail_min"] = min(v for _, v in avail)
         out["avail_first"] = avail[0][1]
@@ -430,6 +477,8 @@ def ram_summary(
             c["rss_max"] = max(c.get("rss_max", 0.0), float(s["rss"]))
         if s.get("avail") is not None:
             c["avail_min"] = min(c.get("avail_min", math.inf), float(s["avail"]))
+        if num(s.get("xpu_reserved")) is not None:
+            c["xpu_reserved_max"] = max(c.get("xpu_reserved_max", 0.0), float(s["xpu_reserved"]))
     out["curve"] = [curve[b] for b in sorted(curve)]
     ac = {s.get("ac_line") for s in samples if s.get("ac_line") is not None}
     out["ac_line_values"] = sorted(ac)
@@ -437,28 +486,52 @@ def ram_summary(
     return out
 
 
-def log_projection(sizes: Mapping[str, int], trained: int, target: int = TARGET_LEARNED) -> dict[str, Any]:
-    """Tailles de journaux ramenées à `target` timesteps appris (linéaire, étiqueté « extrapolé »).
-    `evalhook_state.jsonl` réécrit tout l'historique à chaque ligne : croissance quadratique, d'où une borne haute
-    (rapport au carré) en plus."""
+MIN_EVALS_FOR_PROJECTION = 3
+"""Sous ce nombre d'évaluations, l'extrapolation des journaux d'évaluation est étiquetée « très imprécis »."""
+
+
+def log_projection(
+    sizes: Mapping[str, int],
+    trained: int,
+    *,
+    evals_done: int = 0,
+    evals_target: int = 0,
+    target: int = TARGET_LEARNED,
+) -> dict[str, Any]:
+    """Tailles de journaux ramenées à `target` timesteps appris (étiqueté « extrapolé ») :
+    - `run_meta*.json`, `segments.jsonl` : une entrée par session, inchangés ;
+    - `evals.jsonl` : proportionnel au nombre d'évaluations (`evals_target` / `evals_done`) ;
+    - `evalhook_state.jsonl` : une ligne par changement d'état (θ₀ puis une par évaluation), chacune recopiant tout
+      l'historique : la ligne j pèse ≈ (j + 1) unités, total ∝ (e + 1)(e + 2) / 2 pour e évaluations ;
+    - le reste : proportionnel aux timesteps appris.
+    Sous `MIN_EVALS_FOR_PROJECTION` évaluations, les deux journaux d'évaluation sont « très imprécis »."""
     r = target / trained if trained > 0 else None
+    imprecise = evals_done < MIN_EVALS_FOR_PROJECTION
     files: dict[str, Any] = {}
     for name, size in sorted(sizes.items()):
-        per_segment = name.startswith("run_meta") or name == "segments.jsonl"  # une entrée par session, pas par step
-        rec: dict[str, Any] = {"bytes": size, "extrapolated_linear": size if per_segment else (size * r if r else None)}
-        if per_segment:
-            rec["per_segment"] = True
-        if name == "evalhook_state.jsonl":
-            rec["extrapolated_quadratic_bound"] = size * r * r if r else None
+        rec: dict[str, Any] = {"bytes": size}
+        if name.startswith("run_meta") or name == "segments.jsonl":
+            rec.update(extrapolated=size, model="par session")
+        elif name == "evals.jsonl":
+            rec.update(extrapolated=size * evals_target / evals_done if evals_done else None, model="par évaluation")
+        elif name == "evalhook_state.jsonl":
+            e, big = evals_done, evals_target
+            rec.update(extrapolated=size * (big + 1) * (big + 2) / ((e + 1) * (e + 2)), model="quadratique")
+        else:
+            rec.update(extrapolated=size * r if r else None, model="linéaire en timesteps")
+        if name in ("evals.jsonl", "evalhook_state.jsonl") and imprecise:
+            rec["label"] = f"très imprécis (< {MIN_EVALS_FOR_PROJECTION} évaluations)"
         files[name] = rec
-    total = sum(sizes.values())
+    known = [f["extrapolated"] for f in files.values() if f["extrapolated"] is not None]
     return {
         "label": "extrapolé",
         "trained": trained,
         "target": target,
+        "evals_done": evals_done,
+        "evals_target": evals_target,
         "files": files,
-        "total_bytes": total,
-        "total_extrapolated_linear": total * r if r else None,
+        "total_bytes": sum(sizes.values()),
+        "total_extrapolated": sum(known) if len(known) == len(files) else None,
     }
 
 
@@ -470,6 +543,12 @@ def unique_name(prefix: str, now: datetime.datetime, taken: Callable[[str], bool
         n += 1
         name = f"{base}_{n:03d}"
     return name
+
+
+def is_under(path: Path, roots: Iterable[Path]) -> bool:
+    """Vrai si `path` (résolu) est l'une des `roots` ou se trouve dessous : dossiers protégés pour la sonde."""
+    p = path.resolve()
+    return any(p == r.resolve() or p.is_relative_to(r.resolve()) for r in roots)
 
 
 def _mb(x: float | None) -> str:
@@ -520,12 +599,21 @@ def render_table(summary: Mapping[str, Any]) -> str:
         f"global : appris mural {_k(g.get('learned_wall'))}/s, appris boucle {_k(g.get('learned_loop'))}/s, "
         f"collecté mural {_k(g.get('collected_wall'))}/s, collecté boucle {_k(g.get('collected_loop'))}/s"
     )
-    k6 = summary.get("k6", {})
+    lw = summary.get("breakdown", {}).get("loop_wall_s")
+    L.append(f"durée de boucle réelle : {(lw or 0) / 60:.1f} min (--minutes porte sur la boucle)")
+    for key, what in (("k6", "appris mural"), ("k6_collected", "collecté mural")):
+        k6 = summary.get(key, {})
+        if not k6:
+            continue
+        L.append(
+            f"K6 ({what} < {_k(k6.get('threshold_learned_per_s'))}/s > 30 min) : "
+            f"{'DÉCLENCHÉ' if k6.get('triggered') else 'non déclenché'} ; plus longue série sous le seuil "
+            f"{(k6.get('longest_below_s') or 0) / 60:.1f} min ; global sous le seuil : {k6.get('global_below')} ; "
+            f"concluant (> 30 min de boucle) : {k6.get('conclusive')}"
+        )
     L.append(
-        f"K6 (appris mural < {_k(k6.get('threshold_learned_per_s'))}/s > 30 min) : "
-        f"{'DÉCLENCHÉ' if k6.get('triggered') else 'non déclenché'} ; plus longue série sous le seuil "
-        f"{(k6.get('longest_below_s') or 0) / 60:.1f} min ; global sous le seuil : {k6.get('global_below')} ; "
-        f"concluant (> 30 min observées) : {k6.get('conclusive')}"
+        "  remarque : le critère de l'ADR-001 (« moitié du plateau de M4 ») portait sur un débit COLLECTÉ sans pool ; "
+        "ADR-005 K6 parle de débit appris"
     )
     th = summary.get("throttle", {})
     if th.get("ratio") is not None:
@@ -612,15 +700,16 @@ def render_table(summary: Mapping[str, Any]) -> str:
         f"RAM : RSS max {_mb(ram.get('rss_max'))} (début {_mb(ram.get('rss_first'))}, fin {_mb(ram.get('rss_last'))}), "
         f"privée max {_mb(ram.get('private_max'))}, disponible min {_mb(ram.get('avail_min'))} ; pente RSS "
         f"{_mb(ram.get('rss_slope_bytes_per_h'))}/h, RSS à {ram.get('horizon_h')} h "
-        f"{_mb(ram.get('rss_at_horizon_extrapolated'))} (extrapolé) ; batterie vue : {ram.get('on_battery_seen')}"
+        f"{_mb(ram.get('rss_at_horizon_extrapolated'))} (extrapolé, pessimiste : pool saturé à 100) ; "
+        f"XPU réservé max {_mb(ram.get('xpu_reserved_max'))} (sur la RAM partagée) ; "
+        f"batterie vue : {ram.get('on_battery_seen')}"
     )
     lg = summary.get("logs", {})
-    L.append(f"Journaux : {_mb(lg.get('total_bytes'))}, à 1B {_mb(lg.get('total_extrapolated_linear'))} (extrapolé)")
+    L.append(f"Journaux : {_mb(lg.get('total_bytes'))}, à 1B {_mb(lg.get('total_extrapolated'))} (extrapolé)")
     for name, rec in lg.get("files", {}).items():
-        extra = rec.get("extrapolated_quadratic_bound")
         L.append(
-            f"  {name:<26} {_mb(rec['bytes']):>10} -> {_mb(rec['extrapolated_linear'])}"
-            + (f" (borne quadratique {_mb(extra)})" if extra is not None else "")
+            f"  {name:<26} {_mb(rec['bytes']):>10} -> {_mb(rec.get('extrapolated'))} ({rec.get('model')})"
+            + (f" {rec['label']}" if rec.get("label") else "")
         )
     warns = summary.get("warnings", [])
     if warns:
@@ -770,10 +859,12 @@ class Instrument:
     """Enveloppes de chronométrage posées le temps du run (retirées dans `uninstall`), compteurs par rôle
     (« train » : simulateur et env d'entraînement ; « eval » : ceux de l'évaluation, reconnus au nombre d'arènes)."""
 
-    def __init__(self, train_envs: int, eval_envs: int) -> None:
+    def __init__(self, train_envs: int, eval_envs: int, pool_path: Path | None = None) -> None:
         if train_envs == eval_envs:
             raise ValueError("arènes d'entraînement et d'évaluation identiques : rôles indiscernables")
         self.train_envs, self.eval_envs = train_envs, eval_envs
+        self.pool_path = pool_path
+        """Chaque ajout au pool y est écrit au fil de l'eau (`bench_pool.jsonl`) : rien ne vit qu'en mémoire."""
         self.c: dict[str, float] = {}
         self.pool_adds: list[dict[str, Any]] = []
         self._orig: list[tuple[Any, str, Any]] = []
@@ -841,9 +932,17 @@ class Instrument:
                 uid = orig(self, policy, iteration)
                 dt = time.perf_counter() - t0
                 inst.add("pool_add_s", dt)
-                inst.pool_adds.append(
-                    {"iteration": int(iteration), "s": dt, "size": len(self.pool), "nets": len(self.nets)}
-                )
+                rec = {
+                    "iteration": int(iteration),
+                    "s": dt,
+                    "size": len(self.pool),
+                    "nets": len(self.nets),
+                    "unix": time.time(),
+                }
+                inst.pool_adds.append(rec)
+                if inst.pool_path is not None:
+                    with open(inst.pool_path, "a", encoding="utf-8") as f:
+                        f.write(json.dumps(rec, sort_keys=True) + "\n")
                 return uid
 
             return wrapper
@@ -862,7 +961,8 @@ class Instrument:
 
 class Ticker:
     """Appelé à chaque `should_stop` (en tête de chaque itération de `run`) : enregistre l'instant et les compteurs
-    écoulés depuis l'appel précédent, puis dit s'il faut arrêter (durée murale atteinte)."""
+    écoulés depuis l'appel précédent, puis dit s'il faut arrêter : `deadline_s` de BOUCLE écoulées depuis le premier
+    appel (l'assemblage, θ₀ et le checkpoint 0 n'en font pas partie)."""
 
     def __init__(self, inst: Instrument, path: Path, t_bench0: float, deadline_s: float) -> None:
         self.inst, self.t_bench0, self.deadline_s = inst, t_bench0, deadline_s
@@ -893,7 +993,7 @@ class Ticker:
         self._f.write(json.dumps(rec, sort_keys=True) + "\n")
         self._f.flush()
         self._prev_t, self._prev_c = rec["t"], c
-        return now - self.t_bench0 >= self.deadline_s
+        return now - self.origin >= self.deadline_s
 
     def close(self) -> None:
         self._f.close()
@@ -1030,12 +1130,52 @@ def summarize_bench(
 ) -> dict[str, Any]:
     """Assemble le résumé JSON du banc à partir des mesures brutes (fonction pure : testée sans run).
     `t_run_start`, `t_run_end` : appel et retour de `run`, en secondes depuis le début du banc (même horloge que
-    `t_bench` des ticks)."""
+    `t_bench` des ticks). Robuste aux entrées incomplètes (ligne tronquée, champ absent ou non numérique) : elles sont
+    écartées ou leurs champs valent None, et un avertissement les compte ; aucune ne fait échouer le résumé."""
     warnings: list[str] = []
     if provenance.get("git_dirty"):
         warnings.append("arbre git sale : mesure non attribuable à un commit")
-    start_it = int(run_summary.get("start_iteration", 0))
-    metrics = {int(r["step"]): r for r in metrics_rows if "step" in r}
+    incomplete: dict[str, int] = {}
+
+    def keep(kind: str, rows: Iterable[Mapping[str, Any]], ok: Callable[[Mapping[str, Any]], bool]) -> list[Any]:
+        kept, bad = [], 0
+        for r in rows:
+            if ok(r):
+                kept.append(r)
+            else:
+                bad += 1
+        if bad:
+            incomplete[kind] = bad
+        return kept
+
+    ticks = keep("ticks", ticks, lambda t: all(num(t.get(k)) is not None for k in ("t", "gap_s", "t_bench")))
+    metrics_rows = keep("metrics", metrics_rows, lambda r: integer(r.get("step")) is not None)
+    events = [e for e in events if e.get("event") != "checkpoint"] + keep(
+        "checkpoints",
+        [e for e in events if e.get("event") == "checkpoint"],
+        lambda e: integer(e.get("iteration")) is not None,
+    )
+    evals = [e for e in evals if e.get("event") != "eval"] + keep(
+        "évaluations", [e for e in evals if e.get("event") == "eval"], lambda e: integer(e.get("iteration")) is not None
+    )
+    pool_adds = keep(
+        "instantanés du pool",
+        pool_adds,
+        lambda a: integer(a.get("iteration")) is not None and num(a.get("s")) is not None,
+    )
+    partial_ck = sum(
+        1
+        for e in events
+        if e.get("event") == "checkpoint" and any(num(e.get(k)) is None for k in ("bytes", "capture_s", "write_s"))
+    )
+    if partial_ck:
+        incomplete["champs de checkpoint"] = partial_ck
+    if incomplete:
+        warnings.append(
+            "entrées incomplètes écartées ou partielles : " + ", ".join(f"{k} {v}" for k, v in incomplete.items())
+        )
+    start_it = integer(run_summary.get("start_iteration")) or 0
+    metrics = {int(r["step"]): r for r in metrics_rows}
     records = build_iter_records(
         ticks,
         metrics,
@@ -1049,6 +1189,7 @@ def summarize_bench(
     slices = slice_stats(records, slice_s=slice_s, threshold=threshold)
     glob = global_rates(records)
     k6 = k6_check(slices, glob["learned_wall"], threshold=threshold)
+    k6_collected = k6_check(slices, glob["collected_wall"], threshold=threshold, rate_key="collected_wall")
     if not k6["conclusive"]:
         warnings.append("moins de 30 min de boucle observées : K6 non concluant")
     gaps = [r.gap_s for r in records]
@@ -1061,26 +1202,28 @@ def summarize_bench(
     loop_wall = (last_bench - origin_bench) if origin_bench is not None and last_bench is not None else None
     # checkpoint de la boucle : après le 1er tick et avant le dernier (horodatage unix) ; le checkpoint 0 précède
     # l'origine (assemblage), le checkpoint final suit le dernier tick (fin)
-    first_unix = float(ticks[0].get("unix", -math.inf)) if ticks else -math.inf
-    last_unix = float(ticks[-1].get("unix", math.inf)) if ticks else math.inf
+    first_unix = (num(ticks[0].get("unix")) or -math.inf) if ticks else -math.inf
+    last_unix = (num(ticks[-1].get("unix")) or math.inf) if ticks else math.inf
 
     def phase(e: Mapping[str, Any]) -> str:
-        t = float(e.get("t", 0.0))
+        t = num(e.get("t"))
+        if t is None:
+            return "inconnue"
         return "setup" if t < first_unix else "final" if t > last_unix else "loop"
 
     in_loop_ck = [e for e in ck_events if phase(e) == "loop"]
 
     def sum_t(key: str) -> float:
-        return sum(float(t.get(key, 0.0)) for t in ticks)
+        return sum(num(t.get(key)) or 0.0 for t in ticks)
 
     ev = eval_analysis(evals, {r.iteration: ticks[i + 1] for i, r in enumerate(records)})
     pool_in_loop = [a for a in pool_adds if int(a["iteration"]) > 0]
-    iterate_s = run_summary.get("loop_s")
-    ck_loop_s = sum(float(e["capture_s"]) + float(e["write_s"]) for e in in_loop_ck)
+    iterate_s = num(run_summary.get("loop_s"))
+    ck_loop_s = sum((num(e.get("capture_s")) or 0.0) + (num(e.get("write_s")) or 0.0) for e in in_loop_ck)
     pool_s = sum(float(a["s"]) for a in pool_in_loop)
     other = None
     if loop_wall is not None and iterate_s is not None:
-        other = loop_wall - float(iterate_s) - ev["total_s"] - ck_loop_s - pool_s
+        other = loop_wall - iterate_s - ev["total_s"] - ck_loop_s - pool_s
     collect_s, env_s, sim_s = sum_t("collect_s"), sum_t("train_env_step_s"), sum_t("train_sim_step_s")
     breakdown: dict[str, Any] = {
         "setup_s": (origin_bench - t_run_start) if origin_bench is not None else None,
@@ -1113,15 +1256,15 @@ def summarize_bench(
 
     # --- checkpoints
     ck_rows = []
-    for e in ck_events:
+    for e in sorted(ck_events, key=lambda e: (int(e["iteration"]), num(e.get("t")) or 0.0)):
         it = int(e["iteration"])
         ck_rows.append(
             {
                 "iteration": it,
                 "file": e.get("file"),
-                "bytes": e.get("bytes"),
-                "capture_s": e.get("capture_s"),
-                "write_s": e.get("write_s"),
+                "bytes": integer(e.get("bytes")),
+                "capture_s": num(e.get("capture_s")),
+                "write_s": num(e.get("write_s")),
                 "healthy": e.get("healthy"),
                 "nets": nets_at(pool_adds, it),
                 "phase": phase(e),
@@ -1130,11 +1273,11 @@ def summarize_bench(
         )
     projection = checkpoint_projection(ck_rows, unit_bytes=unit_bytes, iteration_s=iter_s)
 
-    trained = int(run_summary.get("trained_timesteps", 0)) - start_it * learned_per_iter
+    trained = (integer(run_summary.get("trained_timesteps")) or 0) - start_it * learned_per_iter
     n_evals_1b = TARGET_LEARNED // eval_every if eval_every > 0 else 0
-    snap_count = int(eval_snapshots.get("count", 0))
-    snap_bytes = int(eval_snapshots.get("bytes", 0))
-    pool_sizes = [{"iteration": a["iteration"], "size": a["size"], "nets": a["nets"]} for a in pool_adds]
+    snap_count = integer(eval_snapshots.get("count")) or 0
+    snap_bytes = integer(eval_snapshots.get("bytes")) or 0
+    pool_sizes = [{"iteration": a["iteration"], "size": a.get("size"), "nets": a.get("nets")} for a in pool_adds]
     lw = glob["learned_wall"]
     out: dict[str, Any] = {
         "name": name,
@@ -1146,6 +1289,11 @@ def summarize_bench(
         "slice_s": slice_s,
         "global": glob,
         "k6": k6,
+        "k6_collected": k6_collected,
+        "k6_note": (
+            "K6 de l'ADR-005 porte sur le débit appris ; le critère de révision de l'ADR-001 (« moitié du plateau de "
+            "M4 ») portait sur un débit collecté, sans pool : les deux sont donnés"
+        ),
         "throttle": throttle_ratio(slices),
         "extrapolation_1b": {
             "label": "extrapolé (débit mural global du banc maintenu)",
@@ -1160,7 +1308,7 @@ def summarize_bench(
             "total_s": sum(float(a["s"]) for a in pool_adds),
             "median_s": percentile([float(a["s"]) for a in pool_adds], 50),
             "max_s": max((float(a["s"]) for a in pool_adds), default=None),
-            "final_size": pool_adds[-1]["size"] if pool_adds else None,
+            "final_size": pool_adds[-1].get("size") if pool_adds else None,
             "over_time": pool_sizes,
         },
         "eval_snapshots": {
@@ -1169,7 +1317,7 @@ def summarize_bench(
             "label": f"extrapolé ({n_evals_1b} évaluations + θ₀ à 1B)",
         },
         "ram": ram_summary(samples),
-        "logs": log_projection(log_sizes, trained),
+        "logs": log_projection(log_sizes, trained, evals_done=ev["count"], evals_target=n_evals_1b),
         "warnings": warnings,
     }
     if out["ram"].get("on_battery_seen"):
@@ -1242,16 +1390,121 @@ def provenance(args: argparse.Namespace, cfg: Any, device: Any, train_mod: Modul
     }
 
 
-def _write_new(path: Path, text: str) -> None:
-    with open(path, "x", encoding="utf-8") as f:  # mode exclusif : jamais d'écrasement
-        f.write(text)
+def write_unique(path: Path, text: str) -> Path:
+    """Crée `path` en mode exclusif (jamais d'écrasement), suffixé `_001`... s'il existe ; rend le chemin écrit."""
+    candidate, n = path, 0
+    while True:
+        try:
+            with open(candidate, "x", encoding="utf-8") as f:
+                f.write(text)
+            return candidate
+        except FileExistsError:
+            n += 1
+            candidate = path.with_name(f"{path.stem}_{n:03d}{path.suffix}")
+
+
+def _dump(obj: Any) -> str:
+    return json.dumps(obj, indent=2, sort_keys=True, default=str) + "\n"
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    obj = json.loads(path.read_text(encoding="utf-8"))
+    return obj if isinstance(obj, dict) else {}
+
+
+def finalize(out_dir: Path) -> tuple[int, Path]:
+    """Calcule le résumé à partir des SEULS fichiers bruts de `out_dir` (méta du banc, ticks, échantillons, pool,
+    journaux du run) : même chemin pendant le banc et hors ligne (`--summarize`). Écrit `bench_summary.json` et
+    `bench_summary.txt` (suffixés s'ils existent déjà). En cas d'erreur : `bench_summary_error.json` (trace, provenance,
+    liste des fichiers bruts), code 1 ; les fichiers bruts restent intacts pour un nouvel essai."""
+    meta: dict[str, Any] = {}
+    try:
+        meta = _read_json(out_dir / BENCH_META)
+        if not meta:
+            raise FileNotFoundError(f"{BENCH_META} absent de {out_dir} : pas un dossier de banc")
+        end = _read_json(out_dir / BENCH_END)
+        ticks = read_jsonl(out_dir / "bench_ticks.jsonl")
+        run_dict = dict(end.get("run") or {})
+        if not run_dict:
+            seg = read_jsonl(out_dir / "segments.jsonl")
+            run_dict = {k: v for k, v in (seg[-1] if seg else {}).items() if k != "steps_per_s"}
+        t_run_end = num(end.get("t_run_end"))
+        if t_run_end is None:
+            t_run_end = num(ticks[-1].get("t_bench")) if ticks else None
+        t_run_start = num(meta.get("t_run_start")) or 0.0
+        prov = {**dict(meta.get("provenance") or {}), **dict(end.get("provenance_end") or {})}
+        ck_dir = Path(str(meta.get("checkpoint_dir", out_dir)))
+        probe = _read_json(out_dir / BENCH_PROBE) or None
+        log_sizes = {
+            p.name: p.stat().st_size for p in out_dir.iterdir() if p.is_file() and not p.name.startswith("bench_")
+        }
+        summary = summarize_bench(
+            name=str(meta.get("name", out_dir.name)),
+            provenance=prov,
+            run_summary=run_dict,
+            ticks=ticks,
+            metrics_rows=read_jsonl(out_dir / "metrics.jsonl"),
+            events=read_jsonl(out_dir / "events.jsonl"),
+            evals=read_jsonl(out_dir / "evals.jsonl"),
+            pool_adds=read_jsonl(out_dir / BENCH_POOL),
+            samples=read_jsonl(out_dir / "bench_samples.jsonl"),
+            log_sizes=log_sizes,
+            eval_snapshots=_dir_stats(ck_dir / "eval_snapshots"),
+            learned_per_iter=int(meta["learned_per_iter"]),
+            collected_per_iter=int(meta["collected_per_iter"]),
+            unit_bytes=integer(meta.get("unit_bytes")),
+            eval_every=int(meta["eval_every"]),
+            t_run_start=t_run_start,
+            t_run_end=t_run_end if t_run_end is not None else t_run_start,
+            slice_s=float(meta.get("slice_s", 300.0)),
+            probe=probe,
+        )
+        if not end:
+            summary["warnings"].append(f"{BENCH_END} absent : banc interrompu avant la fin (résumé partiel)")
+        if end.get("error"):
+            summary["warnings"].append(f"run en erreur : {end['error']}")
+        summary["checkpoint_dir_bytes"] = _dir_stats(ck_dir)
+        with contextlib.suppress(OSError):
+            summary["disk_free_bytes"] = shutil.disk_usage(ck_dir if ck_dir.exists() else out_dir).free
+        json_path = write_unique(out_dir / "bench_summary.json", _dump(summary))
+        table = render_table(summary)
+        write_unique(out_dir / "bench_summary.txt", table)
+        print(table)
+        print(f"[bench] résumé : {json_path}")
+        return 0, json_path
+    except Exception as exc:
+        import traceback
+
+        err = {
+            "error": f"{type(exc).__name__} : {exc}",
+            "traceback": traceback.format_exc(),
+            "provenance": meta.get("provenance"),
+            "raw_files": {p.name: p.stat().st_size for p in out_dir.iterdir() if p.is_file()}
+            if out_dir.is_dir()
+            else {},
+            "retry": f"python scripts/bench_run.py --summarize {out_dir}",
+        }
+        path = write_unique(out_dir / "bench_summary_error.json", _dump(err))
+        print(f"[bench] résumé impossible ({err['error']}) : {path} ; fichiers bruts intacts", file=sys.stderr)
+        return 1, path
+
+
+def _protected_roots(args: argparse.Namespace) -> list[Path]:
+    return [ROOT / "checkpoints", ROOT / "runs", ROOT / "data", args.runs_root, args.checkpoints_root]
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", type=Path, default=ROOT / "configs" / "bench_4a.yaml")
     ap.add_argument("--eval-config", type=Path, default=ROOT / "configs" / "bench_4a_eval.yaml")
-    ap.add_argument("--minutes", type=float, default=40.0, help="durée murale avant l'arrêt propre (défaut 40)")
+    ap.add_argument(
+        "--minutes",
+        type=float,
+        default=40.0,
+        help="durée de BOUCLE avant l'arrêt propre, comptée après l'assemblage et le checkpoint 0 (défaut 40)",
+    )
     ap.add_argument("--device", help="remplace `device` de la config (défaut : celui de la config, xpu)")
     ap.add_argument("--max-iterations", type=int, help="plafond d'itérations (arrêt `paused`), pour les essais")
     ap.add_argument("--name-prefix", default="bench_4a")
@@ -1263,22 +1516,33 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--checkpoint-probe", action="store_true", help="après le run : checkpoint à 100 instantanés")
     ap.add_argument("--probe-only", type=Path, help="sonde seule sur ce checkpoint, sans run")
     ap.add_argument("--probe-snapshots", type=int, default=TARGET_POOL)
-    ap.add_argument("--probe-dir", type=Path, help="dossier de la sonde (défaut : dossier temporaire neuf)")
+    ap.add_argument(
+        "--probe-dir", type=Path, help="dossier de la sonde (défaut : dossier temporaire neuf ; refusé sous runs/...)"
+    )
     ap.add_argument("--keep-probe", action="store_true", help="conserve le fichier sondé")
+    ap.add_argument("--summarize", type=Path, help="recalcule le résumé hors ligne depuis ce dossier de banc, sans run")
     args = ap.parse_args(argv)
+
+    if args.summarize:
+        return finalize(args.summarize)[0]
+    if args.probe_dir is not None and is_under(args.probe_dir, _protected_roots(args)):
+        print(
+            f"--probe-dir {args.probe_dir} : refusé sous checkpoints/, runs/ ou data/ (dossiers protégés)",
+            file=sys.stderr,
+        )
+        return 1
 
     import torch
 
-    probe_device = args.device or "cpu"
     if args.probe_only:
         pdir = args.probe_dir or Path(tempfile.mkdtemp(prefix="bench_ckpt_probe_"))
-        res = checkpoint_probe(args.probe_only, pdir, args.probe_snapshots, probe_device, args.keep_probe)
+        res = checkpoint_probe(args.probe_only, pdir, args.probe_snapshots, args.device or "cpu", args.keep_probe)
         print(json.dumps(res, indent=2))
         return 0
 
     rg_env = _set_rocketgpu_defaults()
     train_mod = _load_train_script()
-    from training import ConfigError, RunConfig, RunError, resolve_device, run
+    from training import ConfigError, RunConfig, resolve_device, run
     from training.evalhook import EvalHookConfig
 
     try:
@@ -1301,6 +1565,9 @@ def main(argv: list[str] | None = None) -> int:
     if prov["git_dirty"] and not args.allow_dirty:
         print("arbre git sale : mesure non attribuable à un commit (committer, ou --allow-dirty)", file=sys.stderr)
         return 1
+    unit_bytes: int | None = None
+    with contextlib.suppress(Exception):
+        unit_bytes = _unit_bytes(cfg)
 
     now = datetime.datetime.now(datetime.UTC)
     name = unique_name(
@@ -1312,7 +1579,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[bench] {name} : journaux {out_dir}, checkpoints {ck_dir}, {args.minutes} min, device {device}", flush=True)
 
     t_bench0 = time.perf_counter()
-    inst = Instrument(cfg.env.n_envs, hook_cfg.n_envs)
+    inst = Instrument(cfg.env.n_envs, hook_cfg.n_envs, out_dir / BENCH_POOL)
     sampler = Sampler(out_dir / "bench_samples.jsonl", args.sample_s, t_bench0, str(device).startswith("xpu"))
     ticker = Ticker(inst, out_dir / "bench_ticks.jsonl", t_bench0, args.minutes * 60.0)
     status_code = 0
@@ -1321,6 +1588,25 @@ def main(argv: list[str] | None = None) -> int:
     inst.install()
     sampler.start()
     t_run_start = time.perf_counter() - t_bench0
+    write_unique(
+        out_dir / BENCH_META,
+        _dump(
+            {
+                "name": name,
+                "provenance": prov,
+                "args": {k: str(v) for k, v in vars(args).items()},
+                "checkpoint_dir": str(ck_dir),
+                "learned_per_iter": cfg.batch_learned_steps,
+                "collected_per_iter": cfg.batch_agent_steps,
+                "eval_every": hook_cfg.every_timesteps,
+                "train_n_envs": cfg.env.n_envs,
+                "eval_n_envs": hook_cfg.n_envs,
+                "slice_s": args.slice_min * 60.0,
+                "unit_bytes": unit_bytes,
+                "t_run_start": t_run_start,
+            }
+        ),
+    )
     try:
         hook = train_mod.build_eval_hook(cfg, hook_cfg, out_dir, ck_dir, resume=False)
         summary_obj = run(
@@ -1332,7 +1618,7 @@ def main(argv: list[str] | None = None) -> int:
             eval_hook=hook,
             should_stop=ticker,
         )
-    except (RunError, Exception) as exc:
+    except Exception as exc:
         error = f"{type(exc).__name__} : {exc}"
         print(f"[bench] run en erreur : {error}", file=sys.stderr, flush=True)
         status_code = 1
@@ -1341,20 +1627,23 @@ def main(argv: list[str] | None = None) -> int:
         inst.uninstall()
         sampler.stop()
         ticker.close()
-    prov["date_utc_end"] = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
-    prov["power_end"] = _win_power()
 
     run_dict: dict[str, Any] = {}
     if summary_obj is not None:
         run_dict = {k: v for k, v in summary_obj.as_dict().items() if k != "steps_per_s"}
         if summary_obj.status not in ("completed", "paused", "interrupted"):
             status_code = 1
-    else:
-        seg = read_jsonl(out_dir / "segments.jsonl")
-        run_dict = {k: v for k, v in (seg[-1] if seg else {}).items() if k != "steps_per_s"}
-        run_dict["bench_error"] = error
+    end = {
+        "run": run_dict,
+        "error": error,
+        "t_run_end": t_run_end,
+        "provenance_end": {
+            "date_utc_end": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
+            "power_end": _win_power(),
+        },
+    }
+    write_unique(out_dir / BENCH_END, _dump(end))
 
-    probe: dict[str, Any] | None = None
     if args.checkpoint_probe:
         from training.checkpoint import CheckpointManager
 
@@ -1365,37 +1654,10 @@ def main(argv: list[str] | None = None) -> int:
                 probe = checkpoint_probe(refs[-1].path, pdir, args.probe_snapshots, str(device), args.keep_probe)
             except Exception as exc:
                 probe = {"error": f"{type(exc).__name__} : {exc}"}
+            write_unique(out_dir / BENCH_PROBE, _dump(probe))
 
-    log_sizes = {p.name: p.stat().st_size for p in out_dir.iterdir() if p.is_file() and p.name not in BENCH_FILES}
-    summary = summarize_bench(
-        name=name,
-        provenance=prov,
-        run_summary=run_dict,
-        ticks=ticker.ticks,
-        metrics_rows=read_jsonl(out_dir / "metrics.jsonl"),
-        events=read_jsonl(out_dir / "events.jsonl"),
-        evals=read_jsonl(out_dir / "evals.jsonl"),
-        pool_adds=inst.pool_adds,
-        samples=sampler.samples,
-        log_sizes=log_sizes,
-        eval_snapshots=_dir_stats(ck_dir / "eval_snapshots"),
-        learned_per_iter=cfg.batch_learned_steps,
-        collected_per_iter=cfg.batch_agent_steps,
-        unit_bytes=_unit_bytes(cfg),
-        eval_every=hook_cfg.every_timesteps,
-        t_run_start=t_run_start,
-        t_run_end=t_run_end,
-        slice_s=args.slice_min * 60.0,
-        probe=probe,
-    )
-    summary["checkpoint_dir_bytes"] = _dir_stats(ck_dir)
-    summary["disk_free_bytes"] = shutil.disk_usage(ck_dir).free
-    _write_new(out_dir / "bench_summary.json", json.dumps(summary, indent=2, sort_keys=True, default=str) + "\n")
-    table = render_table(summary)
-    _write_new(out_dir / "bench_summary.txt", table)
-    print(table)
-    print(f"[bench] résumé : {out_dir / 'bench_summary.json'}")
-    return status_code
+    code, _ = finalize(out_dir)
+    return max(status_code, code)
 
 
 if __name__ == "__main__":

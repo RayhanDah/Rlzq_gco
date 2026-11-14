@@ -199,16 +199,64 @@ def test_ram_summary_slope_curve_and_battery() -> None:
     assert br.ram_summary([])["n"] == 0
 
 
-def test_log_projection_linear_per_segment_and_quadratic_bound() -> None:
-    sizes = {"metrics.jsonl": 1_000, "evalhook_state.jsonl": 100, "run_meta.json": 50, "segments.jsonl": 20}
-    p = br.log_projection(sizes, trained=100_000_000, target=1_000_000_000)
+def test_log_projection_follows_timesteps_sessions_and_evaluation_count() -> None:
+    sizes = {
+        "metrics.jsonl": 1_000,
+        "evals.jsonl": 300,
+        "evalhook_state.jsonl": 100,
+        "run_meta.json": 50,
+        "segments.jsonl": 20,
+    }
+    p = br.log_projection(sizes, trained=100_000_000, evals_done=2, evals_target=20, target=1_000_000_000)
     f = p["files"]
-    assert f["metrics.jsonl"]["extrapolated_linear"] == pytest.approx(10_000)
-    assert f["evalhook_state.jsonl"]["extrapolated_quadratic_bound"] == pytest.approx(10_000)
-    assert f["run_meta.json"]["extrapolated_linear"] == 50 and f["run_meta.json"]["per_segment"]
-    assert f["segments.jsonl"]["extrapolated_linear"] == 20
-    assert p["total_bytes"] == 1_170 and p["label"] == "extrapolé"
-    assert br.log_projection(sizes, trained=0)["files"]["metrics.jsonl"]["extrapolated_linear"] is None
+    assert f["metrics.jsonl"]["extrapolated"] == pytest.approx(10_000)  # linéaire en timesteps (× 10)
+    assert f["evals.jsonl"]["extrapolated"] == pytest.approx(3_000)  # par évaluation (× 20 / 2)
+    # θ₀ + 2 évaluations : 1 + 2 + 3 = 6 unités ; θ₀ + 20 : 21·22/2 = 231 unités
+    assert f["evalhook_state.jsonl"]["extrapolated"] == pytest.approx(100 * 231 / 6)
+    assert "très imprécis" in f["evals.jsonl"]["label"] and "très imprécis" in f["evalhook_state.jsonl"]["label"]
+    assert "label" not in f["metrics.jsonl"]
+    assert f["run_meta.json"]["extrapolated"] == 50 and f["segments.jsonl"]["extrapolated"] == 20
+    assert p["total_bytes"] == 1_470 and p["label"] == "extrapolé"
+    assert p["total_extrapolated"] == pytest.approx(10_000 + 3_000 + 100 * 231 / 6 + 70)
+    precise = br.log_projection(sizes, trained=100_000_000, evals_done=3, evals_target=20)
+    assert "label" not in precise["files"]["evals.jsonl"]
+    none = br.log_projection(sizes, trained=0)
+    assert (
+        none["files"]["metrics.jsonl"]["extrapolated"] is None and none["files"]["evals.jsonl"]["extrapolated"] is None
+    )
+    assert none["total_extrapolated"] is None
+
+
+def test_k6_on_collected_rate() -> None:
+    sl = [{"slice": i, "duration_s": 300.0, "below_threshold": False, "collected_wall": 20_000.0} for i in range(7)]
+    k = br.k6_check(sl, 20_000.0, rate_key="collected_wall")
+    assert k["triggered"] and k["rate"] == "collected_wall" and k["global_below"]
+    assert not br.k6_check(sl, 30_000.0)["triggered"]  # le drapeau appris, lui, est faux
+
+
+def test_ram_summary_xpu_and_pessimistic_label() -> None:
+    samples = [{"t": float(t), "rss": 1e9, "xpu_reserved": 1e8 * (1 + t // 60)} for t in range(0, 180, 30)]
+    r = br.ram_summary(samples, bin_s=60.0)
+    assert r["xpu_reserved_max"] == pytest.approx(3e8) and [c["xpu_reserved_max"] for c in r["curve"]] == [
+        1e8,
+        2e8,
+        3e8,
+    ]
+    assert "pessimiste" in r["rss_at_horizon_label"]
+
+
+def test_is_under_protected_roots(tmp_path: Path) -> None:
+    roots = [tmp_path / "runs", tmp_path / "checkpoints"]
+    assert br.is_under(tmp_path / "runs" / "x" / "probe", roots)
+    assert br.is_under(tmp_path / "checkpoints", roots)
+    assert not br.is_under(tmp_path / "runs_other", roots) and not br.is_under(tmp_path / "scratch", roots)
+
+
+def test_write_unique_never_overwrites(tmp_path: Path) -> None:
+    a = br.write_unique(tmp_path / "s.json", "1")
+    b = br.write_unique(tmp_path / "s.json", "2")
+    assert a.name == "s.json" and b.name == "s_001.json"
+    assert a.read_text() == "1" and b.read_text() == "2"
 
 
 def test_unique_name_never_reuses() -> None:
@@ -318,3 +366,116 @@ def test_summarize_bench_flags_dirty_tree_restores_and_battery() -> None:
     s = br.summarize_bench(**inp)
     text = " ".join(s["warnings"])
     assert "arbre git sale" in text and "restauration" in text and "batterie" in text
+
+
+# ---------------------------------------------------------------------------------------------- revue A5 (M1)
+
+
+def test_summarize_bench_without_checkpoint() -> None:
+    inp = _synthetic_inputs()
+    inp["events"] = []
+    s = br.summarize_bench(**inp)
+    assert s["checkpoints"]["rows"] == [] and s["checkpoints"]["projection"] == {"available": False}
+    assert s["breakdown"]["checkpoints_s"] == 0.0
+    br.render_table(s)
+
+
+def test_summarize_bench_without_evaluation_and_without_ticks() -> None:
+    inp = _synthetic_inputs()
+    inp["evals"] = []
+    s = br.summarize_bench(**inp)
+    assert s["evals"]["count"] == 0 and s["evals"]["median_s"] is None
+    br.render_table(s)
+    inp["ticks"], inp["metrics_rows"], inp["samples"], inp["pool_adds"] = [], [], [], []
+    empty = br.summarize_bench(**inp)
+    assert empty["global"]["iterations"] == 0 and empty["breakdown"]["loop_wall_s"] is None
+    br.render_table(empty)
+
+
+def test_summarize_bench_with_incomplete_events() -> None:
+    inp = _synthetic_inputs()
+    inp["events"] = [
+        *inp["events"],
+        {"event": "checkpoint", "t": 1_000_030.0},  # ni itération ni durées : écriture interrompue
+        {"event": "checkpoint", "t": 1_000_031.0, "iteration": 25, "bytes": None, "capture_s": "nan"},
+    ]
+    inp["evals"] = [*inp["evals"], {"event": "eval", "timing": {}}, {"event": "eval", "iteration": "x"}]
+    inp["pool_adds"] = [*inp["pool_adds"], {"iteration": 30}]
+    s = br.summarize_bench(**inp)
+    assert [r["iteration"] for r in s["checkpoints"]["rows"]] == [0, 20, 25, 40]
+    assert s["evals"]["count"] == 1
+    (warn,) = [w for w in s["warnings"] if "incomplètes" in w]
+    assert "checkpoints 1" in warn and "évaluations 2" in warn and "instantanés du pool 1" in warn
+    assert "champs de checkpoint 1" in warn
+    br.render_table(s)
+
+
+def _write_bench_dir(d: Path, inp: dict[str, Any], *, with_end: bool) -> None:
+    d.mkdir()
+
+    def jl(name: str, rows: list[dict[str, Any]]) -> None:
+        (d / name).write_text("".join(json.dumps(r) + "\n" for r in rows) + '{"tronquée', encoding="utf-8")
+
+    meta = {
+        "name": inp["name"],
+        "provenance": inp["provenance"],
+        "checkpoint_dir": str(d / "ckpt"),
+        "learned_per_iter": LEARNED,
+        "collected_per_iter": COLLECTED,
+        "eval_every": inp["eval_every"],
+        "slice_s": inp["slice_s"],
+        "unit_bytes": inp["unit_bytes"],
+        "t_run_start": inp["t_run_start"],
+    }
+    (d / br.BENCH_META).write_text(json.dumps(meta), encoding="utf-8")
+    if with_end:
+        end = {"run": inp["run_summary"], "t_run_end": inp["t_run_end"], "error": None, "provenance_end": {}}
+        (d / br.BENCH_END).write_text(json.dumps(end), encoding="utf-8")
+    jl("bench_ticks.jsonl", inp["ticks"])
+    jl(br.BENCH_POOL, inp["pool_adds"])
+    jl("bench_samples.jsonl", inp["samples"])
+    jl("metrics.jsonl", inp["metrics_rows"])
+    jl("events.jsonl", inp["events"])
+    jl("evals.jsonl", inp["evals"])
+
+
+def test_finalize_offline_matches_in_memory_summary_and_never_overwrites(tmp_path: Path) -> None:
+    inp = _synthetic_inputs()
+    d = tmp_path / "bench"
+    _write_bench_dir(d, inp, with_end=True)
+    code, path = br.finalize(d)
+    assert code == 0 and path.name == "bench_summary.json" and (d / "bench_summary.txt").exists()
+    s = json.loads(path.read_text(encoding="utf-8"))
+    ref = br.summarize_bench(**inp)
+    assert s["global"]["learned_wall"] == pytest.approx(ref["global"]["learned_wall"])
+    assert s["breakdown"]["other_s"] == pytest.approx(ref["breakdown"]["other_s"])
+    assert s["pool"]["adds"] == 2 and s["evals"]["count"] == 1
+    code2, path2 = br.finalize(d)  # --summarize relancé : nouveau fichier, l'ancien intact
+    assert code2 == 0 and path2.name == "bench_summary_001.json" and path.exists()
+
+
+def test_finalize_without_end_file_gives_partial_summary(tmp_path: Path) -> None:
+    d = tmp_path / "bench"
+    _write_bench_dir(d, _synthetic_inputs(), with_end=False)
+    (d / "segments.jsonl").write_text(json.dumps({"status": "error", "start_iteration": 0}) + "\n", encoding="utf-8")
+    code, path = br.finalize(d)
+    s = json.loads(path.read_text(encoding="utf-8"))
+    assert code == 0 and any("absent" in w for w in s["warnings"]) and s["run"]["status"] == "error"
+
+
+def test_finalize_failure_writes_error_file_and_returns_1(tmp_path: Path) -> None:
+    d = tmp_path / "pas_un_banc"
+    d.mkdir()
+    (d / "metrics.jsonl").write_text("", encoding="utf-8")
+    code, path = br.finalize(d)
+    err = json.loads(path.read_text(encoding="utf-8"))
+    assert code == 1 and path.name == "bench_summary_error.json"
+    assert "bench_meta.json" in err["error"] and "--summarize" in err["retry"] and "metrics.jsonl" in err["raw_files"]
+    bad = tmp_path / "meta_cassee"
+    _write_bench_dir(bad, _synthetic_inputs(), with_end=True)
+    meta = json.loads((bad / br.BENCH_META).read_text(encoding="utf-8"))
+    del meta["learned_per_iter"]
+    (bad / br.BENCH_META).write_text(json.dumps(meta), encoding="utf-8")
+    code_bad, p_bad = br.finalize(bad)
+    assert code_bad == 1 and p_bad.name == "bench_summary_error.json"
+    assert (bad / "bench_ticks.jsonl").exists()  # fichiers bruts intacts
