@@ -686,8 +686,9 @@ def render_table(summary: Mapping[str, Any]) -> str:
     L.append("")
     ps = summary.get("pool", {})
     L.append(
-        f"Pool : {ps.get('adds', 0)} instantanés ajoutés, durée {_s(ps.get('total_s'))} "
+        f"Pool : {ps.get('adds', 0)} appels d'ajout, durée {_s(ps.get('total_s'))} "
         f"(méd. {_s(ps.get('median_s'))}), taille finale {ps.get('final_size')}"
+        + (f" ; PRÉ-REMPLI : {ps['prefilled']} copies de θ₀ à l'itération 0" if ps.get("prefilled") else "")
     )
     es = summary.get("eval_snapshots", {})
     L.append(
@@ -859,10 +860,16 @@ class Instrument:
     """Enveloppes de chronométrage posées le temps du run (retirées dans `uninstall`), compteurs par rôle
     (« train » : simulateur et env d'entraînement ; « eval » : ceux de l'évaluation, reconnus au nombre d'arènes)."""
 
-    def __init__(self, train_envs: int, eval_envs: int, pool_path: Path | None = None) -> None:
+    def __init__(self, train_envs: int, eval_envs: int, pool_path: Path | None = None, prefill: int = 0) -> None:
         if train_envs == eval_envs:
             raise ValueError("arènes d'entraînement et d'évaluation identiques : rôles indiscernables")
+        if prefill < 0:
+            raise ValueError(f"prefill={prefill} : >= 0 attendu")
         self.train_envs, self.eval_envs = train_envs, eval_envs
+        self.prefill = prefill
+        """Pré-remplissage (`--prefill-pool`) : à l'ajout de θ₀ (itération 0), le pool est complété jusqu'à cette
+        taille par des copies de θ₀. Mesure le coût d'un pool plein (réseaux distincts en mémoire et à l'inférence) ;
+        les adversaires restent aléatoires, donc la dynamique de jeu n'est pas celle d'un vrai pool."""
         self.pool_path = pool_path
         """Chaque ajout au pool y est écrit au fil de l'eau (`bench_pool.jsonl`) : rien ne vit qu'en mémoire."""
         self.c: dict[str, float] = {}
@@ -926,32 +933,41 @@ class Instrument:
 
             return make
 
-        def pool_add(orig: Any) -> Any:
-            def wrapper(self: Any, policy: Any, iteration: int) -> Any:
-                t0 = time.perf_counter()
-                uid = orig(self, policy, iteration)
-                dt = time.perf_counter() - t0
-                inst.add("pool_add_s", dt)
-                rec = {
-                    "iteration": int(iteration),
-                    "s": dt,
-                    "size": len(self.pool),
-                    "nets": len(self.nets),
-                    "unix": time.time(),
-                }
-                inst.pool_adds.append(rec)
-                if inst.pool_path is not None:
-                    with open(inst.pool_path, "a", encoding="utf-8") as f:
-                        f.write(json.dumps(rec, sort_keys=True) + "\n")
-                return uid
-
-            return wrapper
-
         self._patch(Learner, "update", timed("learn"))
         self._patch(Collector, "collect", timed("collect"))
         self._patch(BatchEnv, "step", by_role("env_step", False))
         self._patch(RocketGPUSimulator, "step", by_role("sim_step", True))
-        self._patch(PastOpponents, "add_snapshot", pool_add)
+        self._patch(PastOpponents, "add_snapshot", self.pool_add)
+
+    def pool_add(self, orig: Any) -> Any:
+        """Enveloppe de `PastOpponents.add_snapshot` : chronomètre, journalise, et pré-remplit à l'itération 0."""
+        inst = self
+
+        def wrapper(self: Any, policy: Any, iteration: int) -> Any:
+            t0 = time.perf_counter()
+            uid = orig(self, policy, iteration)
+            extra = 0
+            if int(iteration) == 0:
+                while len(self.pool) < min(inst.prefill, int(self.pool.max_size)):
+                    orig(self, policy, iteration)
+                    extra += 1
+            dt = time.perf_counter() - t0
+            inst.add("pool_add_s", dt)
+            rec = {
+                "iteration": int(iteration),
+                "s": dt,
+                "size": len(self.pool),
+                "nets": len(self.nets),
+                "prefilled": extra,
+                "unix": time.time(),
+            }
+            inst.pool_adds.append(rec)
+            if inst.pool_path is not None:
+                with open(inst.pool_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(rec, sort_keys=True) + "\n")
+            return uid
+
+        return wrapper
 
     def uninstall(self) -> None:
         while self._orig:
@@ -1192,6 +1208,12 @@ def summarize_bench(
     k6_collected = k6_check(slices, glob["collected_wall"], threshold=threshold, rate_key="collected_wall")
     if not k6["conclusive"]:
         warnings.append("moins de 30 min de boucle observées : K6 non concluant")
+    prefilled = sum(int(a.get("prefilled") or 0) for a in pool_adds)
+    if prefilled:
+        warnings.append(
+            f"pool pré-rempli ({prefilled} copies de θ₀ à l'itération 0) : coût d'un pool plein, adversaires "
+            "aléatoires ; non comparable tranche à tranche à un banc à pool croissant (M5)"
+        )
     gaps = [r.gap_s for r in records]
     iter_s = percentile(gaps, 50)
 
@@ -1309,6 +1331,7 @@ def summarize_bench(
             "median_s": percentile([float(a["s"]) for a in pool_adds], 50),
             "max_s": max((float(a["s"]) for a in pool_adds), default=None),
             "final_size": pool_adds[-1].get("size") if pool_adds else None,
+            "prefilled": prefilled,
             "over_time": pool_sizes,
         },
         "eval_snapshots": {
@@ -1514,6 +1537,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--slice-min", type=float, default=5.0, help="largeur des tranches de débit (minutes)")
     ap.add_argument("--allow-dirty", action="store_true", help="accepte un arbre git sale (signalé dans le résumé)")
     ap.add_argument("--checkpoint-probe", action="store_true", help="après le run : checkpoint à 100 instantanés")
+    ap.add_argument(
+        "--prefill-pool",
+        type=int,
+        default=0,
+        help="complète le pool à cette taille par des copies de θ₀ dès l'itération 0 (coût d'un pool plein)",
+    )
     ap.add_argument("--probe-only", type=Path, help="sonde seule sur ce checkpoint, sans run")
     ap.add_argument("--probe-snapshots", type=int, default=TARGET_POOL)
     ap.add_argument(
@@ -1579,7 +1608,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[bench] {name} : journaux {out_dir}, checkpoints {ck_dir}, {args.minutes} min, device {device}", flush=True)
 
     t_bench0 = time.perf_counter()
-    inst = Instrument(cfg.env.n_envs, hook_cfg.n_envs, out_dir / BENCH_POOL)
+    inst = Instrument(cfg.env.n_envs, hook_cfg.n_envs, out_dir / BENCH_POOL, prefill=args.prefill_pool)
     sampler = Sampler(out_dir / "bench_samples.jsonl", args.sample_s, t_bench0, str(device).startswith("xpu"))
     ticker = Ticker(inst, out_dir / "bench_ticks.jsonl", t_bench0, args.minutes * 60.0)
     status_code = 0

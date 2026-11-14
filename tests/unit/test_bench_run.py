@@ -479,3 +479,65 @@ def test_finalize_failure_writes_error_file_and_returns_1(tmp_path: Path) -> Non
     code_bad, p_bad = br.finalize(bad)
     assert code_bad == 1 and p_bad.name == "bench_summary_error.json"
     assert (bad / "bench_ticks.jsonl").exists()  # fichiers bruts intacts
+
+
+class _FakePool:
+    def __init__(self, max_size: int) -> None:
+        self.max_size, self.n = max_size, 0
+
+    def __len__(self) -> int:
+        return self.n
+
+
+class _FakeOpponents:
+    def __init__(self, max_size: int) -> None:
+        self.pool, self.nets, self.calls = _FakePool(max_size), {}, 0
+
+    def add_snapshot(self, policy: Any, iteration: int) -> int:
+        self.calls += 1
+        self.pool.n = min(self.pool.n + 1, self.pool.max_size)
+        self.nets[self.calls] = policy
+        return self.calls
+
+
+def test_prefill_complete_le_pool_a_l_iteration_0_seulement(tmp_path: Path) -> None:
+    # Arrange
+    inst = br.Instrument(64, 16, tmp_path / "pool.jsonl", prefill=5)
+    wrapped = inst.pool_add(_FakeOpponents.add_snapshot)
+    opp = _FakeOpponents(max_size=100)
+    # Act
+    first = wrapped(opp, "theta0", 0)
+    wrapped(opp, "theta50", 50)
+    # Assert
+    assert first == 1  # uid du premier ajout, celui de θ₀
+    assert [a["size"] for a in inst.pool_adds] == [5, 6]
+    assert [a["prefilled"] for a in inst.pool_adds] == [4, 0]
+    rows = br.read_jsonl(tmp_path / "pool.jsonl")
+    assert [r["prefilled"] for r in rows] == [4, 0]
+
+
+def test_prefill_borne_par_la_taille_max_et_inactif_par_defaut() -> None:
+    capped = br.Instrument(64, 16, prefill=500)
+    opp = _FakeOpponents(max_size=3)
+    capped.pool_add(_FakeOpponents.add_snapshot)(opp, "theta0", 0)
+    assert opp.calls == 3 and capped.pool_adds[0]["size"] == 3
+
+    off = br.Instrument(64, 16)
+    opp2 = _FakeOpponents(max_size=3)
+    off.pool_add(_FakeOpponents.add_snapshot)(opp2, "theta0", 0)
+    assert opp2.calls == 1 and off.pool_adds[0]["prefilled"] == 0
+
+    with pytest.raises(ValueError):
+        br.Instrument(64, 16, prefill=-1)
+
+
+def test_summarize_bench_signale_le_pre_remplissage_et_tolere_son_absence() -> None:
+    inp = _synthetic_inputs()
+    old = br.summarize_bench(**inp)  # ancien banc : pas de champ `prefilled`
+    assert old["pool"]["prefilled"] == 0 and not any("pré-rempli" in w for w in old["warnings"])
+    assert "PRÉ-REMPLI" not in br.render_table(old)
+
+    inp["pool_adds"] = [{**inp["pool_adds"][0], "prefilled": 99}, *inp["pool_adds"][1:]]
+    new = br.summarize_bench(**inp)
+    assert new["pool"]["prefilled"] == 99 and any("pré-rempli (99" in w for w in new["warnings"])
+    assert "PRÉ-REMPLI : 99" in br.render_table(new)
