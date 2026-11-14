@@ -10,8 +10,11 @@ Deux hashs :
 - `RunConfig.full_hash()` : la config entière (y compris checkpoints, gardes, journalisation, section smoke), écrite
   dans `run_meta.json`. Changer la fréquence des checkpoints ou le seuil d'une garde ne bloque donc pas une reprise.
 
-Le budget est en timesteps agents ; `total_iterations` (dont dépendent les calendriers LR et entropie de `PPOConfig`)
-est dérivé : ⌈total_timesteps / (n_envs · n_cars · steps_per_batch)⌉.
+Le budget est en timesteps agents APPRIS (transitions qui entrent dans la perte, ADR-005 D3) ; `total_iterations`
+(dont dépendent les calendriers LR et entropie de `PPOConfig`) est dérivé : ⌈total_timesteps / batch_learned_steps⌉.
+Sans pool d'adversaires, appris = collectés (n_envs · n_cars · steps_per_batch par lot). Avec le pool (section `pool`,
+ADR-005 D5), les agents gelés des arènes « passé » ne comptent pas. L'annealing de `p_kick` est aussi en timesteps
+appris (ADR-005 D4). Section `pool` absente (None) : aucune clé `pool` dans les hashs, qui restent ceux d'avant le pool.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ from rewards import RewardConfig, RewardVariant, rules_for
 from training.checkpoint import hash_config
 from training.guards import GuardConfig
 from training.ppo import PPOConfig
+from training.selfplay import n_past_arenas
 
 _DEVICE_RE = re.compile(r"^(auto|cpu|cuda(:\d+)?|xpu(:\d+)?)$")
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -115,8 +119,26 @@ class CollectionSection:
 
 
 @dataclass(frozen=True, kw_only=True)
+class PoolSection:
+    """Pool d'adversaires (ADR-005 D5 ; `docs/01_papers.md` §1.8, OpenAI Five App. N)."""
+
+    past_fraction: float = 0.2  # D5 : 20 % des arènes contre un instantané passé (Five : 20 %)
+    snapshot_every: int = 50  # D5 : instantané toutes les 50 itérations (≈ 2,6M appris à 4 096 arènes)
+    max_size: int = 100  # D5 : pool plafonné, le plus mauvais q sort
+    quality_lr: float = 0.01  # D5, Five : η = 0,01
+
+    def __post_init__(self) -> None:
+        if not 0.0 < self.past_fraction < 1.0:
+            raise ValueError("past_fraction doit être dans ]0, 1[")
+        if self.snapshot_every < 1 or self.max_size < 1:
+            raise ValueError("snapshot_every >= 1 et max_size >= 1")
+        if not self.quality_lr > 0.0:
+            raise ValueError("quality_lr > 0")
+
+
+@dataclass(frozen=True, kw_only=True)
 class BudgetSection:
-    total_timesteps: int  # timesteps agents (transitions)
+    total_timesteps: int  # timesteps agents APPRIS (transitions qui entrent dans la perte, ADR-005 D3)
 
     def __post_init__(self) -> None:
         if self.total_timesteps < 1:
@@ -175,6 +197,7 @@ class RunConfig:
     kill: GuardConfig = field(default_factory=GuardConfig)
     logging: LoggingSection = field(default_factory=LoggingSection)
     smoke: SmokeSection | None = None
+    pool: PoolSection | None = None  # None : self-play contre la version courante seule (avant ADR-005)
 
     def __post_init__(self) -> None:
         if not _NAME_RE.match(self.name):
@@ -183,6 +206,8 @@ class RunConfig:
             raise ValueError("seed >= 0")
         if not _DEVICE_RE.match(self.device):
             raise ValueError(f"device={self.device!r} : auto, cpu, cuda[:n] ou xpu[:n]")
+        if self.pool is not None:
+            learned_per_batch(self.env, self.collection, self.pool)  # ValueError si aucune arène « passé »
         if self.ppo.total_iterations != self.total_iterations:
             raise ValueError(
                 f"ppo.total_iterations={self.ppo.total_iterations} != {self.total_iterations} "
@@ -204,16 +229,27 @@ class RunConfig:
 
     @property
     def batch_agent_steps(self) -> int:
-        """Transitions agents par lot (et par itération)."""
+        """Transitions agents COLLECTÉES par lot (et par itération), agents gelés compris."""
         return self.n_agents * self.collection.steps_per_batch
 
     @property
+    def n_past_arenas(self) -> int:
+        """Arènes contre un instantané passé (0 sans pool)."""
+        return 0 if self.pool is None else n_past_arenas(self.env.n_envs, self.pool.past_fraction)
+
+    @property
+    def batch_learned_steps(self) -> int:
+        """Transitions agents APPRISES par lot : collectées moins celles du camp gelé des arènes « passé »."""
+        return learned_per_batch(self.env, self.collection, self.pool)
+
+    @property
     def total_iterations(self) -> int:
-        return derive_total_iterations(self.env, self.collection, self.budget)
+        return derive_total_iterations(self.env, self.collection, self.budget, self.pool)
 
     @property
     def anneal_iterations(self) -> int:
-        return math.ceil(self.initial_states.anneal_timesteps / self.batch_agent_steps)
+        """Itérations de l'annealing de `p_kick` : `anneal_timesteps` est en timesteps appris (ADR-005 D4)."""
+        return math.ceil(self.initial_states.anneal_timesteps / self.batch_learned_steps)
 
     def p_kick_at(self, iteration: int) -> float:
         """`p_kick` à utiliser pour l'itération numéro `iteration` (0 = première) : linéaire puis constant.
@@ -232,6 +268,8 @@ class RunConfig:
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = dataclasses.asdict(self)
+        if out["pool"] is None:
+            del out["pool"]  # hashs inchangés pour les configs d'avant le pool (checkpoints existants repris)
         return out
 
     def trajectory_dict(self) -> dict[str, Any]:
@@ -261,7 +299,12 @@ class RunConfig:
         env = _build(EnvSection, raw.get("env", {}), "env")
         collection = _build(CollectionSection, raw.get("collection"), "collection")
         budget = _build(BudgetSection, raw.get("budget"), "budget")
-        raw["ppo"] = {**ppo_raw, "total_iterations": derive_total_iterations(env, collection, budget)}
+        pool = None if raw.get("pool") is None else _build(PoolSection, raw["pool"], "pool")
+        try:
+            total = derive_total_iterations(env, collection, budget, pool)
+        except ValueError as exc:
+            raise ConfigError(f"pool : {exc}") from exc
+        raw["ppo"] = {**ppo_raw, "total_iterations": total}
         built = _build(cls, raw, "config")
         assert isinstance(built, cls)
         return built
@@ -280,8 +323,21 @@ class RunConfig:
         return cls.from_dict(data)
 
 
-def derive_total_iterations(env: EnvSection, collection: CollectionSection, budget: BudgetSection) -> int:
-    return math.ceil(budget.total_timesteps / (env.n_envs * env.n_cars * collection.steps_per_batch))
+def learned_per_batch(env: EnvSection, collection: CollectionSection, pool: PoolSection | None = None) -> int:
+    """Transitions apprises par lot : (agents − agents gelés) · steps_per_batch ; un camp gelé = n_cars/2 agents."""
+    n_past = 0 if pool is None else n_past_arenas(env.n_envs, pool.past_fraction)
+    if pool is not None and not 1 <= n_past < env.n_envs:
+        raise ValueError(
+            f"pool.past_fraction={pool.past_fraction} sur {env.n_envs} arènes : {n_past} arène(s) « passé », "
+            "il en faut au moins 1 et au plus n_envs - 1"
+        )
+    return (env.n_envs * env.n_cars - n_past * (env.n_cars // 2)) * collection.steps_per_batch
+
+
+def derive_total_iterations(
+    env: EnvSection, collection: CollectionSection, budget: BudgetSection, pool: PoolSection | None = None
+) -> int:
+    return math.ceil(budget.total_timesteps / learned_per_batch(env, collection, pool))
 
 
 # -------------------------------------------------------------------------------------------------- construction
