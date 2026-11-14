@@ -347,6 +347,25 @@ Même laptop, sur secteur, XPU. Sondes jetables (hors dépôt) sur les vrais com
 - **Limites** : 10 min, un seul passage, K6 non concluant ; le débit soutenu (throttling au-delà de 10 min) et la
   tenue mémoire sur 8 h ne sont **pas mesurés** après correctifs. 1B en 4,7 h au débit de ce banc (extrapolé).
 
+### M8 — Banc soutenu de 2 h à pool plein, après correctifs (2026-11-14)
+Commande : `vendor/venv-xpu/Scripts/python scripts/bench_run.py --minutes 120 --prefill-pool 100 --slice-min 10` ;
+seed 0 ; commit 6998993 (arbre propre ; smoke test PASS sur ce commit, `runs/smoke_6998993/`) ; même laptop, sur
+secteur ; 2026-11-14 20:10 → 22:10 UTC ; données `runs/bench_4a_20261114T201013Z/`. Un seul passage ; pool
+pré-rempli par 99 copies de θ₀ (mêmes limites que M6 : coût d'un pool plein, pas sa dynamique de jeu).
+
+- **Débit** (appris/s, mural) : **55,1k en moyenne sur 2 h** (collecté 61,3k), 7 691 itérations, 396,9M appris,
+  0 restauration. Par tranche de 10 min : 67,0k ; 60,1k ; 60,9k ; 56,4k ; 51,0k ; 51,2k ; 53,1k ; 51,6k ; 51,3k ;
+  53,5k ; 51,8k ; 53,6k. **Plateau à 51–54k de 40 min à 2 h, sans pente** ; dernière tranche / première = 0,83.
+- **K6** : non déclenché, concluant ; marge d'un facteur 2 sur le seuil de 25k.
+- **Mémoire** : privée médiane 6,06 à 6,30 Go par tranche de 20 min, sans pente (max 7,23 Go) ; RSS max 6,39 Go ;
+  **disponible min 2,73 Go** (M6 : 0,72 Go en 35 min). La croissance de M6 a disparu.
+- **Décomposition** : inférence acteur + pool + tampons 50,4 % ; simulation 21,0 % ; obs + récompense + resets
+  23,3 % ; évaluations 1,7 % (7, de 13,9 à 20,0 s) ; checkpoints 1,0 % (32 de 225 Mo, 7,2 Go sur disque) ;
+  « reste » 2,2 %.
+- **Durée d'un run de 1B** (extrapolé) : 5,0 h au débit moyen, **≈ 5,3 h au plateau de 52k/s**. Un run de 1B tient
+  dans une session de 8 h (seuil 34,7k/s) avec ≈ 2,7 h de marge. Non couvert : au-delà de 2 h, et des épisodes plus
+  longs quand la politique progresse (évaluations et pas d'env plus coûteux).
+
 ## Temps de calcul
 Base **mesurée** : plateau soutenu du laptop ≈ 50k timesteps/s (M4, 57 min, politique aléatoire). Seconde colonne :
 facteur ×0,7, **estimé, non mesuré**, pour les critiques d'exploration GCO-std et l'évaluation (spec §6.2).

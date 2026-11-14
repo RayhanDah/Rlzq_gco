@@ -58,7 +58,8 @@ Mis à jour : 2026-11-14 (**G2 validé**, Phase 3 terminée, Phase 4a : A0 à A5
   45 min, pool de 7 à 49. **Pool plein (M6, 100 copies de θ₀) : ≈ 34,5k pendant 25 min puis ≈ 26,6k, 32,2k en
   moyenne sur 35 min : 1B ne tient pas en 8 h** (8,6 à 10,4 h extrapolé). RAM disponible min 588 à 715 Mo sur 16 Go.
   Causes corrigées (M7, b43211d) : inférence groupée du pool, thread learner persistant (fuite XPU de 2,3 Mo par
-  itération). Après correctifs : 58,9k appris/s sur 10 min à pool plein, mémoire privée plate ; **soutenu non mesuré**.
+  itération). Après correctifs : 58,9k appris/s sur 10 min à pool plein, mémoire privée plate. **Soutenu (M8, 2 h, pool plein) : 55,1k appris/s, plateau 51–54k
+  de 40 min à 2 h, RAM disponible min 2,7 Go : 1B ≈ 5,3 h (extrapolé), tient en 8 h.**
 - **R3** : parité RLBot : cohérence adaptateur ↔ obs **testée** (écart ≤ 7,2e-7), mais conventions réelles du jeu
   (ordre d'Euler, signe du roll, ordre des pads, délai d'action) non vérifiées avant la Phase 5. `rlbot` 2.0.0b56
   est une pré-version.
