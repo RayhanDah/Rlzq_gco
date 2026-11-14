@@ -28,6 +28,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 import torch
+from torch import nn
 
 from models.policy import PolicyNet
 
@@ -171,6 +172,40 @@ class QualityPool:
 # ---------------------------------------------------------------------------------------------------- collecte
 
 
+@dataclass
+class _Stack:
+    """Poids de U `PolicyNet` empilés : couche i = (W (U, in, out), b (U, 1, out)) ; ReLU entre les couches."""
+
+    uids: list[int]
+    layers: list[tuple[torch.Tensor, torch.Tensor]]
+
+    @staticmethod
+    def build(uids: list[int], nets: list[PolicyNet]) -> _Stack:
+        per_net: list[list[nn.Linear]] = []
+        for net in nets:
+            mods = list(net.net)
+            lin = [m for m in mods[0::2] if isinstance(m, nn.Linear)]
+            if len(lin) != len(mods[0::2]) or not all(isinstance(m, nn.ReLU) for m in mods[1::2]):
+                raise TypeError("empilement : PolicyNet attendu en Linear/ReLU alternés (models.policy.build_mlp)")
+            per_net.append(lin)
+        layers = [
+            (
+                torch.stack([lin[i].weight.detach().t() for lin in per_net]).contiguous(),
+                torch.stack([lin[i].bias.detach() for lin in per_net]).unsqueeze(1).contiguous(),
+            )
+            for i in range(len(per_net[0]))
+        ]
+        return _Stack(list(uids), layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """`x` (U, B, D) → logits (U, B, A) : la tranche u passe dans le réseau u."""
+        for i, (w, b) in enumerate(self.layers):
+            x = torch.baddbmm(b, x, w)
+            if i < len(self.layers) - 1:
+                x = torch.relu(x)
+        return x
+
+
 class PastOpponents:
     """Adversaires passés pendant la collecte : poids des instantanés (sur le device de l'acteur), affectation
     instantané ↔ arène « passé », mises à jour de q en fin d'épisode. Crochet de `training.rollout.Collector`."""
@@ -190,8 +225,18 @@ class PastOpponents:
         self.losses = 0  # l'instantané marque
         self.draws = 0  # troncature sans but
         self._rows = torch.from_numpy(layout.frozen_agents.reshape(-1)).to(device)
+        self._stack: _Stack | None = None  # poids empilés de `nets` ; reconstruit quand l'ensemble change
 
     # -- instantanés
+
+    def _stacked(self) -> _Stack:
+        """Poids de tous les réseaux vivants empilés par couche, dans l'ordre croissant des uid (ordre indépendant de
+        l'historique : même empilement après une reprise). Un seul passage groupé remplace un passage par instantané
+        (mesuré sur XPU à 100 instantanés : ≈ 0,7 ms par réseau et par step, ADR-001 M7)."""
+        uids = sorted(self.nets)
+        if self._stack is None or self._stack.uids != uids:
+            self._stack = _Stack.build(uids, [self.nets[u] for u in uids])
+        return self._stack
 
     def add_snapshot(self, policy: PolicyNet, iteration: int) -> int:
         """Copie gelée de `policy` (poids clonés) ; rend son uid. L'évincé reste en mémoire s'il joue encore."""
@@ -201,6 +246,7 @@ class PastOpponents:
         net.eval()
         uid, _ = self.pool.add(iteration)
         self.nets[uid] = net
+        self._stack = None
         self._release()
         return uid
 
@@ -227,12 +273,23 @@ class PastOpponents:
         todo = np.flatnonzero(self.assignment < 0)
         if todo.size:
             self._assign(todo)
+        stack = self._stacked()
         half = self.layout.n_cars // 2
-        for uid in np.unique(self.assignment).tolist():
-            sel = np.flatnonzero(self.assignment == uid)
-            rows = (sel[:, None] * half + np.arange(half)[None, :]).reshape(-1)
-            idx = self._rows.index_select(0, torch.from_numpy(rows).to(self.device))
-            logits.index_copy_(0, idx, self.nets[uid](obs.index_select(0, idx)))
+        # lignes gelées (P·half), regroupées par réseau : slot = rang du réseau dans l'empilement, pos = rang dans
+        # son groupe ; les groupes sont complétés à la taille du plus grand (lignes de remplissage ignorées)
+        slot = np.repeat(np.searchsorted(np.array(stack.uids, dtype=np.int64), self.assignment), half)
+        order = np.argsort(slot, kind="stable")
+        counts = np.bincount(slot, minlength=len(stack.uids))
+        starts = np.cumsum(counts) - counts
+        pos = np.empty_like(order)
+        pos[order] = np.arange(order.size) - starts[slot[order]]
+        pad = np.zeros((len(stack.uids), int(np.max(counts))), dtype=np.int64)
+        pad[slot, pos] = np.arange(order.size)
+        pad_t = torch.from_numpy(pad).to(self.device)
+        x = obs.index_select(0, self._rows.index_select(0, pad_t.reshape(-1))).view(*pad.shape, -1)
+        out = stack.forward(x)  # (U, Bmax, A)
+        flat = torch.from_numpy(slot * pad.shape[1] + pos).to(self.device)
+        logits.index_copy_(0, self._rows, out.reshape(-1, out.shape[-1]).index_select(0, flat))
         return logits
 
     def after_step(self, term: BOOL, trunc: BOOL, info: Mapping[str, Any]) -> None:
@@ -289,6 +346,7 @@ class PastOpponents:
         if not missing <= set(nets):
             raise ValueError(f"poids manquants pour les instantanés {sorted(missing - set(nets))}")
         self.nets, self.assignment = nets, assignment
+        self._stack = None  # un uid peut désigner d'autres poids après une restauration
         self.wins, self.losses, self.draws = (int(x) for x in state["counts"])
 
     def scalars(self) -> dict[str, float]:

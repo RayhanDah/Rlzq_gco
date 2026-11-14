@@ -362,3 +362,56 @@ def test_pas_d_instantane_sur_une_iteration_non_saine(tmp_path: Path, monkeypatc
     # Assert : pas d'instantané à l'itération 2 (il entrerait à q = max) ; 0, 4, 6, 8 seulement
     assert s.status == "completed" and s.restores == 0
     assert _pool_state(out)["pool"]["iteration"] == [0, 4, 6, 8]
+
+
+@pytest.mark.parametrize("n_cars", [2, 4])
+def test_inference_groupee_egale_un_passage_par_instantane(n_cars: int) -> None:
+    # Arrange : 5 instantanés aléatoires distincts, 16 arènes « passé », groupes de tailles inégales (dont un vide)
+    torch.manual_seed(0)
+    layout = make_layout(32, n_cars, 0.5)
+    opp = PastOpponents(layout, QualityPool(5, 0.01, seed=0), lambda: PolicyNet(7, 90, (8, 8)), CPU)
+    uids = [opp.add_snapshot(PolicyNet(7, 90, (8, 8)), i) for i in range(5)]
+    opp.assignment[:] = np.array([uids[i] for i in [4, 0, 0, 2, 4, 4, 1, 0, 2, 4, 4, 0, 1, 4, 0, 4]])  # uids[3] absent
+    obs = torch.randn(32 * n_cars, 7)
+    logits = torch.randn(32 * n_cars, 90)
+    # Act
+    out = opp.override_logits(obs, logits.clone())
+    # Assert : chaque agent gelé reçoit les logits de SON instantané ; les autres lignes sont intactes
+    frozen = layout.frozen_agents
+    for j in range(layout.n_past):
+        want = opp.policy_of(int(opp.assignment[j]))(obs[frozen[j]])
+        # tolérance : baddbmm (groupé) et addmm (par réseau) n'additionnent pas dans le même ordre (float32)
+        assert torch.allclose(out[frozen[j]], want, atol=1e-5, rtol=1e-5)
+    others = np.setdiff1d(np.arange(32 * n_cars), frozen.reshape(-1))
+    assert torch.equal(out[others], logits[others])
+
+
+def test_empilement_suit_les_ajouts_evictions_et_rechargements() -> None:
+    col, opp = _pool_collector()
+    opp.pool.max_size = 1
+    opp.add_snapshot(_biased(5), 0)
+    col.collect(0)
+    assert opp._stacked().uids == sorted(opp.nets)
+    opp.add_snapshot(_biased(6), 1)  # u0 évincé mais encore en jeu : les deux réseaux sont empilés
+    assert opp._stacked().uids == [0, 1]
+    twin_col, twin = _pool_collector()
+    twin.pool.max_size = 1
+    twin.load_state_dict(opp.state_dict())
+    assert twin._stacked().uids == [0, 1]
+    a, b = col.collect(1), twin_col.collect(1)
+    frozen = opp.layout.frozen_agents.reshape(-1)
+    assert np.array_equal(a.act[:, frozen], b.act[:, frozen])
+
+
+def test_rechargement_remplace_l_empilement_meme_a_uid_identiques() -> None:
+    # Arrange : après une restauration, un uid peut être réattribué à d'autres poids (next_uid recule)
+    col, opp = _pool_collector()
+    opp.add_snapshot(_biased(5), 0)
+    col.collect(0)  # empilement construit avec « joue 5 »
+    _, other = _pool_collector()
+    other.add_snapshot(_biased(6), 0)  # même uid 0, poids différents
+    # Act
+    opp.load_state_dict(other.state_dict())
+    batch = col.collect(1)
+    # Assert
+    assert (batch.act[:, opp.layout.frozen_agents.reshape(-1)] == 6).all()

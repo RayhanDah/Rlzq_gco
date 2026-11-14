@@ -294,6 +294,8 @@ def test_overlap_versions_finite_stats_and_thread_stopped() -> None:
     assert actor is not trainer.learner.policy
     for a, b in zip(actor.parameters(), trainer.learner.policy.parameters(), strict=True):
         assert torch.equal(a, b)
+    # le thread learner persiste entre les itérations (fuite XPU d'un thread par itération) et s'arrête à close()
+    trainer.close()
     assert not any(t.name == "ppo-learner" for t in threading.enumerate())
 
 
@@ -330,3 +332,29 @@ def test_trainer_rejects_shared_policy_module() -> None:
     learner = Learner(policy, value, cfg, CPU, _ManualAdam([*policy.parameters()], 1e-3))
     with pytest.raises(ValueError):
         OverlapTrainer(learner, Collector(env, policy, 4, CPU, seed=0))
+
+
+def test_overlap_reuses_one_learner_thread_until_close() -> None:
+    """Régression : un fil neuf par itération fuit ≈ 2,3 Mo par mise à jour sur XPU (ADR-001 M7) ; un seul fil
+    persistant sert toutes les itérations, et `close()` l'arrête."""
+    # Arrange
+    _, trainer = _setup(n_agents=16)
+    idents: list[int] = []
+    real_update = trainer.learner.update
+
+    def spy(batch: RolloutBatch) -> Any:
+        idents.append(threading.get_ident())
+        return real_update(batch)
+
+    trainer.learner.update = spy  # type: ignore[method-assign]
+    # Act
+    for _ in range(4):
+        trainer.iterate()
+    alive = [t for t in threading.enumerate() if t.name.startswith("ppo-learner")]
+    trainer.close()
+    # Assert
+    assert len(idents) == 4 and len(set(idents)) == 1 and idents[0] != threading.get_ident()
+    assert len(alive) == 1
+    assert not any(t.name.startswith("ppo-learner") for t in threading.enumerate())
+    trainer.iterate()  # utilisable après close() : le fil est recréé
+    trainer.close()

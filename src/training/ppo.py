@@ -8,9 +8,12 @@ de π (staleness 1). Aucune récompense ni signal d'exploration n'est ajouté ic
 
 from __future__ import annotations
 
+import functools
 import math
+import queue
 import threading
-from collections.abc import Iterable, Mapping
+import weakref
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, fields
 from typing import Any, Protocol
 
@@ -326,14 +329,53 @@ class IterationResult:
     agent_steps: int  # transitions agents collectées depuis le début (tous agents)
 
 
+class _LearnerWorker:
+    """Thread learner persistant : exécute une tâche à la fois, rend (résultat, exception)."""
+
+    def __init__(self) -> None:
+        self._tasks: queue.SimpleQueue[Callable[[], PPOStats] | None] = queue.SimpleQueue()
+        self._results: queue.SimpleQueue[tuple[PPOStats | None, BaseException | None]] = queue.SimpleQueue()
+        self._thread = threading.Thread(target=self._loop, name="ppo-learner", daemon=True)  # daemon : un trainer
+        # jamais fermé (exception non rattrapée) ne bloque pas la sortie de l'interpréteur
+        self._thread.start()
+
+    def _loop(self) -> None:
+        while True:
+            task = self._tasks.get()
+            if task is None:
+                return
+            try:
+                self._results.put((task(), None))
+            except BaseException as exc:  # relevée dans le thread appelant
+                self._results.put((None, exc))
+            del task  # ne pas retenir le lot (ni le learner) pendant l'attente de la tâche suivante
+
+    def submit(self, task: Callable[[], PPOStats]) -> None:
+        self._tasks.put(task)
+
+    def result(self) -> tuple[PPOStats | None, BaseException | None]:
+        return self._results.get()
+
+    def stop(self) -> None:
+        """Laisse finir la tâche en cours (résultat ignoré), puis termine et joint le thread."""
+        self.request_stop()
+        self._thread.join()
+
+    def request_stop(self) -> None:
+        self._tasks.put(None)
+
+
 class OverlapTrainer:
     """Itération PPO : apprentissage du lot k dans un thread pendant que le thread appelant collecte le lot k+1 avec
     une copie acteur de π (staleness 1, ADR-001 §3, ADR-003 §6). L'acteur est rafraîchi après `join`.
 
     `overlap=False` : apprentissage puis collecte en séquence (staleness 0), même interface.
-    Le thread ne survit jamais à `iterate` (join en `finally`) ; une exception du learner est relevée en `LearnerError`
-    dans l'appelant ; toute exception (learner ou collecte) rend le trainer inutilisable (état partiellement mis à
-    jour) : reprendre depuis un checkpoint.
+    Un seul thread learner (« ppo-learner ») sert toutes les itérations : il est créé à la première, reste en attente
+    entre deux `iterate` (aucune mise à jour ne déborde d'un `iterate`) et s'arrête dans `close()` ; il est recréé au
+    besoin. Un thread neuf par itération faisait croître la mémoire privée de ≈ 2,3 Mo par mise à jour sur XPU
+    (ressources par thread jamais rendues, ADR-001 M7). Une exception du learner est relevée en `LearnerError` dans
+    l'appelant ; toute exception (learner ou collecte) arrête le thread et rend le trainer inutilisable (état
+    partiellement mis à jour) : reprendre depuis un checkpoint.
     """
 
     def __init__(self, learner: Learner, collector: Collector, overlap: bool = True) -> None:
@@ -342,7 +384,9 @@ class OverlapTrainer:
         self.learner, self.collector, self.overlap = learner, collector, overlap
         self._pending: RolloutBatch | None = None
         self._actor_version = -1
-        self._thread: threading.Thread | None = None
+        self._worker: _LearnerWorker | None = None
+        self._finalizer: weakref.finalize[Any, Any] | None = None
+        self._busy = False  # une mise à jour est en cours dans le thread learner
         self._failed = False
 
     @property
@@ -357,7 +401,7 @@ class OverlapTrainer:
     def state_dict(self) -> dict[str, Any]:
         """État pour la reprise exacte, à la frontière d'itération : learner, collecteur, lot en attente (k+1) et
         version de l'acteur. Refuse un trainer en échec ou dont le thread learner tourne."""
-        if self._failed or self._thread is not None:
+        if self._failed or self._busy:
             raise RuntimeError("state_dict impossible : trainer en échec ou thread learner actif")
         return {
             "learner": self.learner.state_dict(),
@@ -369,7 +413,7 @@ class OverlapTrainer:
     def load_state_dict(self, state: Mapping[str, Any], obs: Any = None) -> None:
         """Inverse de `state_dict`. `obs` : observation courante de l'env si elle diffère de celle sauvegardée (reprise
         « modulo reset des arènes »). L'acteur est resynchronisé sur π (copie de π à la frontière d'itération)."""
-        if self._thread is not None:
+        if self._busy:
             raise RuntimeError("load_state_dict impossible : thread learner actif")
         self.learner.load_state_dict(state["learner"])
         self.collector.load_state_dict(state["collector"], obs=obs)
@@ -394,27 +438,25 @@ class OverlapTrainer:
             self.sync_actor()
             nxt = self.collector.collect(self._actor_version)
         else:
-            out: dict[str, Any] = {}
-
-            def run() -> None:
-                try:
-                    out["stats"] = self.learner.update(batch)
-                except BaseException as exc:  # relevée dans le thread principal après join
-                    out["error"] = exc
-
-            self._thread = threading.Thread(target=run, name="ppo-learner")
-            self._thread.start()
+            if self._worker is None:
+                self._worker = _LearnerWorker()
+                # trainer libéré sans close() : le thread en attente se termine (sans join dans un finaliseur)
+                self._finalizer = weakref.finalize(self, self._worker.request_stop)
+            self._busy = True
+            self._worker.submit(functools.partial(self.learner.update, batch))
             try:
                 nxt = self.collector.collect(self._actor_version)
-            except BaseException:
+                done, error = self._worker.result()
+            except BaseException:  # collecte, ou interruption pendant l'attente du learner (revue)
                 self._failed = True
-                raise
-            finally:
                 self.close()
-            if "error" in out:
+                raise
+            self._busy = False
+            if error is not None or done is None:
                 self._failed = True
-                raise LearnerError("échec du thread learner") from out["error"]
-            stats = out["stats"]
+                self.close()
+                raise LearnerError("échec du thread learner") from error
+            stats = done
             self.sync_actor()
         self._pending = nxt
         return IterationResult(
@@ -432,10 +474,14 @@ class OverlapTrainer:
             raise LearnerError("échec de la mise à jour PPO") from exc
 
     def close(self) -> None:
-        """Attend la fin du thread learner s'il tourne (idempotent)."""
-        th, self._thread = self._thread, None
-        if th is not None:
-            th.join()
+        """Attend la fin de la mise à jour en cours, puis arrête le thread learner (idempotent ; `iterate` le
+        recrée)."""
+        worker, self._worker = self._worker, None
+        if worker is not None:
+            if self._finalizer is not None:
+                self._finalizer.detach()
+            worker.stop()
+        self._busy = False
 
     def __enter__(self) -> OverlapTrainer:
         return self
