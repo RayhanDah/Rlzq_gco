@@ -299,6 +299,30 @@ Un seul passage : pas de répétition, thermique non contrôlée.
 - **Durée d'un run de 1B** (extrapolé) : 6,0 h au débit moyen du banc, **6,9 h à 40k/s** (dernières tranches) ;
   au-delà de 8 h si le débit descend sous ≈ 34,7k/s à pool plein, ce que ce banc ne permet pas d'exclure.
 
+### M6 — Banc soutenu à pool plein (100 instantanés dès l'itération 0, 2026-11-14)
+Commande : `vendor/venv-xpu/Scripts/python scripts/bench_run.py --minutes 35 --prefill-pool 100` ; seed 0 ; commit
+d017826 (arbre propre) ; même laptop, sur secteur ; 2026-11-14 18:10 → 18:45 UTC ; mêmes configs que M5. Smoke test
+PASS sur le même commit (`runs/smoke_d017826/smoke_summary.json`). Données : `runs/bench_4a_20261114T181031Z/`.
+Un seul passage, lancé juste après le smoke test et un essai de 1,5 min (machine déjà chaude). **Limite** : le pool
+est rempli par 99 copies de θ₀ (réseaux distincts en mémoire et à l'inférence, adversaires aléatoires) ; le coût est
+celui d'un pool plein, la dynamique de jeu non. Non comparable tranche à tranche à M5.
+
+- **Débit** (appris/s, mural) : **32,2k en moyenne sur 35 min** (collecté 35,8k), 1 310 itérations, 67,6M appris,
+  0 restauration. Par tranche de 5 min : 35,3k ; 34,5k ; 34,4k ; 34,6k ; 33,3k ; **27,0k ; 26,3k**. Plat à ≈ 34,5k
+  pendant 25 min, puis chute de ≈ 22 % (p10 de la tranche 25–30 : 23,9k).
+- **Effet du pool** : à 100 instantanés, ≈ 35k dès les 5 premières minutes, contre 57,3k à 7 instantanés dans M5.
+  La baisse observée dans M5 vient donc surtout du pool qui grandit, pas du throttling. « Inférence acteur + pool +
+  tampons » : **76,0 %** du temps mural (61,3 % dans M5) ; simulation 13,5 % ; obs + récompense + resets 8,7 %.
+- **Chute à 25 min** : cause non établie. Elle coïncide avec la mémoire disponible sous 1 Go (min par tranche :
+  3,75 ; 3,33 ; 2,83 ; 1,50 ; 1,82 ; 0,92 ; 0,68 Go) ; pagination ou throttling non départagés.
+- **K6** : non déclenché (35 min de boucle), mais les deux dernières tranches sont à 1–2k du seuil de 25k.
+- **RAM** : RSS max 7,78 Go, privée max 9,22 Go, **disponible min 715 Mo**. La mémoire disponible baisse pendant tout
+  le banc alors que le pool est déjà plein : la croissance ne vient pas des instantanés (origine non identifiée).
+- **Checkpoints** : 225,0 Mo à 100–101 instantanés, écriture 1,5–3,3 s, 0,5 % du temps. Évaluation : 1, 12,8 s.
+- **Durée d'un run de 1B** (extrapolé) : 8,6 h au débit moyen, 8,1 h à 34,5k/s, **≈ 10,4 h à 26,6k/s** (deux
+  dernières tranches). **Un run de 1B ne tient pas dans une session de 8 h** dans la configuration de l'ADR-005
+  (seuil : 34,7k/s) ; en 8 h à 26,6k/s : ≈ 0,77B (extrapolé).
+
 ## Temps de calcul
 Base **mesurée** : plateau soutenu du laptop ≈ 50k timesteps/s (M4, 57 min, politique aléatoire). Seconde colonne :
 facteur ×0,7, **estimé, non mesuré**, pour les critiques d'exploration GCO-std et l'évaluation (spec §6.2).
