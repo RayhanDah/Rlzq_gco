@@ -1,0 +1,17 @@
+# Évaluation en cours de run des runs 4a (`training.evalhook.EvalHookConfig`), aux paramètres de l'ADR-005 D2 et des
+# « Précisions validées » du 2026-11-14. Chargé par scripts/run_4a.py.
+every_timesteps: 50000000        # une évaluation toutes les 0,05B appris (≈ 969 itérations)
+frozen_lag_timesteps: 100000000  # gelé 0,1B plus tôt (θ₀ avant)
+episodes_random: 512
+episodes_frozen: 512
+min_decisive: 20
+wilson_alpha: 0.05               # Wilson unilatéral
+garwood_alpha: 0.05
+garwood_two_sided: true          # précision validée 1
+r0_goals_per_min: 0.027          # R0 = borne haute de P0 complet (10 240 épisodes, ADR-005 D2, mesure du 2026-11-14)
+consecutive: 3
+k7_consecutive: 3
+n_envs: 256                      # précision validée 3
+mode: sample
+seed: null                       # graine du run
+max_consecutive_errors: 3        # précision validée 5
