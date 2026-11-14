@@ -622,7 +622,12 @@ def run(
                 )
                 meter.tick(collector.agent_steps)
                 continue
-            if pool is not None and cfg.pool is not None and iteration % cfg.pool.snapshot_every == 0:
+            if (
+                pool is not None
+                and cfg.pool is not None
+                and iteration % cfg.pool.snapshot_every == 0
+                and decision.healthy  # une itération non saine (KL haut) n'entre pas dans le pool à q = max
+            ):
                 pool.add_snapshot(learner.policy, iteration)  # avant le checkpoint de la même itération
             if iteration % cfg.checkpoint.every_iterations == 0 and iteration < cap:
                 save(decision.healthy)

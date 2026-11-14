@@ -86,6 +86,9 @@ def make_layout(n_envs: int, n_cars: int, past_fraction: float) -> PoolLayout:
 # ---------------------------------------------------------------------------------------------------- scores
 
 
+_MIN_PROB = 1e-12  # plancher de p dans la règle Five : évite la division par zéro, borne le pas sur q
+
+
 class QualityPool:
     """Identifiants d'instantanés, scores de qualité q, tirage p ∝ exp(q) et éviction. Sans poids (voir
     `PastOpponents`) : testable seul."""
@@ -140,7 +143,7 @@ class QualityPool:
         """La politique courante a battu `uid` : q_uid ← q_uid − η/(N·p_uid). Sans effet (False) si `uid` évincé."""
         if uid not in self.q:
             return False
-        p = float(self.probs()[self.uids.index(uid)])
+        p = max(float(self.probs()[self.uids.index(uid)]), _MIN_PROB)  # p peut valoir exactement 0,0 (q très bas)
         self.q[uid] -= self.quality_lr / (len(self.uids) * p)
         return True
 

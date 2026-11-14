@@ -335,3 +335,30 @@ def test_restauration_restaure_le_pool(tmp_path: Path, monkeypatch: pytest.Monke
     assert ev and ev[0]["to_iteration"] == 4
     st = _pool_state(out)
     assert st["pool"]["iteration"] == [0, 2, 4, 6, 8] and st["pool"]["next_uid"] == 5
+
+
+# ---------------------------------------------------------------------------------------------------- constats de revue
+
+
+def test_victoire_contre_un_instantane_de_probabilite_nulle_ne_plante_pas() -> None:
+    # Arrange : q si bas que exp(q − max q) vaut exactement 0,0 en float64
+    pool = QualityPool(max_size=10, quality_lr=0.01, seed=0)
+    a, _ = pool.add(0)
+    pool.add(50)
+    pool.q[a] = -1000.0
+    assert pool.probs()[0] == 0.0
+    # Act : sans plancher sur p, ZeroDivisionError (le run mourrait)
+    assert pool.record_win(a) is True
+    # Assert : q reste fini et ne remonte pas
+    assert math.isfinite(pool.q[a]) and pool.q[a] < -1000.0
+
+
+def test_pas_d_instantane_sur_une_iteration_non_saine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Arrange : KL au-dessus du seuil à la 2e mise à jour seulement : CONTINUE, non saine, sans restauration
+    inject(monkeypatch, lambda n, st: dataclasses.replace(st, approx_kl=1.0) if n == 2 else st)
+    out = tmp_path / "run"
+    # Act
+    s = go(cfg_of(pool={**POOL, "max_size": 10}), out, env_factory=make_factory(GOALS))
+    # Assert : pas d'instantané à l'itération 2 (il entrerait à q = max) ; 0, 4, 6, 8 seulement
+    assert s.status == "completed" and s.restores == 0
+    assert _pool_state(out)["pool"]["iteration"] == [0, 4, 6, 8]
