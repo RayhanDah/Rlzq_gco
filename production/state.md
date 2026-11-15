@@ -77,7 +77,7 @@ Mis à jour : 2026-11-14 (**G2 validé**, Phase 3 terminée, Phase 4a : A0 à A6
   en file pendant qu'un T4 tournait ; exécution simultanée non encore observée.
 
 ## Expériences en cours
-- Aucun run actif. **run_4a_std_s1 arrêté** à l'itération 7 573 / 19 376 (DEVICE_LOST, 2026-11-15 08:21 UTC) :
-  reprise possible depuis le checkpoint 7 500 (`--resume-after-stop`), **en attente de la décision de l'utilisateur**.
+- **run_4a_std_s1 puis run_4a_std_s2** enchaînés par `scripts/run_4a.py --seed 1 2 --max-hours 0` (2026-11-15),
+  reprise automatique après perte du GPU (ADR-005, décision du 2026-11-15).
 - run_4a_std_s0 **terminé** (1B appris, 2026-11-15) : S1-léger **non atteint** ; (b) vraie aux 3 dernières
   évaluations, (a) jamais (≤ 23 parties décisives sur 512) ; 1 arrêt DEVICE_LOST repris, 1 restauration K4 (NaN).

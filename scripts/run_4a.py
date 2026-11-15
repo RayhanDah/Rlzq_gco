@@ -17,8 +17,17 @@ Ce que le lanceur ajoute à `scripts/train.py` :
 - refus d'un arbre git sale (mesure non attribuable à un commit) et de GCO-S sans `--std-s1-observed` (ADR-005 :
   GCO-S seulement si au moins une seed GCO-std a S1-léger).
 
-Code de sortie : 0 = session terminée proprement (budget atteint, durée atteinte ou Ctrl+C) ; 3 = STOP d'un kill
-criterion (K2, K3, K5 : le plan est suspendu, ADR-005 D6) ; 1 = erreur ou refus.
+Enchaînement et reprise automatique (décision de l'utilisateur du 2026-11-15, runs lancés la nuit) :
+`--seed 1 2` enchaîne les runs ; le suivant ne démarre que si le précédent est terminé (budget atteint). Chaque
+session tourne dans un processus enfant (`--child`) : après une perte du GPU par le pilote
+(`UR_RESULT_ERROR_DEVICE_LOST`, contexte XPU inutilisable dans le processus), le superviseur attend 60 s et relance
+un enfant qui reprend du dernier checkpoint sain, sans limite tant que le run progresse ; il abandonne après
+`MAX_NO_PROGRESS` pannes de suite sans nouveau checkpoint. Un STOP de kill criterion ou toute autre erreur arrête
+l'enchaînement (ADR-005 D6). `--max-hours` borne chaque run (0 = aucune limite).
+
+Code de sortie : 0 = terminé proprement (budget atteint, durée atteinte ou Ctrl+C) ; 3 = STOP d'un kill criterion
+(K2, K3, K5 : le plan est suspendu, ADR-005 D6) ; 4 = perte du GPU (enfant) ; 1 = autre erreur, refus, ou reprises
+abandonnées.
 Aucun run de plus de 30 min sans smoke test vert sur le même commit (CLAUDE.md, règle 5) : le lanceur ne le vérifie pas.
 """
 
@@ -30,6 +39,7 @@ import dataclasses
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterator
@@ -42,7 +52,10 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 VARIANTS = {"std": "run_4a_std.yaml", "s": "run_4a_s.yaml"}
 EVAL_CONFIG = "run_4a_eval.yaml"
-EXIT_OK, EXIT_ERROR, EXIT_KILL = 0, 1, 3
+EXIT_OK, EXIT_ERROR, EXIT_KILL, EXIT_DEVICE_LOST = 0, 1, 3, 4
+DEVICE_LOST = "UR_RESULT_ERROR_DEVICE_LOST"  # message du runtime Level Zero (torch XPU) quand le pilote perd le GPU
+MAX_NO_PROGRESS = 3  # pannes de suite sans nouveau checkpoint : le GPU ne revient pas, on abandonne
+RETRY_WAIT_S = 60.0  # laisse le pilote se rétablir avant de relancer
 _CKPT_RE = re.compile(r"^ckpt_\d{6}_it\d{8}\.pt$")  # `training.checkpoint`
 
 ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
@@ -103,6 +116,74 @@ def check_resumable(out_dir: Path, *, force: bool) -> str:
             "(ADR-005 D6) ; après décision, relancer avec --resume-after-stop"
         )
     return "resumable"
+
+
+def is_device_lost(exc: BaseException | None) -> bool:
+    """Vrai si l'exception, ou une de ses causes (`LearnerError` enveloppe celle du thread learner), est une perte
+    du GPU par le pilote."""
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        if DEVICE_LOST in str(exc):
+            return True
+        seen.add(id(exc))
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+def segment_device_lost(seg: dict[str, Any] | None) -> bool:
+    """La session décrite par `seg` (ligne de `segments.jsonl`) a fini sur une perte du GPU."""
+    return seg is not None and seg.get("status") == "error" and DEVICE_LOST in str(seg.get("error") or "")
+
+
+def latest_checkpoint_iteration(ck_dir: Path) -> int | None:
+    """Itération du checkpoint le plus récent de `ck_dir` (nom `ckpt_<index>_it<itération>.pt`), None si aucun."""
+    if not ck_dir.is_dir():
+        return None
+    its = [int(p.name[14:22]) for p in ck_dir.iterdir() if _CKPT_RE.match(p.name)]
+    return max(its) if its else None
+
+
+def supervise_run(
+    spawn: Callable[[bool, float | None], int],
+    state: Callable[[], tuple[dict[str, Any] | None, int | None]],
+    *,
+    max_hours: float | None,
+    resume_first: bool = False,
+    auto_resume: bool = True,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    log: Callable[[str], None] = print,
+) -> str:
+    """Mène un run jusqu'au bout à travers des sessions enfants. `spawn(resume_after_stop, heures_restantes)` lance
+    une session et rend son code de sortie ; `state()` rend (dernier segment, itération du dernier checkpoint).
+    Rend « completed », « paused » (durée atteinte, Ctrl+C, plafond d'itérations), « stopped » (kill criterion),
+    « error » (autre erreur, ou reprises abandonnées)."""
+    start = clock()
+    resume = resume_first
+    no_progress = 0
+    while True:
+        remaining = None
+        if max_hours is not None:
+            remaining = max_hours - (clock() - start) / 3600.0
+            if remaining <= 0.0:
+                return "paused"
+        _, ck_before = state()
+        code = spawn(resume, remaining)
+        seg, ck_after = state()
+        if code == EXIT_KILL:
+            return "stopped"
+        if code == EXIT_OK:
+            return "completed" if seg is not None and seg.get("status") == "completed" else "paused"
+        if code != EXIT_DEVICE_LOST or not auto_resume:
+            return "error"
+        progressed = ck_after is not None and (ck_before is None or ck_after > ck_before)
+        no_progress = 0 if progressed else no_progress + 1
+        if no_progress >= MAX_NO_PROGRESS:
+            log(f"[run_4a] {no_progress} pertes du GPU de suite sans nouveau checkpoint : reprises abandonnées")
+            return "error"
+        log(f"[run_4a] GPU perdu (dernier checkpoint : itération {ck_after}) : reprise dans {RETRY_WAIT_S:.0f} s")
+        sleep(RETRY_WAIT_S)
+        resume = True
 
 
 def deadline(max_hours: float | None, clock: Callable[[], float] = time.monotonic) -> Callable[[], bool] | None:
@@ -205,8 +286,8 @@ def launch(
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--variant", choices=sorted(VARIANTS), required=True, help="std = GCO-std, s = GCO-S")
-    ap.add_argument("--seed", type=int, required=True, help="0, 1 ou 2 (ADR-005 D3)")
-    ap.add_argument("--max-hours", type=float, default=7.5, help="durée murale de la session (défaut 7,5 h)")
+    ap.add_argument("--seed", type=int, nargs="+", required=True, help="0, 1 ou 2 (ADR-005 D3) ; plusieurs : enchaînés")
+    ap.add_argument("--max-hours", type=float, default=7.5, help="durée murale par run (défaut 7,5 h ; 0 = aucune)")
     ap.add_argument("--device", help="remplace `device` de la config (change le hash : même valeur à chaque session)")
     ap.add_argument("--max-iterations", type=int, help="plafond absolu du compteur d'itérations (essais)")
     ap.add_argument("--runs-root", type=Path, default=ROOT / "runs")
@@ -223,7 +304,10 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="reprend un run dont la dernière session a fini par un STOP ou une erreur (décision humaine, ADR-005 D6)",
     )
+    ap.add_argument("--no-auto-resume", action="store_true", help="pas de reprise automatique après perte du GPU")
+    ap.add_argument("--child", action="store_true", help=argparse.SUPPRESS)  # une session, lancée par le superviseur
     args = ap.parse_args(argv)
+    max_hours = args.max_hours if args.max_hours > 0 else None
 
     if args.variant == "s" and not args.std_s1_observed:
         print(
@@ -240,14 +324,19 @@ def main(argv: list[str] | None = None) -> int:
     if train_script.git_dirty(ROOT) and not args.allow_dirty:
         print("arbre git sale : run non attribuable à un commit (committer, ou --allow-dirty)", file=sys.stderr)
         return EXIT_ERROR
+    if not args.child:
+        return _supervise_main(args, max_hours)
+    if len(args.seed) != 1:
+        print("--child : une seule seed", file=sys.stderr)
+        return EXIT_ERROR
     bench_run._set_rocketgpu_defaults()
     try:
         with keep_awake(not args.no_keep_awake) as awake:
             print(f"[run_4a] veille par inactivité bloquée : {awake}", flush=True)
             code, report = launch(
                 args.variant,
-                args.seed,
-                max_hours=args.max_hours,
+                args.seed[0],
+                max_hours=max_hours,
                 runs_root=args.runs_root,
                 checkpoints_root=args.checkpoints_root,
                 config_dir=ROOT / "configs",
@@ -258,7 +347,7 @@ def main(argv: list[str] | None = None) -> int:
             )
     except (ConfigError, RunError, RuntimeError, ValueError, OSError) as exc:
         print(f"run impossible : {type(exc).__name__} : {exc}", file=sys.stderr)
-        return EXIT_ERROR
+        return EXIT_DEVICE_LOST if is_device_lost(exc) else EXIT_ERROR
     print(json.dumps(report, indent=2, default=str))
     left = report["remaining_iterations"]
     if code == EXIT_KILL:
@@ -268,6 +357,68 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print("[run_4a] budget atteint : run terminé")
     return code
+
+
+def child_command(args: argparse.Namespace, seed: int, resume_after_stop: bool, hours: float | None) -> list[str]:
+    """Ligne de commande d'une session enfant (mêmes options que le superviseur, une seule seed)."""
+    cmd = [sys.executable, str(Path(__file__).resolve()), "--child", "--variant", args.variant, "--seed", str(seed)]
+    cmd += ["--max-hours", repr(hours if hours is not None else 0.0)]
+    cmd += ["--runs-root", str(args.runs_root), "--checkpoints-root", str(args.checkpoints_root)]
+    if args.device:
+        cmd += ["--device", args.device]
+    if args.max_iterations is not None:
+        cmd += ["--max-iterations", str(args.max_iterations)]
+    for flag in ("allow_dirty", "no_keep_awake", "std_s1_observed"):
+        if getattr(args, flag):
+            cmd.append("--" + flag.replace("_", "-"))
+    if resume_after_stop:
+        cmd.append("--resume-after-stop")
+    return cmd
+
+
+def run_child(cmd: list[str]) -> int:
+    """Lance une session enfant et attend sa fin. Sur Ctrl+C (reçu aussi par l'enfant, même console), on ne tue pas
+    l'enfant : il s'arrête proprement (checkpoint et segment `interrupted`), puis le superviseur sort (revue, M1)."""
+    proc = subprocess.Popen(cmd)
+    while True:
+        try:
+            return proc.wait()
+        except KeyboardInterrupt:
+            print("[run_4a] Ctrl+C : attente de l'arrêt propre de la session enfant", flush=True)
+
+
+def _supervise_main(args: argparse.Namespace, max_hours: float | None) -> int:
+    """Enchaîne les seeds ; chaque run passe par `supervise_run` (sessions enfants, reprise après perte du GPU)."""
+    with keep_awake(not args.no_keep_awake) as awake:
+        print(f"[run_4a] superviseur : seeds {args.seed}, veille par inactivité bloquée : {awake}", flush=True)
+        for k, seed in enumerate(args.seed):
+            name = run_name(args.variant, seed)
+            # le forçage de l'utilisateur ne vaut que pour la 1re session de la 1re seed (revue, mineur 1)
+            forced = [bool(args.resume_after_stop) and k == 0]
+            out_dir, ck_dir = args.runs_root / name, args.checkpoints_root / name
+
+            def spawn(resume: bool, hours: float | None, seed: int = seed, forced: list[bool] = forced) -> int:
+                cmd = child_command(args, seed, resume or forced[0], hours)
+                forced[0] = False
+                print(f"[run_4a] session enfant : {' '.join(cmd[2:])}", flush=True)
+                return run_child(cmd)
+
+            def state(out_dir: Path = out_dir, ck_dir: Path = ck_dir) -> tuple[dict[str, Any] | None, int | None]:
+                return last_segment(out_dir), latest_checkpoint_iteration(ck_dir)
+
+            # run déjà arrêté par une perte du GPU avant ce lancement : reprise directe, même règle que la nuit
+            result = supervise_run(
+                spawn,
+                state,
+                max_hours=max_hours,
+                resume_first=not args.no_auto_resume and segment_device_lost(last_segment(out_dir)),
+                auto_resume=not args.no_auto_resume,
+            )
+            print(f"[run_4a] {name} : {result}", flush=True)
+            if result != "completed":
+                print("[run_4a] enchaînement arrêté : les seeds suivantes ne sont pas lancées", flush=True)
+                return {"paused": EXIT_OK, "stopped": EXIT_KILL}.get(result, EXIT_ERROR)
+    return EXIT_OK
 
 
 if __name__ == "__main__":
