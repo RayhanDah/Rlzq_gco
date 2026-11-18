@@ -81,8 +81,8 @@ Mis à jour : 2026-11-14 (**G2 validé**, Phase 3 terminée, Phase 4a : A0 à A6
   reprise automatique après perte du GPU (ADR-005, décision du 2026-11-15).
   - run_4a_std_s1 **terminé** (1B, 2026-11-16) : S1-léger **non atteint** ; (a) jamais, (b) une fois (it. 11 626) ;
     1 DEVICE_LOST repris, 0 NaN.
-  - run_4a_std_s2 **en pause** (arrêt demandé par l'utilisateur le 2026-11-16 ≈ 07:10, processus tué) : dernier
-    checkpoint `ckpt_000057_it00014250.pt` (74 %) ; 1 DEVICE_LOST repris dans la nuit, 0 NaN ; S1-léger non atteint
-    à ce point ((b) une fois, it. 12 595). Reprendre avec `scripts/run_4a.py --variant std --seed 2 --max-hours 0`.
+  - run_4a_std_s2 **terminé** (1B, 2026-11-18 02:08, repris le 18 à 14 250) : S1-léger **non atteint** ; (a) jamais,
+    (b) deux fois (it. 12 595, 15 501) ; 1 DEVICE_LOST repris, 0 NaN. **Aucune seed GCO-std n'a S1-léger : GCO-S non lancé** ;
+    suite : analyse A7 (`docs/reports/run_4a.md`), puis G3.
 - run_4a_std_s0 **terminé** (1B appris, 2026-11-15) : S1-léger **non atteint** ; (b) vraie aux 3 dernières
   évaluations, (a) jamais (≤ 23 parties décisives sur 512) ; 1 arrêt DEVICE_LOST repris, 1 restauration K4 (NaN).
