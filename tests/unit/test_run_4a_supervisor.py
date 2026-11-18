@@ -135,3 +135,27 @@ def test_ligne_de_commande_enfant() -> None:
     assert cmd[2:7] == ["--child", "--variant", "std", "--seed", "1"]
     assert cmd[cmd.index("--max-hours") + 1] == "0.0" and cmd[-1] == "--resume-after-stop"
     assert "--resume-after-stop" not in r4.child_command(args, 1, False, 2.5)
+    assert "--eval-config" not in cmd  # défaut : rien à transmettre
+    args.eval_config = "run_s1v2_eval.yaml"
+    cmd2 = r4.child_command(args, 1, False, None)
+    assert cmd2[cmd2.index("--eval-config") + 1] == "run_s1v2_eval.yaml"
+
+
+def test_option_eval_config_du_parseur() -> None:
+    import argparse as ap_mod
+
+    captured: dict[str, Any] = {}
+
+    def fake_supervise(args: ap_mod.Namespace, max_hours: float | None) -> int:
+        captured["eval_config"] = args.eval_config
+        return 0
+
+    orig = r4._supervise_main
+    r4._supervise_main = fake_supervise  # type: ignore[assignment]
+    try:
+        assert r4.main(["--variant", "std", "--seed", "0", "--allow-dirty"]) == 0
+        assert captured["eval_config"] == r4.EVAL_CONFIG
+        assert r4.main(["--variant", "std", "--seed", "0", "--allow-dirty", "--eval-config", "x.yaml"]) == 0
+        assert captured["eval_config"] == "x.yaml"
+    finally:
+        r4._supervise_main = orig
