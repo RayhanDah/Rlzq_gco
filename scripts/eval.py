@@ -1,7 +1,8 @@
 """Évalue deux politiques par matchs appariés (kickoff -> premier but, côtés échangés) et écrit un JSON avec provenance.
 
     python scripts/eval.py --a <checkpoint|random> --b <checkpoint|random> --episodes N --out resultat.json
-        [--sprt-elo 50] [--sprt-max-decisive 1200] [--device cpu] [--seed 0] [--mode sample|argmax] [--n-envs 64]
+        [--sprt-elo 50] [--sprt-max-decisive 1200] [--device cpu] [--seed 0] [--mode sample|argmax]
+        [--n-envs 64] [--p-kick 1.0]
 
 A est la politique évaluée, B la référence : l'Elo rapporté est celui de A sur B (parties décisives, nuls exclus).
 `--episodes` est le nombre d'épisodes joués (arrondi à une paire) ET le plafond du SPRT. `--sprt-elo X` rejoue après
@@ -9,6 +10,8 @@ coup, dans l'ordre des paires, un SPRT H0 : Δ = 0 contre H1 : Δ = +X (α, β :
 décision et le nombre d'épisodes qu'elle aurait consommés sont rapportés, les épisodes suivants restent dans le résumé.
 `--sprt-max-decisive N` ajoute le plafond de parties décisives (`SPRTConfig.max_decisive`) : le test s'arrête au
 premier des deux plafonds (ADR-005 D2, S1-seed : 1 200 décisives et 20 000 épisodes).
+`--p-kick P` (défaut 1 : kickoffs seuls) : proportion de paires jouées depuis un kickoff ; les autres partent d'un état
+générique (`env.initial_states`), identique pour les deux épisodes de la paire.
 Le fichier de sortie est le SEUL fichier écrit ; il n'est jamais écrasé (erreur s'il existe).
 
 Variables d'environnement RocketGPU : `ROCKETGPU_PY_DIR`, `ROCKETGPU_COLLISION_MESH_DIR` (et `ROCKETGPU_DLL_DIR`).
@@ -108,6 +111,7 @@ def evaluate(
     sim: Simulator | None = None,
     build_obs: ObsBuilder | None = None,
     obs_dim: int | None = None,
+    p_kick: float = 1.0,
     command: list[str] | None = None,
 ) -> dict[str, Any]:
     """Joue le match et rend le rapport (dictionnaire JSON-sérialisable). `sim` : simulateur dédié (défaut : RocketGPU
@@ -121,7 +125,9 @@ def evaluate(
     # instances indépendantes, ce qui est l'évaluation « contre soi-même gelé »)
     pol_a, info_a = load_policy(a_spec, mode=mode, seed=seed + 1, obs_dim=d, tick_skip=sim.tick_skip, device=device)
     pol_b, info_b = load_policy(b_spec, mode=mode, seed=seed + 2, obs_dim=d, tick_skip=sim.tick_skip, device=device)
-    res = play_match(pol_a, pol_b, sim, episodes, seed=seed, reward_config=cfg, build_obs=build_obs, obs_dim=obs_dim)
+    res = play_match(
+        pol_a, pol_b, sim, episodes, seed=seed, reward_config=cfg, build_obs=build_obs, obs_dim=obs_dim, p_kick=p_kick
+    )
     summary = summarize(res, n_boot=n_boot, seed=seed)
     report: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -134,8 +140,13 @@ def evaluate(
             "tick_skip": sim.tick_skip,
             "mode": mode,
             "reward_config": cfg.to_dict(),
-            "p_kick": 1.0,
-            "unit": "épisode kickoff -> premier but ; troncature = nul ; paires de même graine, côtés échangés",
+            "p_kick": p_kick,
+            "unit": (
+                "épisode kickoff -> premier but ; troncature = nul ; paires de même graine, côtés échangés"
+                if p_kick == 1.0
+                else "épisode (kickoff ou état générique selon p_kick) -> premier but ; troncature = nul ; "
+                "paires de même condition initiale, côtés échangés"
+            ),
         },
         "policies": {"a": dataclasses.asdict(info_a), "b": dataclasses.asdict(info_b)},
         "summary": summary.as_dict(),
@@ -194,6 +205,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--mode", choices=["sample", "argmax"], default="sample", help="choix d'action des checkpoints")
     ap.add_argument("--n-envs", type=int, default=64, help="arènes simulées (pair)")
+    ap.add_argument("--p-kick", type=float, default=1.0, help="proportion de paires depuis un kickoff (défaut 1)")
     ap.add_argument("--n-boot", type=int, default=2000)
     ap.add_argument("--out", required=True, help="fichier JSON de sortie (créé, jamais écrasé)")
     args = ap.parse_args(argv)
@@ -218,6 +230,7 @@ def main(argv: list[str] | None = None) -> int:
             sprt_beta=args.sprt_beta,
             sprt_max_decisive=args.sprt_max_decisive,
             n_boot=args.n_boot,
+            p_kick=args.p_kick,
             command=[sys.executable, *(argv if argv is not None else sys.argv)],
         )
     except SimulatorUnavailableError as exc:

@@ -1,4 +1,5 @@
-"""Matchs d'évaluation entre deux politiques A et B sur `BatchEnv` (1v1, kickoffs seuls), `docs/01_papers.md` §1.9.
+"""Matchs d'évaluation entre deux politiques A et B sur `BatchEnv` (1v1), `docs/01_papers.md` §1.9.
+Kickoffs seuls par défaut ; états génériques sur option (`p_kick`).
 
 Unité : épisode kickoff -> premier but ; troncature (no-touch ou durée max) = nul. Jeu par PAIRES : la paire p est
 formée de deux épisodes de MÊME graine de kickoff, joués l'un après l'autre DANS LA MÊME ARÈNE, A bleu dans le premier
@@ -21,6 +22,7 @@ contrôle. Sans gradient (`torch.inference_mode`), poids jamais modifiés.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import time
 from collections.abc import Callable
@@ -193,9 +195,17 @@ class _PairedKickoffSim:
     """Enveloppe de `Simulator` : au n-ième reset de l'arène a (n = 0, 1, ...), impose la graine de la paire
     p = a + (n // 2)·E ; les épisodes n = 2k (A bleu) et 2k+1 (A orange) de l'arène partagent donc leur graine."""
 
-    def __init__(self, sim: Simulator, seeds: U64Array) -> None:
+    def __init__(
+        self,
+        sim: Simulator,
+        seeds: U64Array,
+        generic_row: I64Array | None = None,
+        generic: InitialStates | None = None,
+    ) -> None:
         self._sim = sim
         self._seeds = seeds
+        self._generic_row = generic_row  # (n_pairs,) ligne de `generic` de la paire, -1 : kickoff
+        self._generic = generic
         self.reset_count = np.zeros(sim.n_envs, dtype=np.int64)
         """Resets déjà effectués par arène : l'épisode en cours est le n° `reset_count - 1`."""
 
@@ -228,12 +238,22 @@ class _PairedKickoffSim:
 
     def reset_to_kickoff(self, arena_idx: I64Array, kickoff_seeds: U64Array) -> None:
         seeds = kickoff_seeds.copy()
+        rows: list[int] = []
+        gen_arenas: list[int] = []
         for i, a in enumerate(arena_idx.tolist()):
             p = a + (int(self.reset_count[a]) // 2) * self._sim.n_envs
             if p < self._seeds.shape[0]:
                 seeds[i] = self._seeds[p]
+                if self._generic_row is not None and self._generic_row[p] >= 0:
+                    rows.append(int(self._generic_row[p]))
+                    gen_arenas.append(a)
             self.reset_count[a] += 1
         self._sim.reset_to_kickoff(arena_idx, seeds)
+        if rows:  # paire générique : le MÊME état (même ligne) pour ses deux épisodes, posé après le reset kickoff
+            assert self._generic is not None
+            idx = np.asarray(rows, dtype=np.intp)
+            fields = {f.name: getattr(self._generic, f.name)[idx] for f in dataclasses.fields(InitialStates)}
+            self._sim.set_states(np.asarray(gen_arenas, dtype=np.int64), InitialStates(**fields))
 
     def set_states(self, arena_idx: I64Array, states: InitialStates) -> None:
         self._sim.set_states(arena_idx, states)
@@ -290,16 +310,32 @@ def play_match(
     reward_config: RewardConfig | None = None,
     build_obs: ObsBuilder | None = None,
     obs_dim: int | None = None,
+    p_kick: float = 1.0,
 ) -> MatchResult:
     """Joue ceil(n_episodes / 2) paires. `sim` doit être un simulateur DÉDIÉ à l'évaluation (1v1) : l'env
-    d'entraînement n'est ni utilisé ni modifié. `p_kick = 1` : kickoffs seuls."""
+    d'entraînement n'est ni utilisé ni modifié. `p_kick = 1` (défaut) : kickoffs seuls, chemin inchangé.
+    `p_kick < 1` : chaque PAIRE est kickoff (proba `p_kick`) ou état générique, tirage de
+    `InitialStateSampler(2, p_kick, seed).sample(n_pairs)` (même loi qu'à l'entraînement, d'un coup).
+    L'état générique de la paire est posé à l'identique dans ses deux épisodes ; A conduit la voiture du slot bleu
+    au 1er et celle du slot orange au 2e : échange de côtés à état identique (pas de miroir de l'état, inutile :
+    les positions sont tirées indépendamment par voiture, et c'est l'état qui est partagé, comme la graine pour
+    un kickoff)."""
     if n_episodes < 2:
         raise ValueError("n_episodes >= 2 (au moins une paire)")
     if sim.n_cars != 2 or sim.n_envs < 1:
         raise ValueError(f"1v1 attendu, reçu {sim.n_envs} arènes x {sim.n_cars} voitures")
     n_pairs = (n_episodes + 1) // 2
     e = sim.n_envs
-    paired = _PairedKickoffSim(sim, pair_seeds(seed, n_pairs))
+    if not 0.0 <= p_kick <= 1.0:
+        raise ValueError(f"p_kick dans [0, 1], reçu {p_kick}")
+    generic_row: I64Array | None = None
+    generic: InitialStates | None = None
+    if p_kick < 1.0:
+        draw = InitialStateSampler(2, p_kick, seed).sample(n_pairs)  # graines du tirage ignorées : `pair_seeds`
+        generic = draw.generic
+        generic_row = np.full(n_pairs, -1, dtype=np.int64)
+        generic_row[draw.generic_mask] = np.arange(int(draw.generic_mask.sum()), dtype=np.int64)
+    paired = _PairedKickoffSim(sim, pair_seeds(seed, n_pairs), generic_row, generic)
     cfg = reward_config or RewardConfig()
     env = BatchEnv(paired, RewardFunction(cfg), InitialStateSampler(2, 1.0, seed), build_obs=build_obs, obs_dim=obs_dim)
     team = np.asarray(sim.state().car_team)
