@@ -88,9 +88,11 @@ from training.logging import (
     iteration_scalars,
     try_append_jsonl,
 )
+from training.memory import memory_mb
 from training.ppo import Learner, OptimizerLike, OverlapTrainer, make_optimizer, resolve_device
 from training.rollout import Collector, RolloutBatch
 from training.selfplay import PastOpponents, QualityPool, make_layout
+from training.sil import SILGuardState, sil_guard
 
 METRICS_FILE = "metrics.jsonl"
 EVENTS_FILE = "events.jsonl"
@@ -350,6 +352,7 @@ def run(
     command: list[str] | None = None,
     s1_provider: Callable[[int], bool] | None = None,
     eval_hook: EvalHook | None = None,
+    memory_probe: Callable[[], tuple[float | None, float | None]] | None = None,
 ) -> RunSummary:
     """Entraîne jusqu'au budget de `config`.
 
@@ -424,7 +427,17 @@ def run(
     policy.to(device)  # avant l'optimiseur : il doit tenir les paramètres définitifs
     value.to(device)
     optimizer = (optimizer_factory or _default_optimizer)([*policy.parameters(), *value.parameters()], cfg.ppo, device)
-    learner = Learner(policy, value, cfg.ppo, device, optimizer=optimizer, seed=cfg.seed)
+    sil_on = cfg.sil is not None and cfg.sil.enabled
+    sil_optimizer = None  # ADR-009 D3 : Adam distinct pour les pas SIL (mode separate), même fabrique que PPO
+    if sil_on and cfg.sil is not None and cfg.sil.mode == "separate":
+        sil_optimizer = (optimizer_factory or _default_optimizer)(
+            [*policy.parameters(), *value.parameters()], cfg.ppo, device
+        )
+    learner = Learner(
+        policy, value, cfg.ppo, device, optimizer=optimizer, seed=cfg.seed, sil=cfg.sil, sil_optimizer=sil_optimizer
+    )
+    probe = memory_probe or memory_mb
+    sil_guard_state = SILGuardState()
     tally = _Tally()
     # pool d'adversaires (ADR-005 D5) : None sans section `pool` (self-play contre la version courante seule)
     pool: PastOpponents | None = None
@@ -465,6 +478,8 @@ def run(
         guard_state = dataclasses.replace(guard_state, restores_total=max(guard_state.restores_total, tally.restores))
         s1_reached = bool(info.extra.get("s1_reached", False))
         s1_iteration = info.extra.get("s1_iteration")
+        if sil_on and "sil_guard" in info.extra:
+            sil_guard_state = SILGuardState(**info.extra["sil_guard"])
         saved_schedule = info.extra.get("p_kick_schedule_version")
         if saved_schedule is not None and saved_schedule != P_KICK_SCHEDULE_VERSION:
             raise RunError(
@@ -530,6 +545,8 @@ def run(
         }
         if eval_hook is not None:
             extra["evalhook"] = eval_hook.state_dict()
+        if sil_on:
+            extra["sil_guard"] = dataclasses.asdict(sil_guard_state)
         state = capture(
             trainer,
             identity=identity,
@@ -559,9 +576,9 @@ def run(
 
     active_alerts: dict[str, str] = {}
 
-    def log_alerts(decision: GuardDecision) -> None:
+    def log_alerts(alerts: tuple[str, ...]) -> None:
         """Une ligne à l'entrée dans une alerte et une à la sortie, pas une par itération (revue A4, M2)."""
-        now = {a.split(" :", 1)[0]: a for a in decision.alerts}
+        now = {a.split(" :", 1)[0]: a for a in alerts}
         for rule, text in now.items():
             if rule not in active_alerts:
                 _append_jsonl(
@@ -609,7 +626,8 @@ def run(
             iteration += 1
             raw_collected += collector.agent_steps - steps_before
             rate = meter.tick(collector.agent_steps)
-            loop_s += time.perf_counter() - t_it
+            it_s = time.perf_counter() - t_it
+            loop_s += it_s
             sps.append(rate)
 
             hook_s1 = eval_hook(iteration) if eval_hook is not None else False  # à chaque itération (D7, K7)
@@ -618,6 +636,27 @@ def run(
                 _append_jsonl(out / EVENTS_FILE, {"event": "s1_reached", "t": time.time(), "iteration": iteration})
 
             stats = {k: float(v) for k, v in result.stats.as_dict().items()}
+            # SIL (C4, ADR-009 D5) : ses scalaires et la RAM passent aussi par la garde des valeurs non finies ;
+            # rien de tout cela sans SIL (journal et décisions inchangés)
+            sil_extra: dict[str, float] = {}
+            sil_alert_list: tuple[str, ...] = ()
+            sil_stop: tuple[str, str] | None = None
+            if sil_on and cfg.sil is not None:
+                stats.update({f"sil/{k}": float(v) for k, v in result.stats.sil.items()})
+                ram_avail, ram_private = probe()
+                if ram_avail is not None:
+                    sil_extra["sil/ram_available_mb"] = float(ram_avail)
+                if ram_private is not None:
+                    sil_extra["sil/ram_private_mb"] = float(ram_private)
+                stats.update(sil_extra)
+                sil_guard_state, sil_alert_list, sil_stop = sil_guard(
+                    cfg.sil,
+                    sil_guard_state,
+                    rho=stats["sil/rho"],
+                    coef=stats["sil/coef"],
+                    ram_available_mb=ram_avail,
+                    iteration_s=it_s,
+                )
             if iteration % cfg.logging.every_iterations == 0:
                 scalars = iteration_scalars(
                     result, p_kick=env.p_kick, steps_per_s=rate, n_cars=env.n_cars, learner=learner
@@ -632,6 +671,7 @@ def run(
                 scalars["train/collected_timesteps"] = float(collector.agent_steps)
                 if pool is not None:
                     scalars.update(pool.scalars())
+                scalars.update(sil_extra)
                 writer.write(iteration, scalars)
 
             p_ok, g_ok = params_finite(learner.params), grads_finite(learner.params)
@@ -640,8 +680,12 @@ def run(
                 guard_state,
                 GuardObservation(stats=stats, params_finite=p_ok, grads_finite=g_ok, s1_reached=s1_reached),
             )
+            if sil_stop is not None and decision.action is Action.CONTINUE:  # KS1, KS2 (ADR-009)
+                decision = GuardDecision(
+                    Action.STOP, sil_stop[0], sil_stop[1], healthy=decision.healthy, alerts=decision.alerts
+                )
             last_healthy = decision.healthy
-            log_alerts(decision)
+            log_alerts((*decision.alerts, *sil_alert_list))
             if nonfinite_keys(stats) or not p_ok or not g_ok:  # compté même si la décision est STOP (max_restores)
                 tally.nan += 1
             if decision.action is Action.STOP:
@@ -680,6 +724,8 @@ def run(
                 seed = cfg.seed + RESTORE_RESEED_PRIME * tally.restores
                 collector.generator.manual_seed(seed)
                 learner.generator.manual_seed(seed)
+                if learner.sil is not None:
+                    learner.sil.reseed(seed)  # tirage SIL : même règle que les autres flux
                 if pool is not None:
                     pool.reseed(seed + POOL_SEED_OFFSET)
                 _append_jsonl(

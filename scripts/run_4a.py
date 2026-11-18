@@ -18,8 +18,9 @@ Ce que le lanceur ajoute à `scripts/train.py` :
 - refus d'un arbre git sale (mesure non attribuable à un commit) et de GCO-S sans `--std-s1-observed` (ADR-005 :
   GCO-S seulement si au moins une seed GCO-std a S1-léger).
 
-Interventions (ADR-006 D5, ADR-007, ADR-008) : `--variant int_gamma998` ou `--variant int_slow_anneal` lance la config
-`configs/<variante>.yaml` (GCO-std, une seule modification par rapport à `run_4a_std.yaml`) sous le nom de run
+Interventions (ADR-006 D5, ADR-007, ADR-008, ADR-009) : `--variant int_gamma998`, `int_slow_anneal` ou `int_sil`
+(self-imitation, bloc `sil`) lance la config `configs/<variante>.yaml` (GCO-std, une seule modification par rapport à
+`run_4a_std.yaml`) sous le nom de run
 `<variante>_s<seed>`, avec les mêmes garanties (sessions enfants, reprise après perte du GPU, refus après STOP, arbre
 propre). Évaluation par défaut : `run_s1v2_eval.yaml` (protocole d'ADR-006). Pas de garde-fou GCO-S : des GCO-std.
 
@@ -58,7 +59,11 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 VARIANTS = {"std": "run_4a_std.yaml", "s": "run_4a_s.yaml"}
 # Interventions après GCO-S (ADR-006 D5) : nom de variante = nom de config = préfixe du run ; toutes en GCO-std.
-INTERVENTIONS = {"int_gamma998": "int_gamma998.yaml", "int_slow_anneal": "int_slow_anneal.yaml"}
+INTERVENTIONS = {
+    "int_gamma998": "int_gamma998.yaml",
+    "int_slow_anneal": "int_slow_anneal.yaml",
+    "int_sil": "int_sil.yaml",  # ADR-009 (proposé) : self-imitation, bloc `sil` seul ajouté
+}
 EVAL_CONFIG = "run_4a_eval.yaml"
 INTERVENTION_EVAL_CONFIG = "run_s1v2_eval.yaml"  # ADR-006 D2, D3 : protocole S1-seed v2
 EXIT_OK, EXIT_ERROR, EXIT_KILL, EXIT_DEVICE_LOST = 0, 1, 3, 4
@@ -331,7 +336,8 @@ def main(argv: list[str] | None = None) -> int:
         "--variant",
         choices=sorted(VARIANTS) + sorted(INTERVENTIONS),
         required=True,
-        help="std = GCO-std, s = GCO-S ; int_gamma998 (ADR-007), int_slow_anneal (ADR-008) : interventions GCO-std",
+        help="std = GCO-std, s = GCO-S ; int_gamma998 (ADR-007), int_slow_anneal (ADR-008), int_sil (ADR-009) : "
+        "interventions GCO-std",
     )
     ap.add_argument("--seed", type=int, nargs="+", required=True, help="0, 1 ou 2 (ADR-005 D3) ; plusieurs : enchaînés")
     ap.add_argument("--max-hours", type=float, default=7.5, help="durée murale par run (défaut 7,5 h ; 0 = aucune)")

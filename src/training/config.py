@@ -15,6 +15,10 @@ Le budget est en timesteps agents APPRIS (transitions qui entrent dans la perte,
 Sans pool d'adversaires, appris = collectés (n_envs · n_cars · steps_per_batch par lot). Avec le pool (section `pool`,
 ADR-005 D5), les agents gelés des arènes « passé » ne comptent pas. L'annealing de `p_kick` est aussi en timesteps
 appris (ADR-005 D4). Section `pool` absente (None) : aucune clé `pool` dans les hashs, qui restent ceux d'avant le pool.
+Section `sil` (self-imitation, `training.sil.SILConfig`, ADR-005 D6 intervention (3)) : même règle, absente => hashs
+inchangés ; présente, elle entre dans le hash de trajectoire (activée ou non). Activée, elle n'est acceptée que si la
+variante l'autorise (spec §3 : interdite en GCO-S) et, sous C1–C4, si son coefficient atteint 0 (C2) avant la fin
+du budget.
 """
 
 from __future__ import annotations
@@ -33,6 +37,7 @@ from training.checkpoint import hash_config
 from training.guards import GuardConfig
 from training.ppo import PPOConfig
 from training.selfplay import n_past_arenas
+from training.sil import SILConfig
 
 _DEVICE_RE = re.compile(r"^(auto|cpu|cuda(:\d+)?|xpu(:\d+)?)$")
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -205,6 +210,7 @@ class RunConfig:
     logging: LoggingSection = field(default_factory=LoggingSection)
     smoke: SmokeSection | None = None
     pool: PoolSection | None = None  # None : self-play contre la version courante seule (avant ADR-005)
+    sil: SILConfig | None = None  # None : pas de self-imitation (hashs d'avant la SIL)
 
     def __post_init__(self) -> None:
         if not _NAME_RE.match(self.name):
@@ -220,6 +226,16 @@ class RunConfig:
                 f"ppo.total_iterations={self.ppo.total_iterations} != {self.total_iterations} "
                 "(dérivé du budget : utiliser RunConfig.from_dict)"
             )
+        if self.sil is not None and self.sil.enabled:
+            rules = rules_for(RewardVariant(self.reward.variant))
+            if not rules.self_imitation:
+                raise ValueError(f"variante {self.reward.variant} : self-imitation interdite (spec §3)")
+            end = self.sil.anneal_end_timesteps
+            if rules.learned_signals_require_c1_c4 and end >= self.budget.total_timesteps:
+                raise ValueError(
+                    f"sil.anneal_end_timesteps={end} >= budget {self.budget.total_timesteps} : "
+                    "C2 exige un coefficient nul avant la phase finale du run"
+                )
         if not rules_for(RewardVariant(self.reward.variant)).generic_initial_states:
             st = self.initial_states
             if st.p_kick_start != 1.0 or st.p_kick_end != 1.0:
@@ -277,6 +293,8 @@ class RunConfig:
         out: dict[str, Any] = dataclasses.asdict(self)
         if out["pool"] is None:
             del out["pool"]  # hashs inchangés pour les configs d'avant le pool (checkpoints existants repris)
+        if out["sil"] is None:
+            del out["sil"]  # idem pour les configs d'avant la SIL
         return out
 
     def trajectory_dict(self) -> dict[str, Any]:

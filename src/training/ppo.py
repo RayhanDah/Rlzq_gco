@@ -3,7 +3,9 @@
 Leviers mesurés repris du prototype (`scripts/bench_learner.py`, ADR-001 M3/M4) : `index_select` au lieu de `x[idx]`
 (l'indexation avancée plante sur XPU), Adam `fused=True`, fp32, statistiques accumulées sur le device et lues une
 seule fois par itération, apprentissage du lot k dans un thread pendant la collecte du lot k+1 avec une copie acteur
-de π (staleness 1). Aucune récompense ni signal d'exploration n'est ajouté ici (GCO strict).
+de π (staleness 1). Aucune récompense ni signal d'exploration n'est ajouté ici (GCO strict). Seule aide optionnelle :
+la self-imitation (`training.sil`, ADR-005 D6 intervention (3)), désactivée par défaut ; désactivée, `Learner.update`
+exécute exactement les mêmes opérations qu'avant son introduction (test de régression bit à bit).
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ import queue
 import threading
 import weakref
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from typing import Any, Protocol
 
 import numpy as np
@@ -24,6 +26,7 @@ from models.policy import PolicyNet, log_prob_entropy
 from models.value import ValueNet
 from training.gae import bootstrap_values, gae
 from training.rollout import Collector, RolloutBatch
+from training.sil import SelfImitation, SILConfig
 
 FUSED_ADAM_DEVICES = ("cpu", "cuda", "xpu")  # sous-ensemble de torch.utils._foreach_utils (torch 2.15.0)
 
@@ -119,9 +122,12 @@ class PPOStats:
     n_trunc: int
     staleness: int
     policy_version: int  # version de π après cette mise à jour
+    sil: Mapping[str, float] = field(default_factory=dict)
+    """Journal C4 de la self-imitation (`SILStats.as_dict`), vide si elle est désactivée ; hors de `as_dict`."""
 
     def as_dict(self) -> dict[str, float | int]:
-        return {f.name: getattr(self, f.name) for f in fields(self)}
+        """Statistiques PPO (sans `sil`, journalisé à part sous `sil/*`)."""
+        return {f.name: getattr(self, f.name) for f in fields(self) if f.name != "sil"}
 
 
 class OptimizerLike(Protocol):
@@ -159,6 +165,11 @@ class Learner:
     `version` = nombre de mises à jour appliquées à π ; un lot de version v n'est accepté que si
     0 ≤ version − v ≤ `cfg.max_staleness`. Les permutations des minibatchs viennent d'un générateur CPU propre au
     learner (indépendant du flux de la collecte et du device).
+
+    `sil` : self-imitation (`training.sil`) si fournie et `enabled` ; sinon (défaut) aucun objet SIL n'existe et la
+    mise à jour est celle du PPO seul. Activée : chaque lot entre dans le suivi des épisodes avant la mise à jour, puis
+    les pas SIL suivent les epochs PPO (mode `separate`, optimiseur `sil_optimizer`, Adam distinct par défaut) ou
+    s'ajoutent à chaque minibatch PPO (mode `joint`).
     """
 
     def __init__(
@@ -169,6 +180,8 @@ class Learner:
         device: torch.device,
         optimizer: OptimizerLike | None = None,
         seed: int = 0,
+        sil: SILConfig | None = None,
+        sil_optimizer: Any = None,
     ) -> None:
         self.cfg, self.device = cfg, device
         self.policy = policy.to(device)
@@ -178,19 +191,34 @@ class Learner:
         self.generator = torch.Generator()
         self.generator.manual_seed(seed)
         self.version = 0
+        self.policy_params = list(self.policy.parameters())
+        self.sil: SelfImitation | None = None
+        if sil is not None and sil.enabled:
+            if sil.mode == "separate" and sil_optimizer is None:
+                sil_optimizer = make_optimizer(self.params, cfg, device)  # Adam distinct (ADR-009 D3)
+            opt = sil_optimizer if sil.mode == "separate" else None
+            self.sil = SelfImitation(sil, cfg.gamma, policy.obs_dim, policy.n_actions, seed, opt)
 
     def state_dict(self) -> dict[str, Any]:
         """État complet du learner pour la reprise (T5) : poids π et V, optimiseur, générateur des permutations,
-        version. Les tenseurs sont ceux du learner (non copiés) ; l'optimiseur doit exposer `state_dict()`."""
-        return {
+        version et, si la SIL est activée, son état (clé `sil` : buffer, anneau des épisodes en cours, tirage).
+        Les tenseurs et tableaux sont ceux du learner (non copiés) ; l'optimiseur doit exposer `state_dict()`."""
+        state = {
             "version": self.version,
             "generator": self.generator.get_state(),
             "policy": self.policy.state_dict(),
             "value": self.value.state_dict(),
             "optimizer": self._stateful_optimizer().state_dict(),
         }
+        if self.sil is not None:
+            state["sil"] = self.sil.state_dict()
+        return state
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
+        if (self.sil is not None) != ("sil" in state):
+            raise ValueError("état SIL présent XOR learner avec SIL : checkpoint et configuration incohérents")
+        if self.sil is not None:
+            self.sil.load_state_dict(state["sil"])
         self.policy.load_state_dict(state["policy"])
         self.value.load_state_dict(state["value"])
         self._stateful_optimizer().load_state_dict(state["optimizer"])
@@ -210,6 +238,8 @@ class Learner:
         return torch.cat([self.value(c) for c in chunks])
 
     def update(self, batch: RolloutBatch) -> PPOStats:
+        """Une mise à jour PPO sur `batch`. Avec la SIL : `grad_norm` est la norme du gradient TOTAL (PPO + SIL)
+        avant clip ; les normes séparées sont dans `sil` (`SILStats`)."""
         cfg, dev = self.cfg, self.device
         staleness = self.version - batch.policy_version
         if not 0 <= staleness <= cfg.max_staleness:
@@ -245,6 +275,21 @@ class Learner:
         n_samples = int(obs_l.shape[0])
         if n_samples < 2:
             raise ValueError("au moins 2 échantillons appris sont nécessaires (normalisation des avantages)")
+        n_mb = max(1, math.ceil(n_samples / cfg.minibatch_size))
+        sil_it = None
+        if self.sil is not None:  # SIL désactivée : aucune opération de plus (bit à bit identique au PPO seul)
+            sil_it = self.sil.begin(
+                batch.obs,
+                batch.act,
+                batch.rew,
+                batch.term,
+                batch.trunc,
+                batch.learn_mask,
+                iteration=self.version,
+                learned_per_iteration=n_samples,
+                device=dev,
+                n_ppo_steps=cfg.epochs * n_mb,
+            )
 
         def advantages() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
             with torch.no_grad():
@@ -253,7 +298,6 @@ class Learner:
                 adv, ret = gae(rew, v, v_next, term, trunc, cfg.gamma, cfg.gae_lambda)
             return select(adv), select(ret), select(v)
 
-        n_mb = max(1, math.ceil(n_samples / cfg.minibatch_size))
         acc = torch.zeros(6, device=dev)
         first: torch.Tensor | None = None
         for epoch in range(cfg.epochs):
@@ -269,6 +313,8 @@ class Learner:
                             ret.mean(),
                         ]
                     )
+                    if sil_it is not None:
+                        sil_it.note_raw_advantages(adv)
             perm = torch.randperm(n_samples, generator=self.generator).to(dev)
             for idx in perm.tensor_split(n_mb):
                 # index_select plutôt que x[idx] : x[idx] lève UR_RESULT_ERROR_OUT_OF_RESOURCES sur XPU (ADR-001 M3).
@@ -284,6 +330,9 @@ class Learner:
                 loss = pg_loss + cfg.vf_coef * v_loss - ent_coef * ent
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
+                if sil_it is not None:  # journal C4 ; mode joint : gradient de c_sil·L_sil ajouté avant le clip
+                    sil_it.note_ppo_grad(self.policy_params)
+                    sil_it.joint_step(self.policy, self.value, self.policy_params)
                 grad_norm = torch.nn.utils.clip_grad_norm_(self.params, cfg.max_grad_norm)
                 self.optimizer.step()
                 with torch.no_grad():
@@ -291,6 +340,8 @@ class Learner:
                     clip_frac = ((ratio - 1.0).abs() > cfg.clip).float().mean()
                     acc += torch.stack([pg_loss.detach(), v_loss.detach(), ent.detach(), kl, clip_frac, grad_norm])
         assert first is not None
+        if sil_it is not None:  # mode separate : pas SIL après les epochs PPO, optimiseur SIL distinct
+            sil_it.separate_steps(self.policy, self.value, self.params, self.policy_params, lr)
         # Une seule lecture hôte par itération (ADR-001 M4).
         vals = torch.cat([acc / (cfg.epochs * n_mb), first]).tolist()
         self.version += 1
@@ -314,6 +365,7 @@ class Learner:
             n_trunc=int((batch.trunc & ~batch.term).sum()),
             staleness=staleness,
             policy_version=self.version,
+            sil={} if sil_it is None else sil_it.stats().as_dict(),
         )
 
 

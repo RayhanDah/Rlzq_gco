@@ -1,5 +1,5 @@
-"""Interventions préparées après GCO-S (ADR-006 D5, ADR-007, ADR-008) : configs à une seule modification par rapport à
-`configs/run_4a_std.yaml` et lancement par `scripts/run_4a.py --variant int_*`."""
+"""Interventions préparées après GCO-S (ADR-006 D5, ADR-007, ADR-008, ADR-009) : configs à une seule modification par
+rapport à `configs/run_4a_std.yaml` et lancement par `scripts/run_4a.py --variant int_*`."""
 
 from __future__ import annotations
 
@@ -19,6 +19,34 @@ CONFIGS = ROOT / "configs"
 EXPECTED_DIFF: dict[str, dict[tuple[str, ...], tuple[Any, Any]]] = {
     "int_gamma998": {("ppo", "gamma"): (0.995, 0.998)},
     "int_slow_anneal": {("initial_states", "anneal_timesteps"): (500_000_000, 1_000_000_000)},
+    # ADR-009 : un seul bloc ajouté, `sil` (absent de std), avec les valeurs de l'ADR (D1–D5, KS1, KS2)
+    "int_sil": {
+        ("sil", k): (None, v)
+        for k, v in {
+            "enabled": True,
+            "coef": 0.1,
+            "anneal_start_timesteps": 500_000_000,
+            "anneal_end_timesteps": 900_000_000,
+            "value_coef": 0.01,
+            "mode": "separate",
+            "updates_per_iteration": 2,
+            "batch_size": 8192,
+            "max_grad_norm": 0.5,
+            "capacity": 250_000,
+            "horizon_steps": 300,
+            "priority_alpha": 0.6,
+            "priority_eps": 1e-3,
+            "is_beta": 0.1,
+            "keep_conceded": False,
+            "store_float16": True,
+            "rho_alert": 0.5,
+            "rho_alert_patience": 50,
+            "rho_stop": 0.8,
+            "rho_stop_patience": 500,
+            "ram_min_available_mb": 1000.0,
+            "ram_low_max_s": 600.0,
+        }.items()
+    },
 }
 
 
@@ -82,6 +110,8 @@ def test_annealing_lent_0_2_a_0_8_sur_tout_le_run() -> None:
 def test_nom_config_et_eval_par_defaut_des_interventions() -> None:
     assert r4.run_name("int_gamma998", 0) == "int_gamma998_s0"
     assert r4.run_name("int_slow_anneal", 2) == "int_slow_anneal_s2"
+    assert r4.run_name("int_sil", 0) == "int_sil_s0" and r4.config_file("int_sil") == "int_sil.yaml"
+    assert r4.default_eval_config("int_sil") == "run_s1v2_eval.yaml"
     assert r4.run_name("std", 0) == "run_4a_std_s0"  # inchangé
     assert r4.config_file("int_gamma998") == "int_gamma998.yaml" and r4.config_file("std") == "run_4a_std.yaml"
     assert r4.default_eval_config("int_slow_anneal") == "run_s1v2_eval.yaml"
@@ -112,7 +142,7 @@ def test_launch_d_une_intervention(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     _capture_launch(monkeypatch, seen)
     kw: dict[str, Any] = {"max_hours": None, "runs_root": tmp_path / "r", "checkpoints_root": tmp_path / "c"}
     # Act
-    for variant in ("int_gamma998", "int_slow_anneal"):
+    for variant in ("int_gamma998", "int_slow_anneal", "int_sil"):
         with pytest.raises(_Stop):
             r4.launch(variant, 0, config_dir=CONFIGS, **kw)
     with pytest.raises(_Stop):
@@ -120,11 +150,13 @@ def test_launch_d_une_intervention(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     with pytest.raises(_Stop):
         r4.launch("std", 0, config_dir=CONFIGS, **kw)
     # Assert : nom distinct, config de l'intervention, éval v2 par défaut, choix explicite respecté, std inchangé
-    (g, hg), (a, ha), (g1, hg1), (s, hs) = seen
+    (g, hg), (a, ha), (sil, hsil), (g1, hg1), (s, hs) = seen
     assert (g.name, g.seed, g.ppo.gamma) == ("int_gamma998_s0", 0, 0.998)
     assert g.initial_states.anneal_timesteps == 500_000_000
     assert (a.name, a.ppo.gamma, a.initial_states.anneal_timesteps) == ("int_slow_anneal_s0", 0.995, 1_000_000_000)
-    assert (hg.protocol, ha.protocol) == ("s1_v2", "s1_v2")
+    assert (hg.protocol, ha.protocol, hsil.protocol) == ("s1_v2", "s1_v2", "s1_v2")
+    assert sil.name == "int_sil_s0" and sil.sil is not None and sil.sil.enabled and sil.ppo.gamma == 0.995
+    assert g.sil is None and a.sil is None and s.sil is None  # les autres variantes sans SIL
     assert (g1.name, hg1.protocol) == ("int_gamma998_s1", "s1_light")
     assert (s.name, s.ppo.gamma, hs.protocol) == ("run_4a_std_s0", 0.995, "s1_light")
 
