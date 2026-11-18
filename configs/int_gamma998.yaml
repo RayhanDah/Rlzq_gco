@@ -1,0 +1,72 @@
+# Intervention (2) de GCO_SPEC.md §8 : γ 0,995 -> 0,998 (docs/adr/007-intervention-gamma-0998.md, PROPOSÉ,
+# conditionnel au résultat de GCO-S graine 0, ADR-006 D5). GCO-std, graine 0, 1B appris.
+# Copie de configs/run_4a_std.yaml ; SEULE différence hors `name` et commentaires : ppo.gamma (test
+# tests/unit/test_run_4a.py). Lancer avec scripts/run_4a.py --variant int_gamma998 (run int_gamma998_s<seed>,
+# éval par défaut configs/run_s1v2_eval.yaml). `seed` et `name` ci-dessous sont remplacés par le lanceur.
+name: int_gamma998
+seed: 0
+device: xpu             # learner sur l'Arc (vendor/venv-xpu, ADR-001 M3–M4) ; sim RocketGPU en CPU
+
+env:
+  n_envs: 4096          # ADR-001 M4, ADR-005
+  n_cars: 2             # 1v1
+  tick_skip: 8
+
+reward:
+  variant: GCO-std      # docs/GCO_SPEC.md §3 ; aucune récompense ajoutée
+  no_touch_timeout_s: 20.0
+  max_episode_s: 120.0
+
+initial_states:         # ADR-005 D4 : 0,2 -> 0,8 linéaire sur 0,5B appris, puis 0,8
+  p_kick_start: 0.2
+  p_kick_end: 0.8
+  anneal_timesteps: 500000000
+
+ppo:                    # identique à configs/smoke.yaml (docs/01_papers.md §2) ; total_iterations dérivé du budget
+  gamma: 0.998          # ADR-007 : seule modification (horizon 1/(1-γ) = 500 pas = 33 s de jeu, contre 13 s)
+  gae_lambda: 0.95
+  clip: 0.2
+  lr_start: 2.0e-4
+  lr_end: 5.0e-5
+  ent_coef_start: 0.01
+  ent_coef_end: 0.002
+  max_grad_norm: 0.5
+  epochs: 2
+  minibatch_size: 25000
+  target_batch_size: 57344   # = 4096 x 2 x 7 (sans effet : collection.steps_per_batch fait foi)
+
+collection:
+  steps_per_batch: 7    # 57 344 collectés par lot, 51 611 appris avec le pool (RunConfig.batch_learned_steps ; l'ADR-005 D3 arrondit à 51 610)
+  overlap: true
+
+pool:                   # ADR-005 D5
+  past_fraction: 0.2
+  snapshot_every: 50
+  max_size: 100
+  quality_lr: 0.01
+
+budget:
+  total_timesteps: 1000000000   # 1B appris (ADR-005 D3) : 19 376 itérations (RunConfig.total_iterations)
+
+checkpoint:
+  # Toutes les 250 itérations (≈ 12,9M appris, ≈ 4 min au plateau de M8) : coût mesuré 1,0 % du temps (ADR-001 M8),
+  # rejeu d'au plus ≈ 4 min après une restauration K4, bien sous la règle des 20 min (.claude/rules/training.md).
+  every_iterations: 250
+  keep: 2               # ADR-005 D2 : rotation des checkpoints de reprise ; les instantanés d'évaluation sont à part
+  include_sim_state: true
+
+kill:                   # ADR-005 D6 : K2 (entropie, alerte à 50 %), K3 (EV après S1), K4 (KL, NaN), K5 (restaurations)
+  kl_threshold: 0.05
+  kl_patience: 5
+  entropy_floor_frac: 0.10
+  entropy_alert_frac: 0.50
+  n_actions: 90
+  entropy_patience: 1
+  ev_floor: 0.0
+  ev_patience: 50
+  max_restores: 3
+  max_consecutive_restores: 2
+
+logging:
+  every_iterations: 1
+  fsync: false

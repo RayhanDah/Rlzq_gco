@@ -18,6 +18,11 @@ Ce que le lanceur ajoute à `scripts/train.py` :
 - refus d'un arbre git sale (mesure non attribuable à un commit) et de GCO-S sans `--std-s1-observed` (ADR-005 :
   GCO-S seulement si au moins une seed GCO-std a S1-léger).
 
+Interventions (ADR-006 D5, ADR-007, ADR-008) : `--variant int_gamma998` ou `--variant int_slow_anneal` lance la config
+`configs/<variante>.yaml` (GCO-std, une seule modification par rapport à `run_4a_std.yaml`) sous le nom de run
+`<variante>_s<seed>`, avec les mêmes garanties (sessions enfants, reprise après perte du GPU, refus après STOP, arbre
+propre). Évaluation par défaut : `run_s1v2_eval.yaml` (protocole d'ADR-006). Pas de garde-fou GCO-S : des GCO-std.
+
 Enchaînement et reprise automatique (décision de l'utilisateur du 2026-11-15, runs lancés la nuit) :
 `--seed 1 2` enchaîne les runs ; le suivant ne démarre que si le précédent est terminé (budget atteint). Chaque
 session tourne dans un processus enfant (`--child`) : après une perte du GPU par le pilote
@@ -52,7 +57,10 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 VARIANTS = {"std": "run_4a_std.yaml", "s": "run_4a_s.yaml"}
+# Interventions après GCO-S (ADR-006 D5) : nom de variante = nom de config = préfixe du run ; toutes en GCO-std.
+INTERVENTIONS = {"int_gamma998": "int_gamma998.yaml", "int_slow_anneal": "int_slow_anneal.yaml"}
 EVAL_CONFIG = "run_4a_eval.yaml"
+INTERVENTION_EVAL_CONFIG = "run_s1v2_eval.yaml"  # ADR-006 D2, D3 : protocole S1-seed v2
 EXIT_OK, EXIT_ERROR, EXIT_KILL, EXIT_DEVICE_LOST = 0, 1, 3, 4
 DEVICE_LOST = "UR_RESULT_ERROR_DEVICE_LOST"  # message du runtime Level Zero (torch XPU) quand le pilote perd le GPU
 MAX_NO_PROGRESS = 3  # pannes de suite sans nouveau checkpoint : le GPU ne revient pas, on abandonne
@@ -62,12 +70,26 @@ _CKPT_RE = re.compile(r"^ckpt_\d{6}_it\d{8}\.pt$")  # `training.checkpoint`
 ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
 
 
+def config_file(variant: str) -> str:
+    """Nom du fichier de config (dans `configs/`) de la variante ou de l'intervention ; lève si inconnue."""
+    if variant in VARIANTS:
+        return VARIANTS[variant]
+    if variant in INTERVENTIONS:
+        return INTERVENTIONS[variant]
+    raise ValueError(f"variante {variant!r} : {sorted(VARIANTS) + sorted(INTERVENTIONS)} attendu")
+
+
 def run_name(variant: str, seed: int) -> str:
-    if variant not in VARIANTS:
-        raise ValueError(f"variante {variant!r} : {sorted(VARIANTS)} attendu")
+    """`run_4a_<variante>_s<seed>` pour std et s (inchangé) ; `<intervention>_s<seed>` pour une intervention."""
+    config_file(variant)
     if seed < 0:
         raise ValueError(f"seed={seed} : >= 0 attendu")
-    return f"run_4a_{variant}_s{seed}"
+    return f"{variant}_s{seed}" if variant in INTERVENTIONS else f"run_4a_{variant}_s{seed}"
+
+
+def default_eval_config(variant: str) -> str:
+    """Config d'évaluation par défaut : S1-léger pour std et s (inchangé), S1-seed v2 pour une intervention."""
+    return INTERVENTION_EVAL_CONFIG if variant in INTERVENTIONS else EVAL_CONFIG
 
 
 def has_checkpoint(ck_dir: Path) -> bool:
@@ -250,22 +272,26 @@ def launch(
     hook_kwargs: dict[str, Any] | None = None,
     config_edit: Callable[[Any], Any] | None = None,
     resume_after_stop: bool = False,
-    eval_config: str | Path = EVAL_CONFIG,
+    eval_config: str | Path | None = None,
 ) -> tuple[int, dict[str, Any]]:
-    """Une session du run `run_name(variant, seed)`. `run_kwargs`, `hook_kwargs`, `config_edit` : tests seulement
-    (env et simulateur factices, config réduite)."""
+    """Une session du run `run_name(variant, seed)`. `eval_config` : None = `default_eval_config(variant)`.
+    `run_kwargs`, `hook_kwargs`, `config_edit` : tests seulement (env et simulateur factices, config réduite)."""
     import train as train_script
 
     from training import RunConfig, run
     from training.evalhook import EvalHookConfig
 
     name = run_name(variant, seed)
-    cfg = RunConfig.from_yaml(config_dir / VARIANTS[variant])
+    cfg = RunConfig.from_yaml(config_dir / config_file(variant))
+    if variant in INTERVENTIONS and cfg.reward.variant != "GCO-std":
+        raise ValueError(f"intervention {variant} : GCO-std attendu (ADR-006 D5), {cfg.reward.variant} trouvé")
     cfg = dataclasses.replace(cfg, name=name, seed=seed)
     if device:
         cfg = dataclasses.replace(cfg, device=device)
     if config_edit is not None:
         cfg = config_edit(cfg)
+    if eval_config is None:
+        eval_config = default_eval_config(variant)
     hook_cfg = EvalHookConfig.from_yaml(resolve_eval_config(config_dir, eval_config))
     out_dir, ck_dir = runs_root / name, checkpoints_root / name
     mode = session_mode(out_dir, ck_dir)
@@ -301,7 +327,12 @@ def launch(
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--variant", choices=sorted(VARIANTS), required=True, help="std = GCO-std, s = GCO-S")
+    ap.add_argument(
+        "--variant",
+        choices=sorted(VARIANTS) + sorted(INTERVENTIONS),
+        required=True,
+        help="std = GCO-std, s = GCO-S ; int_gamma998 (ADR-007), int_slow_anneal (ADR-008) : interventions GCO-std",
+    )
     ap.add_argument("--seed", type=int, nargs="+", required=True, help="0, 1 ou 2 (ADR-005 D3) ; plusieurs : enchaînés")
     ap.add_argument("--max-hours", type=float, default=7.5, help="durée murale par run (défaut 7,5 h ; 0 = aucune)")
     ap.add_argument("--device", help="remplace `device` de la config (change le hash : même valeur à chaque session)")
@@ -322,13 +353,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument(
         "--eval-config",
-        default=EVAL_CONFIG,
-        help=f"YAML de l'évaluation en cours de run, dans configs/ ou chemin (défaut {EVAL_CONFIG} : S1-léger ; "
-        "run_s1v2_eval.yaml : S1-seed v2, ADR-006)",
+        help=f"YAML de l'évaluation en cours de run, dans configs/ ou chemin (défaut {EVAL_CONFIG} : S1-léger, pour "
+        f"std et s ; {INTERVENTION_EVAL_CONFIG} : S1-seed v2, ADR-006, défaut des interventions)",
     )
     ap.add_argument("--no-auto-resume", action="store_true", help="pas de reprise automatique après perte du GPU")
     ap.add_argument("--child", action="store_true", help=argparse.SUPPRESS)  # une session, lancée par le superviseur
     args = ap.parse_args(argv)
+    if args.eval_config is None:
+        args.eval_config = default_eval_config(args.variant)
     max_hours = args.max_hours if args.max_hours > 0 else None
 
     if args.variant == "s" and not args.std_s1_observed:
