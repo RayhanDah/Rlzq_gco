@@ -30,6 +30,7 @@ from eval.match import (
     play_match,
     sprt_on_match,
     summarize,
+    touch_summary,
 )
 from eval.sprt import Decision, SPRTConfig
 from models import PolicyNet
@@ -616,3 +617,59 @@ def test_script_plafond_de_parties_decisives_du_sprt(tmp_path: Path) -> None:
         )
         == 2
     )
+
+
+# ------------------------------------------------------------------------------------------------ touches (diagnostic)
+
+
+class TouchDuelSim(DuelSim):
+    """Aucun but ; la voiture du slot 0 (bleue) touche la balle au 1er step de chaque épisode, l'orange jamais.
+    Horodatage au 1er tick du step, comme RocketGPU (touche datée dans [tick avant le step, tick après le step[ :
+    vérifié sur 64 arènes × 3 000 steps, aucune touche recomptée au step suivant)."""
+
+    def __init__(self, n_envs: int) -> None:
+        super().__init__(n_envs, {})
+        self._last_touch = np.full((n_envs, 2), -1, dtype=np.int64)
+
+    def step(self, actions: I64) -> None:
+        super().step(actions)
+        first = self._since_reset == 1
+        self._last_touch[first, 0] = self._tick[first] - TICK_SKIP
+
+    def touch_ticks(self) -> I64:
+        return self._last_touch.copy()
+
+    def reset_to_kickoff(self, arena_idx: I64, kickoff_seeds: Any) -> None:
+        super().reset_to_kickoff(arena_idx, kickoff_seeds)
+        self._last_touch[arena_idx] = -1
+
+
+def test_touches_attribuees_a_a_et_b_selon_le_cote() -> None:
+    # Arrange : seul le bleu touche, une fois par épisode ; A est bleu au côté 0, orange au côté 1
+    sim = TouchDuelSim(4)
+    # Act
+    res = play(ConstPolicy(0), ConstPolicy(0), sim, 16)
+    # Assert
+    assert res.touches is not None and res.touches.shape == (8, 2, 2)
+    assert (res.touches[:, 0, 0] == 1).all() and (res.touches[:, 0, 1] == 0).all()
+    assert (res.touches[:, 1, 0] == 0).all() and (res.touches[:, 1, 1] == 1).all()
+    assert (res.ticks == 8 + 120).all()  # touche au 1er step, puis 1 s sans touche : troncature
+    s = touch_summary(res)
+    assert s is not None
+    assert s["a_mean"] == 0.5 and s["b_mean"] == 0.5 and s["a_touch_rate"] == 0.5 and s["no_touch_rate"] == 0.0
+
+
+def test_sans_touche_et_resultat_sans_simulation() -> None:
+    res = play(ConstPolicy(0), ConstPolicy(0), DuelSim(4, {}), 8)
+    assert res.touches is not None and (res.touches == 0).all()
+    s = touch_summary(res)
+    assert s is not None and s["no_touch_rate"] == 1.0
+    assert touch_summary(_result([[0, 0]], [[1, 1]])) is None
+
+
+def test_touches_sans_fuite_quand_les_paires_ne_remplissent_pas_les_arenes() -> None:
+    # 3 paires sur 4 arènes : des épisodes hors plan sont joués puis ignorés ; leurs touches ne fuient nulle part
+    res = play(ConstPolicy(0), ConstPolicy(0), TouchDuelSim(4), 6)
+    assert res.touches is not None and res.touches.shape == (3, 2, 2)
+    assert (res.touches[:, 0, 0] == 1).all() and (res.touches[:, 1, 1] == 1).all()
+    assert (res.touches[:, 0, 1] == 0).all() and (res.touches[:, 1, 0] == 0).all()

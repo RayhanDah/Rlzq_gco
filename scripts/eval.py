@@ -36,7 +36,7 @@ import torch  # noqa: E402
 
 from env import RocketGPUSimulator, Simulator, SimulatorUnavailableError  # noqa: E402
 from env.batch_env import ObsBuilder  # noqa: E402
-from eval.match import load_policy, play_match, sprt_on_match, summarize  # noqa: E402
+from eval.match import load_policy, play_match, sprt_on_match, summarize, touch_summary  # noqa: E402
 from eval.sprt import SPRTConfig, decisive_win_test  # noqa: E402
 from obs.schema import obs_dim as schema_obs_dim  # noqa: E402
 from rewards import RewardConfig  # noqa: E402
@@ -140,6 +140,7 @@ def evaluate(
         "policies": {"a": dataclasses.asdict(info_a), "b": dataclasses.asdict(info_b)},
         "summary": summary.as_dict(),
         "decisive_test": decisive_win_test(summary.wins, summary.losses).as_dict(),
+        "touches": touch_summary(res),
         "throughput": {
             "wall_s": res.wall_s,
             "episodes_per_s": res.n_episodes / res.wall_s,
@@ -147,7 +148,11 @@ def evaluate(
             "env_steps_per_s": res.env_steps / res.wall_s,
             "note": "steps d'arène (arènes à vide en fin de quota comprises), politiques et simulateur inclus",
         },
-        "per_pair": {"outcome": res.outcome.tolist(), "ticks": res.ticks.tolist()},
+        "per_pair": {
+            "outcome": res.outcome.tolist(),
+            "ticks": res.ticks.tolist(),
+            "touches": None if res.touches is None else res.touches.tolist(),
+        },
     }
     if sprt_elo is not None:
         sprt_cfg = SPRTConfig(

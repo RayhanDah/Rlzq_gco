@@ -257,6 +257,9 @@ class MatchResult:
     env_steps: int
     """Steps d'arène (n_envs par appel de `step`), arènes à vide comprises."""
     wall_s: float
+    touches: I64Array | None = None
+    """`(n_pairs, 2, 2)` : steps où la voiture a touché la balle dans l'épisode ; dernier axe 0 = A, 1 = B (diagnostic,
+    ADR-005 D6 ; jamais dans la perte). None pour un résultat construit sans simulation."""
 
     @property
     def n_episodes(self) -> int:
@@ -306,6 +309,8 @@ def play_match(
     outcome = np.zeros((n_pairs, 2), dtype=np.int8)
     ticks = np.zeros((n_pairs, 2), dtype=np.int64)
     recorded = np.zeros((n_pairs, 2), dtype=bool)
+    touches = np.zeros((n_pairs, 2, 2), dtype=np.int64)
+    run_touch = np.zeros((e, 2), dtype=np.int64)  # touches de l'épisode en cours, par arène et slot de voiture
     finished = np.zeros(e, dtype=np.int64)  # épisodes terminés par arène
     max_steps = -(-cfg.max_episode_ticks // sim.tick_skip) + 1
     waves = -(-n_pairs // e)
@@ -326,12 +331,15 @@ def play_match(
         act[b_idx] = _call(policy_b, obs[b_idx])
         obs, _, term, trunc, info = env.step(act)
         n_steps += 1
+        run_touch += np.asarray(info["touched"], dtype=bool).reshape(e, 2)
         done = np.flatnonzero((term | trunc)[::2])
         for a in done.tolist():
             n = int(finished[a])
             p = a + (n // 2) * e
             side = n % 2  # 0 : A bleu, 1 : A orange
             finished[a] += 1
+            ep_touch = run_touch[a].copy()
+            run_touch[a] = 0
             if p >= n_pairs:
                 continue  # quota de l'arène atteint : épisode hors plan, ignoré
             if bool(term[2 * a]):
@@ -340,6 +348,8 @@ def play_match(
             else:
                 outcome[p, side] = DRAW
             ticks[p, side] = int(info["episode_ticks"][a])
+            touches[p, side, 0] = ep_touch[a_slot[a]]
+            touches[p, side, 1] = ep_touch[1 - a_slot[a]]
             recorded[p, side] = True
     return MatchResult(
         outcome=outcome,
@@ -350,6 +360,7 @@ def play_match(
         tick_skip=sim.tick_skip,
         env_steps=n_steps * e,
         wall_s=time.perf_counter() - t0,
+        touches=touches,
     )
 
 
@@ -426,6 +437,22 @@ class MatchSummary:
             "mean_episode_s": self.mean_episode_s,
             "bootstrap": {"n_boot": self.n_boot, "alpha": self.alpha, "seed": self.boot_seed, "unit": "pair"},
         }
+
+
+def touch_summary(res: MatchResult) -> dict[str, Any] | None:
+    """Touches de balle par épisode (diagnostic, ADR-005 D6 ; jamais dans la perte). « touches » = steps de politique
+    (`tick_skip` ticks) où la voiture a touché la balle. None si le résultat n'a pas de touches."""
+    if res.touches is None:
+        return None
+    t = res.touches.reshape(-1, 2).astype(np.float64)
+    return {
+        "unit": "steps de politique avec touche, par épisode",
+        "a_mean": float(t[:, 0].mean()),
+        "b_mean": float(t[:, 1].mean()),
+        "a_touch_rate": float((t[:, 0] > 0).mean()),
+        "b_touch_rate": float((t[:, 1] > 0).mean()),
+        "no_touch_rate": float((t.sum(axis=1) == 0).mean()),
+    }
 
 
 def _ratio(num: npt.NDArray[np.float64], den: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:

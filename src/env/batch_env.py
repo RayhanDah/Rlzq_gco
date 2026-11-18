@@ -218,6 +218,7 @@ class BatchEnv:
             "goal_net": goal_net,
             "last_toucher": self._last_toucher.copy(),
             "episode_ticks": self._episode_ticks.copy(),
+            "touched": touched.copy(),  # (n_envs, n_cars) : la voiture a touché la balle pendant ce step (avant reset)
         }
         done_idx = np.flatnonzero(done).astype(np.int64)
         agents = self._agents_of(done_idx)
