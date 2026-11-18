@@ -80,7 +80,14 @@ from training.guards import (
     nonfinite_keys,
     params_finite,
 )
-from training.logging import JsonlWriter, ThroughputMeter, batch_scalars, iteration_scalars, try_append_jsonl
+from training.logging import (
+    JsonlWriter,
+    ThroughputMeter,
+    batch_scalars,
+    end_scalars,
+    iteration_scalars,
+    try_append_jsonl,
+)
 from training.ppo import Learner, OptimizerLike, OverlapTrainer, make_optimizer, resolve_device
 from training.rollout import Collector, RolloutBatch
 from training.selfplay import PastOpponents, QualityPool, make_layout
@@ -185,6 +192,7 @@ class _TalliedCollector(Collector):
     def collect(self, policy_version: int) -> RolloutBatch:
         batch = super().collect(policy_version)
         sc = batch_scalars(batch, self._cars)
+        sc.update(end_scalars(self.end_counts))  # I3/I4 : diagnostic, journalisé dans metrics.jsonl
         self.tally.goals += sc["env/goals"]
         self.tally.episode_ends += sc["env/episode_ends"]
         self.tally.last_scalars = sc
