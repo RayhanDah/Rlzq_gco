@@ -135,7 +135,7 @@ def test_ligne_de_commande_enfant() -> None:
     assert cmd[2:7] == ["--child", "--variant", "std", "--seed", "1"]
     assert cmd[cmd.index("--max-hours") + 1] == "0.0" and cmd[-1] == "--resume-after-stop"
     assert "--resume-after-stop" not in r4.child_command(args, 1, False, 2.5)
-    assert "--eval-config" not in cmd  # défaut : rien à transmettre
+    assert cmd[cmd.index("--eval-config") + 1] == r4.EVAL_CONFIG  # défaut de std, transmis explicitement
     args.eval_config = "run_s1v2_eval.yaml"
     cmd2 = r4.child_command(args, 1, False, None)
     assert cmd2[cmd2.index("--eval-config") + 1] == "run_s1v2_eval.yaml"

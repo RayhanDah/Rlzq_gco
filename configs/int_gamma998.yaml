@@ -1,8 +1,8 @@
 # Intervention (2) de GCO_SPEC.md §8 : γ 0,995 -> 0,998 (docs/adr/007-intervention-gamma-0998.md, PROPOSÉ,
 # conditionnel au résultat de GCO-S graine 0, ADR-006 D5). GCO-std, graine 0, 1B appris.
 # Copie de configs/run_4a_std.yaml ; SEULE différence hors `name` et commentaires : ppo.gamma (test
-# tests/unit/test_run_4a.py). Lancer avec scripts/run_4a.py --variant int_gamma998 (run int_gamma998_s<seed>,
-# éval par défaut configs/run_s1v2_eval.yaml). `seed` et `name` ci-dessous sont remplacés par le lanceur.
+# tests/unit/test_run_4a_interventions.py). Lancer avec scripts/run_4a.py --variant int_gamma998 (run
+# int_gamma998_s<seed>, éval par défaut configs/run_s1v2_eval.yaml). `seed` et `name` sont remplacés par le lanceur.
 name: int_gamma998
 seed: 0
 device: xpu             # learner sur l'Arc (vendor/venv-xpu, ADR-001 M3–M4) ; sim RocketGPU en CPU

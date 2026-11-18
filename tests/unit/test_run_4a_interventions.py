@@ -165,3 +165,69 @@ def test_parseur_et_ligne_enfant_d_une_intervention(monkeypatch: pytest.MonkeyPa
     assert cmd[2:7] == ["--child", "--variant", "int_gamma998", "--seed", "0"]
     assert cmd[cmd.index("--eval-config") + 1] == "run_s1v2_eval.yaml"
     assert "--std-s1-observed" not in cmd
+
+
+@pytest.mark.parametrize(
+    ("variant", "explicit", "expected"),
+    [
+        ("int_gamma998", ["--eval-config", "run_4a_eval.yaml"], "run_4a_eval.yaml"),
+        ("int_slow_anneal", [], "run_s1v2_eval.yaml"),
+        ("std", [], "run_4a_eval.yaml"),
+        ("std", ["--eval-config", "run_s1v2_eval.yaml"], "run_s1v2_eval.yaml"),
+    ],
+)
+def test_config_d_eval_transmise_telle_quelle_a_la_session_enfant(
+    monkeypatch: pytest.MonkeyPatch, variant: str, explicit: list[str], expected: str
+) -> None:
+    """Régression (revue de 933a8e8, majeur) : `child_command` n'ajoutait `--eval-config` que s'il différait de
+    `run_4a_eval.yaml` ; pour une intervention, dont le défaut est `run_s1v2_eval.yaml`, un `run_4a_eval.yaml` explicite
+    était perdu et l'enfant retombait silencieusement sur le protocole v2."""
+    # Arrange : superviseur -> ligne de commande enfant -> session enfant (launch factice)
+    supervised: list[argparse.Namespace] = []
+    launched: list[str | Path | None] = []
+
+    def fake_supervise(args: argparse.Namespace, max_hours: float | None) -> int:
+        supervised.append(args)
+        return 0
+
+    def fake_launch(variant: str, seed: int, **kw: Any) -> tuple[int, dict[str, Any]]:
+        launched.append(kw["eval_config"])
+        return 0, {"status": "paused", "remaining_iterations": 1}
+
+    import bench_run
+
+    monkeypatch.setattr(r4, "_supervise_main", fake_supervise)
+    monkeypatch.setattr(r4, "launch", fake_launch)
+    monkeypatch.setattr(bench_run, "_set_rocketgpu_defaults", lambda: {})
+    base = ["--variant", variant, "--seed", "0", "--allow-dirty", "--no-keep-awake"]
+    # Act
+    assert r4.main(base + explicit) == 0
+    child = r4.child_command(supervised[0], 0, False, None)
+    assert r4.main(child[2:]) == 0  # l'enfant reparse sa ligne de commande
+    # Assert : la session enfant évalue avec la config choisie par l'utilisateur (ou le défaut de la variante)
+    assert supervised[0].eval_config == expected
+    assert launched == [expected]
+
+
+@pytest.mark.parametrize("variant", sorted(r4.INTERVENTIONS))
+def test_reprise_et_refus_apres_stop_pour_une_intervention(tmp_path: Path, variant: str) -> None:
+    # Arrange : run <intervention>_s0 existant, dernière session STOP, un checkpoint
+    name = f"{variant}_s0"
+    out, ck = tmp_path / "runs" / name, tmp_path / "ck" / name
+    out.mkdir(parents=True)
+    (out / "segments.jsonl").write_text(
+        '{"status": "paused"}\n{"status": "stopped", "cause": "K2"}\n', encoding="utf-8"
+    )
+    ck.mkdir(parents=True)
+    (ck / "ckpt_000000_it00000000.pt").write_bytes(b"")
+    kw: dict[str, Any] = {"max_hours": None, "runs_root": tmp_path / "runs", "checkpoints_root": tmp_path / "ck"}
+    before = sorted(p.name for p in out.iterdir())
+    # Act / Assert : même chemin que std (session_mode puis check_resumable), sur le nom de l'intervention
+    assert r4.session_mode(out, ck) == "resume"
+    with pytest.raises(r4.SessionRefused, match="stopped"):
+        r4.launch(variant, 0, config_dir=CONFIGS, **kw)
+    assert sorted(p.name for p in out.iterdir()) == before
+    # run terminé : rien n'est relancé
+    (out / "segments.jsonl").write_text('{"status": "completed"}\n', encoding="utf-8")
+    code, report = r4.launch(variant, 0, config_dir=CONFIGS, **kw)
+    assert (code, report["run"], report["status"], report["session_mode"]) == (0, name, "completed", "none")

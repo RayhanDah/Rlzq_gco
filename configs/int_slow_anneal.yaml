@@ -1,7 +1,7 @@
 # Intervention (1) de GCO_SPEC.md §8 : annealing de p_kick plus lent (docs/adr/008-intervention-annealing-lent.md,
 # PROPOSÉ, conditionnel au résultat de GCO-S graine 0, ADR-006 D5). GCO-std, graine 0, 1B appris.
 # Copie de configs/run_4a_std.yaml ; SEULE différence hors `name` et commentaires : initial_states.anneal_timesteps
-# (test tests/unit/test_run_4a.py). Lancer avec scripts/run_4a.py --variant int_slow_anneal (run
+# (test tests/unit/test_run_4a_interventions.py). Lancer avec scripts/run_4a.py --variant int_slow_anneal (run
 # int_slow_anneal_s<seed>, éval par défaut configs/run_s1v2_eval.yaml). `seed` et `name` sont remplacés par le lanceur.
 name: int_slow_anneal
 seed: 0

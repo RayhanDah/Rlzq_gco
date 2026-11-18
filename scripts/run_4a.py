@@ -426,9 +426,10 @@ def child_command(args: argparse.Namespace, seed: int, resume_after_stop: bool, 
     for flag in ("allow_dirty", "no_keep_awake", "std_s1_observed"):
         if getattr(args, flag):
             cmd.append("--" + flag.replace("_", "-"))
-    eval_config = getattr(args, "eval_config", EVAL_CONFIG)
-    if str(eval_config) != EVAL_CONFIG:
-        cmd += ["--eval-config", str(eval_config)]
+    # toujours transmise : le défaut dépend de la variante (`default_eval_config`), un choix explicite égal au défaut
+    # d'une autre variante ne doit pas se perdre (revue de 933a8e8, majeur)
+    eval_config = getattr(args, "eval_config", None) or default_eval_config(args.variant)
+    cmd += ["--eval-config", str(eval_config)]
     if resume_after_stop:
         cmd.append("--resume-after-stop")
     return cmd
