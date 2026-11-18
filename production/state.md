@@ -1,6 +1,6 @@
 # État du projet RL-GCO
 
-Mis à jour : 2026-11-18 (Phase 4a : runs GCO-std faits, protocole v2 en préparation, G3 non franchissable).
+Mis à jour : 2026-11-18 (Phase 4a : runs GCO-std faits, ADR-006 accepté, GCO-S s0 à lancer, G3 non franchissable).
 
 ## Où on en est
 - **Phases 0 à 3 terminées.** G1 validé le 2026-11-10 (`docs/GCO_SPEC.md` §10), G2 le 2026-11-11 (§12,
@@ -20,8 +20,7 @@ Mis à jour : 2026-11-18 (Phase 4a : runs GCO-std faits, protocole v2 en prépar
 
 ## Prochaines actions
 1. **ADR-006** (protocole S1 v2, levée de D3 pour GCO-S seed 0, règle de décision, critère de succès,
-   instrumentation) : rédigé par `research-director`, puissance vérifiée par Monte Carlo, **à valider par
-   l'utilisateur** (section « Points à valider »).
+   instrumentation) : **accepté** par l'utilisateur le 2026-11-18. ADR-007 et 008 restent proposés.
 2. Instrumentation I1 à I4 **faite** (revues APPROVE), smoke test **PASS** sur **1b98a0d**, essai réel v2 fait
    (64 s par point, θ₀ identique à std s0) : ADR-006 « Implémentation et vérifications ».
 3. **GCO-S seed 0** (1B, ≈ 5,5 h) : lancé par l'utilisateur après validation d'ADR-006 (commande dans l'ADR).

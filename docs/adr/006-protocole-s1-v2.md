@@ -1,6 +1,6 @@
 # ADR-006 — Protocole S1 v2 (amende ADR-005 après le run 4a)
 
-- Statut : **proposé, en attente de validation utilisateur**
+- Statut : **accepté** (points 1 à 7 validés par l'utilisateur le 2026-11-18, sur e1e9663)
 - Date : 2026-11-18
 - Décideurs : research-director (proposition) ; utilisateur (validation). Amende `docs/adr/005-run-4a.md` (D1, D2, D3, D6, D7)
   sans le réécrire : tout ce qui n'est pas cité ici reste en vigueur.
@@ -210,6 +210,8 @@ n décisives : Φ((μn − A)/(σ√n)) + e^{2μA/σ²} Φ((−A − μn)/(σ√
   --std-s1-observed`. Le drapeau `--std-s1-observed` est le garde-fou d'ADR-005 D3 ; ici il vaut levée par D4 de cet ADR.
 
 ## Points à valider par l'utilisateur
+Validés tous les sept par l'utilisateur le 2026-11-18 (« Oui, je valide »).
+
 1. Statut de 4a : exploratoire ; K1 non déclenché ; H1 non concluante ; G3 fermé.
 2. S1-seed v2 : tous les 0,1B, 3 072 + 3 072 épisodes, SPRT sans plancher, 2 points consécutifs, confirmation 20 000 épisodes
    (graine 1) ; S1-léger retiré ; cible de coût relevée à ≤ 8 % (≈ 5,4 % estimé).
