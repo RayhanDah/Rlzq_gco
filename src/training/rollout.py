@@ -190,6 +190,38 @@ class OpponentHook(Protocol):
     def load_state_dict(self, state: Mapping[str, Any]) -> None: ...
 
 
+END_COUNT_KEYS = (
+    "ended",
+    "goal",
+    "no_touch",
+    "max_time",
+    "kickoff",
+    "generic",
+    "touched",
+    "goals_kickoff",
+    "goals_generic",
+)
+
+
+def _tally_ends(counts: dict[str, int], info: Mapping[str, Any]) -> None:
+    """Ajoute les fins d'épisode d'un step (clés `ended`, `end_*` de `BatchEnv.step`, (E,) bool) ; no-op si absentes."""
+    ended = info.get("ended")
+    if ended is None:
+        return
+    ended = np.asarray(ended, dtype=np.bool_)
+    goal = ended & np.asarray(info["end_goal"], dtype=np.bool_)
+    generic = ended & np.asarray(info["end_generic"], dtype=np.bool_)
+    counts["ended"] += int(ended.sum())
+    counts["goal"] += int(goal.sum())
+    counts["no_touch"] += int(np.asarray(info["end_no_touch"], dtype=np.bool_).sum())
+    counts["max_time"] += int(np.asarray(info["end_max_time"], dtype=np.bool_).sum())
+    counts["generic"] += int(generic.sum())
+    counts["kickoff"] += int((ended & ~generic).sum())
+    counts["touched"] += int((ended & np.asarray(info["end_touched"], dtype=np.bool_)).sum())
+    counts["goals_generic"] += int((goal & generic).sum())
+    counts["goals_kickoff"] += int((goal & ~generic).sum())
+
+
 class Collector:
     """Collecte des lots de `n_steps` × `n_agents` avec une politique acteur (copie de π, ADR-001 §3).
 
@@ -232,6 +264,10 @@ class Collector:
         self.agent_steps = 0
         self.learnable_steps = 0
         self._n_learn = int(self.learn_mask.sum())
+        self.end_counts: dict[str, int] = dict.fromkeys(END_COUNT_KEYS, 0)
+        """Fins d'épisode (par arène) du dernier lot collecté, lues dans `info` (ADR-006 I3/I4). Diagnostic : n'entre
+        ni dans le lot, ni dans la récompense, ni dans la perte ; clés absentes de `info` => zéros. Pas d'état à
+        sauvegarder : remis à zéro à chaque `collect` (l'origine de l'épisode en cours vit dans `BatchEnv`)."""
 
     def state_dict(self) -> dict[str, Any]:
         """État du collecteur pour la reprise (T5) : générateur d'échantillonnage, observation courante, compteurs et,
@@ -268,6 +304,7 @@ class Collector:
         self._next_buffer ^= 1
         n, d = self.env.n_agents, self.env.obs_dim
         empty_obs, empty_idx = np.zeros((0, d), np.float32), np.zeros(0, np.int64)
+        counts = dict.fromkeys(END_COUNT_KEYS, 0)
         for _ in range(self.n_steps):
             obs = self._obs
             with torch.inference_mode():
@@ -287,4 +324,6 @@ class Collector:
             self._obs = np.array(nxt, dtype=np.float32)
             self.agent_steps += n
             self.learnable_steps += self._n_learn
+            _tally_ends(counts, info)
+        self.end_counts = counts
         return buf.finish(self._obs, self.learn_mask, policy_version)

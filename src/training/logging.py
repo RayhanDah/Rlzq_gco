@@ -168,6 +168,22 @@ def batch_scalars(batch: RolloutBatch, n_cars: int) -> dict[str, float]:
     }
 
 
+def end_scalars(counts: Mapping[str, int]) -> dict[str, float]:
+    """ADR-006 I3/I4 : fins d'épisode du lot collecté, par arène (pas par agent), depuis `Collector.end_counts`.
+    Cause : but / no-touch / durée max (exclusives, somme = fins). Origine : kickoff / générique (somme = fins).
+    `ends_touched` : fins avec au moins une touche (diagnostic). Rien ici n'entre dans la récompense ni la perte."""
+    return {
+        "env/ends_goal": float(counts["goal"]),
+        "env/ends_no_touch": float(counts["no_touch"]),
+        "env/ends_max_time": float(counts["max_time"]),
+        "env/ends_kickoff": float(counts["kickoff"]),
+        "env/ends_generic": float(counts["generic"]),
+        "env/ends_touched": float(counts["touched"]),
+        "env/goals_kickoff": float(counts["goals_kickoff"]),
+        "env/goals_generic": float(counts["goals_generic"]),
+    }
+
+
 def iteration_scalars(
     result: IterationResult,
     *,

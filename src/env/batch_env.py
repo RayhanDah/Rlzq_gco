@@ -81,6 +81,8 @@ class BatchEnv:
         self._episode_ticks = np.zeros(self.n_envs, dtype=np.int64)
         self._ticks_since_touch = np.zeros(self.n_envs, dtype=np.int64)
         self._last_toucher = np.full(self.n_envs, -1, dtype=np.int64)
+        self._episode_generic = np.zeros(self.n_envs, dtype=np.bool_)  # origine (I4) : démarré sur état générique
+        self._episode_touched = np.zeros(self.n_envs, dtype=np.bool_)  # (I4) au moins une touche dans l'épisode
         self._score_blue, self._score_orange = sim.scores()
         self.n_ambiguous_goals = 0
         """Steps où les deux scores ont monté ; non observé en pratique, compté pour le rapport (cf. `_goal_net`)."""
@@ -108,6 +110,8 @@ class BatchEnv:
             "episode_ticks": self._episode_ticks.copy(),
             "ticks_since_touch": self._ticks_since_touch.copy(),
             "last_toucher": self._last_toucher.copy(),
+            "episode_generic": self._episode_generic.copy(),
+            "episode_touched": self._episode_touched.copy(),
             "score_blue": self._score_blue.copy(),
             "score_orange": self._score_orange.copy(),
             "n_ambiguous_goals": self.n_ambiguous_goals,
@@ -132,6 +136,10 @@ class BatchEnv:
             self._episode_ticks = np.array(state["episode_ticks"], dtype=np.int64)
             self._ticks_since_touch = np.array(state["ticks_since_touch"], dtype=np.int64)
             self._last_toucher = np.array(state["last_toucher"], dtype=np.int64)
+            # champs absents des anciens checkpoints : par défaut kickoff / sans touche (diagnostic seulement)
+            default = np.zeros(self.n_envs, dtype=np.bool_)
+            self._episode_generic = np.array(state.get("episode_generic", default), dtype=np.bool_)
+            self._episode_touched = np.array(state.get("episode_touched", default), dtype=np.bool_)
             self._score_blue = np.array(state["score_blue"], dtype=np.int64)
             self._score_orange = np.array(state["score_orange"], dtype=np.int64)
             return None
@@ -149,6 +157,8 @@ class BatchEnv:
         self._episode_ticks[arenas] = 0
         self._ticks_since_touch[arenas] = 0
         self._last_toucher[arenas] = -1
+        self._episode_generic[arenas] = draw.generic_mask
+        self._episode_touched[arenas] = False
         agents = self._agents_of(arenas)
         self._prev_idx[agents] = -1
         self._score_blue, self._score_orange = self._sim.scores()
@@ -207,6 +217,7 @@ class BatchEnv:
         newest = np.argmax(np.where(touched, touch, -1), axis=1)
         self._last_toucher[any_touch] = newest[any_touch]
         self._ticks_since_touch = np.where(any_touch, 0, self._ticks_since_touch + self.tick_skip)
+        self._episode_touched |= any_touch
 
         state = sim.state()
         scorer = None if self._cfg.rules.team_attribution else self._last_toucher
@@ -214,7 +225,17 @@ class BatchEnv:
 
         obs = self._as_obs(self._build_obs(state, self._prev_idx))
         done = out.terminated | out.truncated
+        # I3/I4 (diagnostic, jamais dans la récompense ni la perte), calculés AVANT le reset des arènes finies. Cause
+        # exclusive, priorité but > no-touch > durée max : `out.truncated` exclut déjà le but (`gco.episode_end`, A6),
+        # et no-touch passe avant durée max quand les deux seuils sont atteints au même step.
+        no_touch = self._ticks_since_touch >= self._cfg.no_touch_ticks
         info: dict[str, Any] = {
+            "ended": done.copy(),
+            "end_goal": out.terminated.copy(),
+            "end_no_touch": out.truncated & no_touch,
+            "end_max_time": out.truncated & ~no_touch,
+            "end_generic": done & self._episode_generic,
+            "end_touched": done & self._episode_touched,
             "goal_net": goal_net,
             "last_toucher": self._last_toucher.copy(),
             "episode_ticks": self._episode_ticks.copy(),
