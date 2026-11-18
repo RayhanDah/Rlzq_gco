@@ -202,7 +202,10 @@ n décisives : Φ((μn − A)/(σ√n)) + e^{2μA/σ²} Φ((−A − μn)/(σ√
   run de 5,5 h (extrapolé). Journal conforme (SPRT, (b) contre θ₀, touches, `s1_reached_before`).
 - **θ₀ identique** entre std s0 (`checkpoints/run_4a_std_s0/eval_snapshots/ckpt_000000_it00000000.pt`) et GCO-S s0 :
   SHA-256 des poids de la politique 7fab4c74… pour les deux.
-- Commande de GCO-S graine 0 (après validation) :
+- Smoke test **PASS** aussi sur **1b98a0d** (commit final, après fusion des interventions ADR-007/008 et du contraste P0 :
+  `runs/smoke_1b98a0d/`, 0 NaN, reprise exacte, ≈ 57k pas/s non soutenu) ; essai du lanceur GCO-S sur 1b98a0d
+  (`--max-iterations 1`, `runs/trial_s_1b98a0d/`) : la session enfant reçoit `--eval-config run_s1v2_eval.yaml`.
+- Commande de GCO-S graine 0 (après validation, sur 1b98a0d ou un commit sans changement de `src/`) :
   `vendor/venv-xpu/Scripts/python scripts/run_4a.py --variant s --seed 0 --max-hours 0 --eval-config run_s1v2_eval.yaml
   --std-s1-observed`. Le drapeau `--std-s1-observed` est le garde-fou d'ADR-005 D3 ; ici il vaut levée par D4 de cet ADR.
 
