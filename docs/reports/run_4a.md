@@ -3,6 +3,8 @@
 - Date : 2026-11-18. Rédigé par `experiment-analyst` (brouillon pour `research-director` et l'utilisateur). Tâche A7, ADR-005 §D7.
 - Périmètre : analyse de fichiers existants (`runs/run_4a_std_s{0,1,2}/`, `checkpoints/run_4a_std_s*/eval_snapshots/`). Aucun
   entraînement, banc ni évaluation lancé pour ce rapport. Les scripts d'analyse sont jetables (hors dépôt).
+- **Mise à jour 2026-11-18 (§4 bis)** : mesure hors ligne faite. SPRT +100 Elo contre l'aléatoire accepté sur l'instantané
+  final des 3 graines ; (b) recalculée vraie sur les graines 0 et 1 ; l'agent ne touche la balle que dans 9 à 14 % des épisodes.
 - **Verdict en une ligne** : aucune graine n'atteint S1-léger à 1B ; (a) n'est jamais remplie ; (b) est vraie à au moins une
   évaluation sur chaque graine ; GCO-S n'est pas lancé (ADR-005 D3). Le protocole ne tranche pas K1 dans ce cas (§6).
 - Convention : « B » = milliard de timesteps appris ; `k` = index d'évaluation (tous les 0,05B, 969 itérations) ; les chiffres
@@ -130,6 +132,53 @@ Ce qu'il faudrait (estimé, non mesuré ; non lancé) : 10 instantanés par grai
 Indicatif : le rapport de vraisemblance du SPRT (H0 : p = 0,5, H1 : p = 0,64 soit +100 Elo) calculé sur les décomptes cumulés
 k = 16 à 20 vaut 6,3 (s0), 7,0 (s1), 5,1 (s2) contre un seuil d'acceptation ln 19 = 2,94 ; non officiel (instantanés non indépendants,
 décomptes agrégés), et D2 ancre S1-seed à la série S1-léger : décision à prendre (§9).
+
+## 4 bis. Mesure hors ligne (2026-11-18, ajoutée après le rapport, à la demande de l'utilisateur)
+
+Provenance : commit 6db79a4 (arbre propre, `git_dirty: false` dans chaque JSON), laptop Zenbook 14 (Core Ultra 5 125H), politiques
+sur CPU, thermique non contrôlée, 2026-11-18 ≈ 18:10–18:45 UTC. Commande par instantané :
+`scripts/eval.py --a <instantané> --b random --episodes 2048 --n-envs 256 --seed 0 --sprt-elo 100 --sprt-max-decisive 1200`
+(20 000 épisodes pour l'instantané final). Sorties : `runs/run_4a_offline_eval/*.json` (hors git). Le comptage des touches
+(`touches`, diagnostic D6, jamais dans la perte) est ajouté par 6db79a4 : « touche » = au moins un step de politique avec
+contact balle dans l'épisode. Le SPRT est rejoué dans l'ordre des paires ; même graine 0 partout, donc les 2 048 premiers
+épisodes de l'éval à 20 000 sont ceux de l'éval à 1,0B (même décision SPRT).
+
+**Contre l'aléatoire, instantané final (1B, 20 000 épisodes)**
+
+| Graine | V / N / D | Elo décisif [IC 95 % bootstrap] | SPRT +100 Elo | A touche la balle | l'aléatoire touche | aucune touche |
+|---|---|---|---|---:|---:|---:|
+| 0 | 479 / 19 372 / 149 | +203 [+172 ; +235] | accepte H1 (652 épisodes) | 13,9 % | 6,4 % | 81,0 % |
+| 1 | 366 / 19 491 / 143 | +163 [+130 ; +199] | accepte H1 (654) | 10,3 % | 6,3 % | 84,2 % |
+| 2 | 320 / 19 552 / 128 | +159 [+126 ; +196] | accepte H1 (1 416) | 8,7 % | 6,1 % | 86,1 % |
+
+**Trajectoire (2 048 épisodes par point) : SPRT +100 Elo contre l'aléatoire**
+- θ₀ (0B) : Elo décisif −39, +20, 0 ; plafond atteint sans décision ; aucune touche dans 88 à 89 % des épisodes.
+- Graine 0 : H1 acceptée à 0,1B (isolé), puis de 0,5B à 1,0B à chaque point ; Elo 172 à 300.
+- Graine 1 : H1 acceptée de 0,5B à 1,0B à chaque point ; Elo 178 à 275.
+- Graine 2 : H1 acceptée à 0,3, 0,4, 0,6 et 1,0B ; plafond sans décision à 0,5, 0,7, 0,8, 0,9B ; Elo 114 à 196.
+- Taux « A touche » : 6–7 % à θ₀, 9–14 % à 1B ; « aucune touche » : 88 % → 81–86 %. Durée moyenne 20,3 à 20,9 s (troncature
+  « 20 s sans touche » dominante). 11 points par graine sans correction de multiplicité : la tendance compte, pas un point isolé.
+
+**Condition (b) recalculée sur 2 048 épisodes** (instantané 1B contre gelé à 0,9B, it. 17 439 ; Garwood bilatéral 95 %,
+`eval.rating.garwood_interval`, buts de A / minutes jouées ; `R0` = 0,027)
+
+| Graine | Buts pour / contre | Minutes | Borne basse buts/min | > R0 ? | Elo décisif contre le gelé |
+|---|---|---:|---:|---|---|
+| 0 | 50 / 46 | 690,2 | 0,0538 | oui | +14 [−58 ; +89] |
+| 1 | 50 / 41 | 686,3 | 0,0541 | oui | +34 [−34 ; +115] |
+| 2 | 27 / 15 | 697,1 | 0,0255 | non (de peu) | +102 [−8 ; +228] |
+
+**Lecture**
+- Hors ligne, les deux volets de S1-seed (D2 : SPRT +100 Elo accepté ; (b) sur ≈ 2 000 épisodes) sont remplis par l'instantané
+  final des graines 0 et 1, pas par la graine 2 ((b) manquée de 0,0015 but/min). Ce n'est **pas** S1-seed au sens strict de D2,
+  qui ancre la mesure à la 1re évaluation d'une série S1-léger, inexistante ici. Compter cette mesure comme S1-seed est un
+  changement de critère **après avoir vu les données** : il exige un amendement d'ADR-005 et doit être signalé comme tel.
+- L'échec de S1-léger (a) tient au plancher de 20 parties décisives sur 512 : à 20 000 épisodes, l'avantage contre l'aléatoire
+  est net (IC de l'Elo décisif entièrement au-dessus de +100 pour les 3 graines).
+- Le niveau de jeu reste très faible en absolu : l'agent n'atteint la balle que dans 9 à 14 % des épisodes kickoff
+  (6 % au départ), et 81 à 86 % des épisodes finissent sans aucune touche. Le goulot « premier contact » du §8 est confirmé
+  par mesure directe. « Battre l'aléatoire » ici veut dire : quand quelqu'un touche la balle, c'est plus souvent l'agent, et
+  il convertit mieux.
 
 ## 5. Par variante : GCO-std, médiane [min ; max] sur 3 graines (GCO-S non lancé)
 
