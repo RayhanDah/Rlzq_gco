@@ -47,6 +47,7 @@ from training.checkpoint import (
 F32 = npt.NDArray[np.float32]
 I64 = npt.NDArray[np.int64]
 TICK_SKIP = 8
+PINNED_KICKOFF_DIGEST = "581690ad01b5b3ca06ad81be04d93c537f7a60148984bccef2600df9996e5b57"
 OBS_D = 3
 NO_TOUCH_S = 1.0  # 120 ticks = 15 steps sans touche : troncature (nul) ; le simulateur factice ne produit aucune touche
 CFG = RewardConfig(no_touch_timeout_s=NO_TOUCH_S)
@@ -78,6 +79,8 @@ class DuelSim:
         self._arena_seed = np.ones(n_envs, dtype=np.uint64)
         self._since_reset = np.zeros(n_envs, dtype=np.int64)
         self.reset_log: list[tuple[int, int]] = []  # (arène, graine de kickoff) dans l'ordre des resets
+        self.allow_states = False
+        self.state_log: list[tuple[int, bytes]] = []  # (arène, car_pos de l'état posé) dans l'ordre des appels
 
     n_envs = property(lambda self: self._e)
     n_cars = property(lambda self: 2)
@@ -116,7 +119,10 @@ class DuelSim:
             self._since_reset[a] = 0
 
     def set_states(self, arena_idx: I64, states: InitialStates) -> None:
-        raise AssertionError("l'évaluation ne joue que des kickoffs (p_kick = 1)")
+        if not self.allow_states:
+            raise AssertionError("l'évaluation ne joue que des kickoffs (p_kick = 1)")
+        for i, a in enumerate(arena_idx.tolist()):
+            self.state_log.append((a, states.car_pos[i].tobytes()))
 
 
 def duel_obs(state: BatchState, prev: I64) -> F32:
@@ -163,6 +169,59 @@ def test_chaque_paire_est_jouee_deux_fois_avec_la_meme_graine_et_cotes_echanges(
         assert per_arena[a][2 * k] == per_arena[a][2 * k + 1] == int(seeds[p])
     assert ((seeds >= 1) & (seeds <= 2**32 - 1)).all()
     assert (res.ticks > 0).all()  # tous les épisodes planifiés sont terminés et mesurés
+
+
+def test_p_kick_1_explicite_est_identique_au_defaut_et_ne_pose_aucun_etat() -> None:
+    # Résultat figé calculé avec le code d'AVANT l'option (même scénario) : le défaut reste identique bit à bit.
+    res = play(ConstPolicy(1), ConstPolicy(1), DuelSim(8, {1: 0.05}), 40, seed=3)
+    explicit = play_match(
+        ConstPolicy(1), ConstPolicy(1), DuelSim(8, {1: 0.05}), 40, seed=3, reward_config=CFG,
+        build_obs=duel_obs, obs_dim=OBS_D, p_kick=1.0,
+    )  # fmt: skip
+    assert res.equals(explicit)
+    digest = hashlib.sha256(res.outcome.tobytes() + res.ticks.tobytes()).hexdigest()
+    assert digest == PINNED_KICKOFF_DIGEST
+
+
+def _generic_run(p_kick: float, n: int = 40, e: int = 8, seed: int = 5) -> tuple[DuelSim, MatchResult]:
+    sim = DuelSim(e, {1: 0.05})
+    sim.allow_states = True
+    res = play_match(
+        ConstPolicy(1), ConstPolicy(1), sim, n, seed=seed, reward_config=CFG,
+        build_obs=duel_obs, obs_dim=OBS_D, p_kick=p_kick,
+    )  # fmt: skip
+    return sim, res
+
+
+@pytest.mark.parametrize("p_kick", [0.0, 0.5])
+def test_paire_generique_rejoue_le_meme_etat_pour_les_deux_cotes(p_kick: float) -> None:
+    from env.initial_states import InitialStateSampler
+
+    sim, res = _generic_run(p_kick)
+    draw = InitialStateSampler(2, p_kick, 5).sample(res.n_pairs)
+    assert draw.generic is not None
+    rows = np.cumsum(draw.generic_mask) - 1
+    per_arena: dict[int, list[bytes]] = {}
+    for arena, blob in sim.state_log:
+        per_arena.setdefault(arena, []).append(blob)
+    n_generic_pairs = 0
+    for p in range(res.n_pairs):
+        a = p % sim.n_envs
+        if not draw.generic_mask[p]:
+            continue
+        n_generic_pairs += 1
+        expected = draw.generic.car_pos[rows[p]].tobytes()
+        # l'état de la paire p est posé dans l'arène p mod E aux deux épisodes (A bleu puis A orange)
+        got = [b for b in per_arena[a] if b == expected]
+        assert len(got) >= 2
+    assert n_generic_pairs > 0
+    assert len(sim.state_log) == 2 * n_generic_pairs  # pas d'état pour les paires kickoff, ni hors plan
+    assert (res.ticks > 0).all()
+
+
+def test_p_kick_invalide_refuse() -> None:
+    with pytest.raises(ValueError, match="p_kick"):
+        play_match(ConstPolicy(1), ConstPolicy(1), DuelSim(4, {}), 4, seed=0, p_kick=1.5)
 
 
 def test_nombre_impair_d_episodes_arrondi_a_la_paire() -> None:
