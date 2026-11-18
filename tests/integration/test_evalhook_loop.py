@@ -199,6 +199,37 @@ def test_trajectoire_et_rng_globaux_identiques_avec_ou_sans_evaluation(tmp_path:
     assert torch.equal(torch.as_tensor(ra["torch"]), torch.as_tensor(rb["torch"]))
 
 
+def test_trajectoire_et_rng_globaux_identiques_avec_evaluation_v2(tmp_path: Path) -> None:
+    # S1 v2 (ADR-006 I1, I2) : SPRT, bootstrap, θ₀ fixe, touches ; vrai `play_match`, simulateur factice dédié
+    cfg = cfg_of()
+    a = go(cfg, tmp_path / "a")
+    v2 = EvalHookConfig(
+        protocol="s1_v2",
+        every_timesteps=64,
+        frozen_lag_timesteps=64,
+        episodes_random=8,
+        episodes_frozen=8,
+        n_envs=2,
+        consecutive=2,
+        k7_consecutive=2,
+    )
+    hook = run_hook(tmp_path / "b", cfg, v2)
+    b = go(cfg, tmp_path / "b", eval_hook=hook)
+    assert len(hook.history) == 3
+    for r in hook.history:
+        assert r["protocol"] == "s1_v2" and r["random"]["sprt"]["decision"] and r["random"]["touches"] is not None
+        assert r["frozen"]["reference"] == "theta0" and r["frozen"]["touches"] is not None
+    la = CheckpointManager(tmp_path / "a" / "checkpoints").load_latest()
+    lb = CheckpointManager(tmp_path / "b" / "checkpoints").load_latest()
+    assert la is not None and lb is not None
+    pa, pb = la[1]["trainer"]["learner"]["policy"], lb[1]["trainer"]["learner"]["policy"]
+    assert all(torch.equal(pa[k], pb[k]) for k in pa)
+    assert a.goals_total == b.goals_total
+    ra, rb = la[1]["rng"], lb[1]["rng"]
+    assert json.dumps(ra, default=repr, sort_keys=True) == json.dumps(rb, default=repr, sort_keys=True)
+    assert torch.equal(torch.as_tensor(ra["torch"]), torch.as_tensor(rb["torch"]))
+
+
 def test_erreur_d_evaluation_tracee_le_run_continue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Arrange : la 2e évaluation lève ; puis une erreur à chaque appel au-delà du plafond (3 d'affilée tolérées)
     calls = {"n": 0}

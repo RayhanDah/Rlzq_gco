@@ -7,6 +7,7 @@ arrière, état sérialisable) : `play_match` est remplacé par un script qui re
 
 from __future__ import annotations
 
+import dataclasses
 import importlib
 import json
 from pathlib import Path
@@ -403,3 +404,230 @@ def test_parametres_de_forme_differente_refuses(tmp_path: Path) -> None:
     hook = make_hook(tmp_path)
     with pytest.raises(EvalHookError, match="incompatible"):
         hook.bind_policy(PolicyNet(OBS_D, 90, (5,)))
+
+
+# ----------------------------------------------------------------------------------------- protocole S1 v2 (ADR-006)
+
+V2 = EvalHookConfig(
+    protocol="s1_v2",
+    every_timesteps=2,
+    frozen_lag_timesteps=4,
+    episodes_random=64,
+    episodes_frozen=64,
+    consecutive=2,
+    k7_consecutive=2,
+    r0_goals_per_min=0.027,
+)
+
+
+def _with_touches(res: MatchResult, a_touch: int, b_touch: int) -> MatchResult:
+    t = np.zeros((res.n_pairs, 2, 2), dtype=np.int64)
+    t[:, :, 0], t[:, :, 1] = a_touch, b_touch
+    return dataclasses.replace(res, touches=t)
+
+
+class ScriptV2:
+    """`play_match` des évaluations v2 : plan 'P' / 'F' contre l'aléatoire ; contre θ₀, résultat `frozen` ; trace
+    (rôle, graine, poids de B) pour vérifier QUEL adversaire est joué. 30 V / 0 D (en tête de l'ordre de jeu) : le SPRT
+    +100 Elo accepte H1 après 12 victoires (12 x 0,2470 = 2,96 > 2,944)."""
+
+    def __init__(self, plan: str, frozen: MatchResult = PASS_FROZEN) -> None:
+        self.plan, self.frozen = plan, frozen
+        self.n_eval = 0
+        self.calls: list[tuple[str, int, Any]] = []
+
+    def __call__(self, a: Any, b: Any, sim: Any, n: int, *, seed: int, **kw: Any) -> MatchResult:
+        if isinstance(b, RandomPolicy):
+            ok = self.n_eval < len(self.plan) and self.plan[self.n_eval] == "P"
+            self.n_eval += 1
+            self.calls.append(("random", seed, None))
+            return _with_touches(PASS_RANDOM if ok else FAIL_RANDOM, 3, 1)
+        self.calls.append(("frozen", seed, {k: v.clone() for k, v in b.net.state_dict().items()}))
+        return _with_touches(self.frozen, 2, 0)
+
+
+def test_v2_arme_au_deuxieme_point_reussi_pas_au_premier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Arrange : points aux itérations 2 et 4, réussis ; checkpoint sain = itération précédente
+    monkeypatch.setattr(hook_mod, "play_match", ScriptV2("PP"))
+    probe = Healthy()
+    hook = make_hook(tmp_path, V2, probe=probe)
+    bound(hook)
+    # Act
+    got = drive(hook, probe, range(1, 8))
+    # Assert : rien au 1er point (it. 2, 3), ni à l'it. 4 ; armé au 2e, confirmé par le sain 4 à l'it. 5
+    assert got == [False] * 4 + [True] * 3
+    assert hook.s1_eval_iteration == 4 and hook.s1_iteration == 5
+    s1 = [e for e in evals(tmp_path) if e["event"] == "s1_reached"]
+    assert len(s1) == 1 and s1[0]["series"] == [2, 4]
+
+
+def test_v2_un_echec_reinitialise_la_serie(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Arrange : points 2 (P), 4 (F), 6 (P), 8 (P)
+    monkeypatch.setattr(hook_mod, "play_match", ScriptV2("PFPP"))
+    probe = Healthy()
+    hook = make_hook(tmp_path, V2, probe=probe)
+    bound(hook)
+    # Act
+    got = drive(hook, probe, range(1, 12))
+    # Assert : l'échec du point 4 remet la série à zéro : armé sur 6-8, pas sur 2-4-6
+    assert got.index(True) + 1 == 9 and hook.s1_eval_iteration == 8
+    assert [e["streak"] for e in evals(tmp_path) if e["event"] == "eval"][:4] == [1, 0, 1, 2]
+
+
+def test_v2_confirmation_par_checkpoint_sain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(hook_mod, "play_match", ScriptV2("PP"))
+    hook = make_hook(tmp_path, V2)
+    bound(hook)
+    # sans sonde ni checkpoint noté : jamais armé, même après 2 points réussis
+    assert not any(hook(it) for it in range(1, 9))
+    hook.note_checkpoint(3, healthy=True)  # ne couvre pas le point 4
+    assert hook(9) is False
+    hook.note_checkpoint(4, healthy=True)
+    assert hook(10) is True and hook.s1_eval_iteration == 4
+
+
+def test_v2_retour_en_arriere_retire_le_point_ecarte(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Arrange : points réussis à 2 et 4 (non couverts) ; l'itération 4 diverge : restauration vers 3
+    monkeypatch.setattr(hook_mod, "play_match", ScriptV2("PPF"))
+    probe = Healthy()
+    hook = make_hook(tmp_path, V2, probe=probe)
+    bound(hook)
+    probe.value = 1
+    got = [hook(it) for it in range(1, 5)]
+    assert [r["iteration"] for r in hook.history] == [2, 4]
+    # Act : le point 4 est écarté ; il est rejoué et échoue
+    probe.value = 3
+    got += [hook(3), hook(4)]
+    # Assert : un seul point réussi retenu, pas d'armement
+    assert not any(got) and [r["iteration"] for r in hook.history] == [2, 4]
+    assert [r["passed"] for r in hook.history] == [True, False] and hook.rollbacks == 1
+
+
+def test_v2_critere_b_contre_theta0_fixe_et_non_gele_glissant(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Arrange : la politique apprend (poids qui changent) ; 4 points
+    script = ScriptV2("PPPP")
+    monkeypatch.setattr(hook_mod, "play_match", script)
+    probe = Healthy()
+    hook = make_hook(tmp_path, V2, probe=probe)
+    live = bound(hook)
+    theta0 = {k: v.clone() for k, v in live.state_dict().items()}
+    for it in range(1, 9):
+        with torch.no_grad():
+            for p in live.parameters():
+                p.add_(0.01)
+        probe.value = it - 1
+        hook(it)
+    # Assert : à chaque point, l'adversaire de (b) a exactement les poids de θ₀ (le glissant aurait ceux du point k - 2)
+    frozen = [c for c in script.calls if c[0] == "frozen"]
+    assert len(frozen) == 4
+    for _, _, w in frozen:
+        assert all(torch.equal(w[k], theta0[k]) for k in theta0)
+    recs = [e for e in evals(tmp_path) if e["event"] == "eval"]
+    assert [r["frozen"]["eval_index"] for r in recs] == [0, 0, 0, 0] and {r["frozen"]["iteration"] for r in recs} == {0}
+    assert {r["frozen"]["snapshot"] for r in recs} == {hook.theta0["snapshot"]}  # type: ignore[index]
+
+
+def test_v2_les_deux_criteres_sont_necessaires(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # (a) vrai, (b) faux : 0 but contre θ₀ ; puis (a) faux, (b) vrai
+    monkeypatch.setattr(hook_mod, "play_match", ScriptV2("P", frozen=_result(0, 0)))
+    hook = make_hook(tmp_path / "x", V2)
+    bound(hook)
+    hook(1), hook(2)
+    r = evals(tmp_path / "x")[-1]
+    assert r["condition_a"] is True and r["condition_b"] is False and r["passed"] is False
+    monkeypatch.setattr(hook_mod, "play_match", ScriptV2("F"))
+    hook2 = make_hook(tmp_path / "y", V2)
+    bound(hook2)
+    hook2(1), hook2(2)
+    r = evals(tmp_path / "y")[-1]
+    assert r["condition_a"] is False and r["condition_b"] is True and r["passed"] is False
+
+
+def test_v2_aucun_plancher_de_decisives(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 12 V / 0 D seulement (< min_decisive = 20) : le SPRT accepte H1 (ADR-006 D2 : pas de plancher)
+    few = _result(12, 0)
+    monkeypatch.setattr(
+        hook_mod, "play_match", lambda a, b, s, n, **kw: few if isinstance(b, RandomPolicy) else PASS_FROZEN
+    )
+    hook = make_hook(tmp_path, V2)
+    bound(hook)
+    hook(1), hook(2)
+    rec = evals(tmp_path)[-1]
+    assert rec["random"]["sprt"]["decision"] == "accept_h1" and rec["passed"] is True
+
+
+def test_v2_journal_i1_et_touches_i2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(hook_mod, "play_match", ScriptV2("P"))
+    hook = make_hook(tmp_path, V2)
+    bound(hook)
+    hook(1), hook(2)
+    rec = evals(tmp_path)[-1]
+    r, f = rec["random"], rec["frozen"]
+    assert rec["protocol"] == "s1_v2" and rec["passed"] is True and rec["s1_reached"] is False
+    assert (r["wins"], r["draws"], r["losses"]) == (30, 34, 0) and r["episodes"] == 64
+    assert set(r["elo_decisive"]) == {"value", "low", "high"} and r["elo_decisive"]["value"] > 0
+    sp = r["sprt"]
+    assert sp["decision"] == "accept_h1" and sp["n_episodes"] == 12 and sp["n_decisive"] == 12
+    assert sp["llr"] >= sp["upper"] and sp["elo1"] == 100.0
+    assert f["goals_for_per_min"]["value"] == pytest.approx(40 / 64)
+    assert f["goals_for_per_min"]["low"] == pytest.approx(28.58 / 64, rel=1e-3)  # Garwood bilatéral 95 % de 40
+    assert f["goals_against_per_min"]["value"] == 0.0 and rec["condition_b"] is True and f["reference"] == "theta0"
+    assert rec["k7_bad"] is False and "total_s" in rec["timing"]
+    # I2 : touches contre l'aléatoire et contre θ₀
+    assert (
+        r["touches"]["a_mean"] == 3.0 and r["touches"]["b_touch_rate"] == 1.0 and r["touches"]["no_touch_rate"] == 0.0
+    )
+    assert f["touches"]["a_touch_rate"] == 1.0 and f["touches"]["b_touch_rate"] == 0.0
+
+
+def test_v1_journalise_aussi_les_touches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def match(a: Any, b: Any, sim: Any, n: int, **kw: Any) -> MatchResult:
+        return _with_touches(PASS_RANDOM if isinstance(b, RandomPolicy) else PASS_FROZEN, 2, 5)
+
+    monkeypatch.setattr(hook_mod, "play_match", match)
+    hook = make_hook(tmp_path)
+    bound(hook)
+    hook(1), hook(2)
+    rec = evals(tmp_path)[-1]
+    assert rec["random"]["touches"]["a_mean"] == 2.0 and rec["frozen"]["touches"]["b_mean"] == 5.0
+
+
+def test_v2_k7_apres_deux_points_consecutifs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(hook_mod, "play_match", ScriptV2("PP"))
+    probe = Healthy()
+    hook = make_hook(tmp_path, V2, probe=probe)
+    bound(hook)
+    drive(hook, probe, range(1, 8))
+    monkeypatch.setattr(
+        hook_mod,
+        "play_match",
+        lambda a, b, s, n, **kw: _result(0, 30) if isinstance(b, RandomPolicy) else PASS_FROZEN,
+    )
+    drive(hook, probe, range(8, 15))
+    k7 = [e for e in evals(tmp_path) if e["event"] == "k7_alert"]
+    assert [e["iteration"] for e in k7] == [10] and k7[0]["consecutive"] == 2
+
+
+def test_v2_config_et_etats_v1_rechargeables(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # protocole par défaut = S1-léger ; la config s'écrit sans le nouveau champ
+    assert EvalHookConfig().protocol == "s1_light"
+    with pytest.raises(ValueError, match="protocol"):
+        EvalHookConfig(protocol="s1_v3")
+    with pytest.raises(ValueError, match="pair"):
+        EvalHookConfig(protocol="s1_v2", episodes_random=63)
+    assert EvalHookConfig.from_dict(V2.to_dict()) == V2
+    # état v1 sauvegardé AVANT l'ajout des champs de protocole : rechargé sans erreur
+    monkeypatch.setattr(hook_mod, "play_match", Script("PP"))
+    probe = Healthy()
+    a = make_hook(tmp_path / "a", probe=probe)
+    bound(a)
+    drive(a, probe, range(1, 6))
+    old = json.loads(json.dumps(a.state_dict()))
+    for key in ("protocol", "sprt_elo1", "sprt_alpha", "sprt_beta"):
+        old["config"].pop(key)
+    b = make_hook(tmp_path / "b", probe=probe)
+    b.load_state_dict(old)
+    assert [r["iteration"] for r in b.history] == [2, 4] and b.streak() == 2
+    # un état v1 n'est pas rechargé par un hook v2 (les points ne sont pas comparables)
+    with pytest.raises(EvalHookError, match="config"):
+        make_hook(tmp_path / "c", V2).load_state_dict(old)

@@ -10,7 +10,8 @@ n'est pas relancé.
 
 Ce que le lanceur ajoute à `scripts/train.py` :
 - seed et nom du run fixés par la ligne de commande (configs `configs/run_4a_{std,s}.yaml`, identiques hors variante) ;
-- évaluation en cours de run toujours active (`configs/run_4a_eval.yaml`, ADR-005 D2) ;
+- évaluation en cours de run toujours active (`configs/run_4a_eval.yaml`, ADR-005 D2 ; `--eval-config
+  run_s1v2_eval.yaml` pour le protocole S1-seed v2 de l'ADR-006) ;
 - arrêt à durée murale (`--max-hours`, vérifié à chaque frontière d'itération) ;
 - mise en veille par inactivité bloquée pendant la session (Windows, `SetThreadExecutionState` : rien n'est modifié
   dans les réglages du système ; un capot fermé met quand même la machine en veille) ;
@@ -235,6 +236,7 @@ def launch(
     hook_kwargs: dict[str, Any] | None = None,
     config_edit: Callable[[Any], Any] | None = None,
     resume_after_stop: bool = False,
+    eval_config: str | Path = EVAL_CONFIG,
 ) -> tuple[int, dict[str, Any]]:
     """Une session du run `run_name(variant, seed)`. `run_kwargs`, `hook_kwargs`, `config_edit` : tests seulement
     (env et simulateur factices, config réduite)."""
@@ -250,7 +252,7 @@ def launch(
         cfg = dataclasses.replace(cfg, device=device)
     if config_edit is not None:
         cfg = config_edit(cfg)
-    hook_cfg = EvalHookConfig.from_yaml(config_dir / EVAL_CONFIG)
+    hook_cfg = EvalHookConfig.from_yaml(config_dir / eval_config)  # nom relatif à config_dir, ou chemin absolu
     out_dir, ck_dir = runs_root / name, checkpoints_root / name
     mode = session_mode(out_dir, ck_dir)
     resume = mode == "resume"
@@ -304,6 +306,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="reprend un run dont la dernière session a fini par un STOP ou une erreur (décision humaine, ADR-005 D6)",
     )
+    ap.add_argument(
+        "--eval-config",
+        default=EVAL_CONFIG,
+        help=f"YAML de l'évaluation en cours de run, dans configs/ ou chemin (défaut {EVAL_CONFIG} : S1-léger ; "
+        "run_s1v2_eval.yaml : S1-seed v2, ADR-006)",
+    )
     ap.add_argument("--no-auto-resume", action="store_true", help="pas de reprise automatique après perte du GPU")
     ap.add_argument("--child", action="store_true", help=argparse.SUPPRESS)  # une session, lancée par le superviseur
     args = ap.parse_args(argv)
@@ -344,6 +352,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_iterations=args.max_iterations,
                 command=[sys.executable, *sys.argv],
                 resume_after_stop=args.resume_after_stop,
+                eval_config=args.eval_config,
             )
     except (ConfigError, RunError, RuntimeError, ValueError, OSError) as exc:
         print(f"run impossible : {type(exc).__name__} : {exc}", file=sys.stderr)
@@ -371,6 +380,9 @@ def child_command(args: argparse.Namespace, seed: int, resume_after_stop: bool, 
     for flag in ("allow_dirty", "no_keep_awake", "std_s1_observed"):
         if getattr(args, flag):
             cmd.append("--" + flag.replace("_", "-"))
+    eval_config = getattr(args, "eval_config", EVAL_CONFIG)
+    if str(eval_config) != EVAL_CONFIG:
+        cmd += ["--eval-config", str(eval_config)]
     if resume_after_stop:
         cmd.append("--resume-after-stop")
     return cmd

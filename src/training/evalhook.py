@@ -11,6 +11,19 @@ victoires / parties décisives dépasse 0,5 avec au moins `min_decisive` décisi
 marqués par minute contre le gelé dépasse `r0_goals_per_min` (R0, provisoire 0,032 but/min par camp).
 S1 est atteint quand `consecutive` (3) évaluations de suite réussissent ; il est alors irréversible pour la trajectoire.
 
+Protocole `s1_v2` (`EvalHookConfig.protocol`, ADR-006 D2, D3, D7 I1/I2 ; `s1_light` reste le défaut, inchangé) :
+à chaque point (0,1B appris), `episodes_random` contre l'aléatoire ET `episodes_frozen` contre θ₀ FIXE (jamais un gelé
+glissant). Point RÉUSSI = (a) SPRT H0 : 0 contre H1 : +`sprt_elo1` Elo (alpha = beta = 0,05, nuls exclus, SANS
+plancher de
+décisives, rejoué aux frontières de paires, plafond = `episodes_random` : plafond sans décision = échec ; `eval.match.
+sprt_on_match`) ET (b) borne basse du Garwood des buts de A par minute contre θ₀ > R0. `s1_reached` s'arme au
+`consecutive`-ième point réussi de suite (2 dans `configs/run_s1v2_eval.yaml`), avec la confirmation par checkpoint sain
+et les retours en arrière ci-dessous, inchangés. K7 : `k7_consecutive` points (2) dont la borne haute de Wilson (>=
+`min_decisive` décisives, plancher de K7 seulement) est < 0,5. Journal `evals.jsonl` : V/N/D, Elo décisif + IC bootstrap
+par paires (`summarize`, graine 0), `sprt` (décision, LLR, épisodes et décisives à la décision), buts/min avec Garwood,
+(b), point réussi, `s1_reached` à ce point, `k7_bad`, durées. I2 (les deux protocoles) : `touches` (`eval.match.
+touch_summary`) dans les blocs `random` et `frozen`. Rien de cela ne consomme de RNG global (testé).
+
 Ne pas compter une évaluation faite sur un état ensuite écarté (revue A1 vers A4) :
 - RETOUR EN ARRIÈRE : un appel avec une itération <= celle d'une évaluation retenue signifie que la trajectoire a été
   ramenée en arrière (restauration par une garde, ou reprise depuis un checkpoint antérieur) ; les évaluations faites
@@ -59,9 +72,18 @@ import torch
 
 from env import Simulator
 from env.batch_env import ObsBuilder
-from eval.match import TICKS_PER_MINUTE, MatchResult, NetPolicy, RandomPolicy, play_match
+from eval.match import (
+    TICKS_PER_MINUTE,
+    MatchResult,
+    NetPolicy,
+    RandomPolicy,
+    play_match,
+    sprt_on_match,
+    summarize,
+    touch_summary,
+)
 from eval.rating import garwood_interval
-from eval.sprt import DecisiveVerdict, decisive_win_test
+from eval.sprt import Decision, DecisiveVerdict, SPRTConfig, decisive_win_test
 from models import PolicyNet
 from rewards import RewardConfig
 from training.checkpoint import (
@@ -76,6 +98,7 @@ from training.logging import append_jsonl
 STATE_VERSION = 2
 EVALS_FILE = "evals.jsonl"
 STATE_FILE = "evalhook_state.jsonl"
+PROTOCOLS = ("s1_light", "s1_v2")
 SNAPSHOT_KEEP = 1_000_000_000
 """`keep` du gestionnaire d'instantanés : aucune rotation (les instantanés d'évaluation ne sont jamais supprimés)."""
 
@@ -118,9 +141,23 @@ class EvalHookConfig:
     """Graine de l'évaluation ; None = graine du run."""
     max_consecutive_errors: int = 3
     """Erreurs d'évaluation d'affilée tolérées (tracées, évaluation échouée) avant de faire remonter l'exception."""
+    protocol: str = "s1_light"
+    """"s1_light" (ADR-005 D2, défaut, inchangé) ou "s1_v2" (ADR-006 D2, D3) : voir la docstring du module."""
+    sprt_elo1: float = 100.0
+    sprt_alpha: float = 0.05
+    sprt_beta: float = 0.05
+    """SPRT du protocole v2 (H0 : 0 Elo ; sans plancher de décisives ; plafond = `episodes_random`). Ignorés en v1."""
 
     def __post_init__(self) -> None:
         bad: list[str] = []
+        if self.protocol not in PROTOCOLS:
+            bad.append(f"protocol dans {PROTOCOLS}")
+        if self.protocol == "s1_v2" and (self.episodes_random % 2 or self.episodes_frozen % 2):
+            bad.append("episodes_* pair en s1_v2 (SPRT aux frontières de paires)")
+        if not (self.sprt_elo1 > 0.0 and math.isfinite(self.sprt_elo1)):
+            bad.append("sprt_elo1 > 0")
+        if not (0.0 < self.sprt_alpha < 1.0 and 0.0 < self.sprt_beta < 1.0):
+            bad.append("sprt_alpha, sprt_beta dans ]0, 1[")
         if self.every_timesteps < 1:
             bad.append("every_timesteps >= 1")
         if self.frozen_lag_timesteps < self.every_timesteps or self.frozen_lag_timesteps % max(self.every_timesteps, 1):
@@ -162,7 +199,7 @@ class EvalHookConfig:
             raise ValueError(f"évaluation : clés inconnues {unknown} (connues : {sorted(known)})")
         ints = {"every_timesteps", "frozen_lag_timesteps", "episodes_random", "episodes_frozen", "min_decisive"}
         ints |= {"consecutive", "k7_consecutive", "n_envs", "max_consecutive_errors"}
-        floats = {"wilson_alpha", "garwood_alpha", "r0_goals_per_min"}
+        floats = {"wilson_alpha", "garwood_alpha", "r0_goals_per_min", "sprt_elo1", "sprt_alpha", "sprt_beta"}
         for k, v in data.items():
             ok = True
             if k in ints or (k == "seed" and v is not None):
@@ -171,7 +208,7 @@ class EvalHookConfig:
                 ok = isinstance(v, int | float) and not isinstance(v, bool)
             elif k == "garwood_two_sided":
                 ok = isinstance(v, bool)
-            elif k == "mode":
+            elif k in ("mode", "protocol"):
                 ok = isinstance(v, str)
             if not ok:
                 raise ValueError(f"évaluation.{k} : type invalide ({type(v).__name__})")
@@ -376,7 +413,12 @@ class EvalHook:
         les évaluations ne seraient plus comparables. Le compteur de retours en arrière ne recule jamais."""
         if int(state.get("version", -1)) != STATE_VERSION:
             raise EvalHookError(f"version d'état {state.get('version')} != {STATE_VERSION}")
-        if dict(state["config"]) != self.cfg.to_dict():
+        # un état sauvegardé avant l'ajout des champs de protocole (v1) se relit avec leurs valeurs par défaut
+        try:
+            saved = EvalHookConfig.from_dict(state["config"]).to_dict()
+        except ValueError as exc:
+            raise EvalHookError(f"config d'évaluation illisible dans l'état sauvegardé : {exc}") from exc
+        if saved != self.cfg.to_dict():
             raise EvalHookError(f"config d'évaluation différente de l'état sauvegardé : {state['config']}")
         steps = int(state["learned_steps_per_iteration"])
         if int(state["seed"]) != self.seed or steps != self.learned_steps_per_iteration:
@@ -592,7 +634,13 @@ class EvalHook:
         res_r = self._match(current, rnd, cfg.episodes_random, self._seed_for(k, _ROLE_RANDOM_MATCH))
         t_rand = self._clock()
 
-        fk, fit, fname = self._frozen_for(k)
+        v2 = cfg.protocol == "s1_v2"
+        if v2:  # ADR-006 D3 : (b) contre θ₀ FIXE (stationnaire), jamais contre un gelé glissant
+            if self.theta0 is None:
+                raise EvalHookError("θ₀ absent : hook non lié avant la première itération")
+            fk, fit, fname = 0, 0, str(self.theta0["snapshot"])
+        else:
+            fk, fit, fname = self._frozen_for(k)
         frozen_net = self._frozen_net
         frozen_net.load_state_dict(self._load_snapshot(fname))
         current = NetPolicy(self._net, mode, self._seed_for(k, _ROLE_CURRENT_VS_FROZEN))
@@ -602,8 +650,38 @@ class EvalHook:
 
         rand = _random_block(res_r, cfg)
         frz = _frozen_block(res_f, cfg)
-        frz.update(eval_index=fk, iteration=fit, snapshot=fname, lag_target_index=max(k - cfg.lag_evals, 0))
-        cond_a = rand["verdict"] == DecisiveVerdict.PASSED.value
+        rand["touches"] = touch_summary(res_r)  # I2 (ADR-006 D7) : diagnostic, jamais dans la perte
+        frz["touches"] = touch_summary(res_f)
+        if v2:
+            sprt = sprt_on_match(
+                res_r,
+                SPRTConfig(
+                    elo0=0.0,
+                    elo1=cfg.sprt_elo1,
+                    alpha=cfg.sprt_alpha,
+                    beta=cfg.sprt_beta,
+                    max_episodes=res_r.n_episodes,
+                ),
+            )
+            summ = summarize(res_r)  # bootstrap par paires, graine fixe 0 : Generator local, aucun RNG global
+            rand.update(
+                sprt={
+                    **sprt.as_dict(),
+                    "elo0": 0.0,
+                    "elo1": cfg.sprt_elo1,
+                    "alpha": cfg.sprt_alpha,
+                    "beta": cfg.sprt_beta,
+                },
+                elo_decisive=summ.elo_decisive.as_dict(),
+                elo_regularized=summ.elo_regularized,
+            )
+            frz.update(reference="theta0", eval_index=fk, iteration=fit, snapshot=fname)
+            cond_a = sprt.decision == Decision.ACCEPT_H1  # plafond atteint sans décision = échec
+            rec["protocol"] = "s1_v2"
+            rec["s1_reached"] = self.s1_reached  # état au moment du point (l'armement est un événement `s1_reached`)
+        else:
+            frz.update(eval_index=fk, iteration=fit, snapshot=fname, lag_target_index=max(k - cfg.lag_evals, 0))
+            cond_a = rand["verdict"] == DecisiveVerdict.PASSED.value
         low = frz["goals_for_per_min"]["low"]
         cond_b = low is not None and low > cfg.r0_goals_per_min
         rec.update(

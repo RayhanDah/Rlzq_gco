@@ -6,6 +6,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -95,6 +96,43 @@ def test_configs_versionnees_conformes_a_l_adr_005() -> None:
     assert (hook.every_timesteps, hook.frozen_lag_timesteps, hook.n_envs) == (50_000_000, 100_000_000, 256)
     assert (hook.episodes_random, hook.episodes_frozen, hook.min_decisive, hook.consecutive) == (512, 512, 20, 3)
     assert hook.garwood_two_sided and hook.r0_goals_per_min == 0.027
+
+
+def test_config_d_eval_s1_v2_conforme_a_l_adr_006() -> None:
+    h = EvalHookConfig.from_yaml(ROOT / "configs" / "run_s1v2_eval.yaml")
+    assert h.protocol == "s1_v2" and (h.every_timesteps, h.n_envs, h.seed) == (100_000_000, 256, None)
+    assert (h.episodes_random, h.episodes_frozen) == (3072, 3072)
+    assert (h.sprt_elo1, h.sprt_alpha, h.sprt_beta) == (100.0, 0.05, 0.05)
+    assert (h.consecutive, h.k7_consecutive, h.r0_goals_per_min) == (2, 2, 0.027) and h.garwood_two_sided
+    # la config par défaut des runs 4a reste S1-léger, inchangée
+    old = EvalHookConfig.from_yaml(ROOT / "configs" / "run_4a_eval.yaml")
+    assert old.protocol == "s1_light" and old.consecutive == 3 and old.episodes_random == 512
+
+
+def test_option_eval_config_choisit_la_config_d_eval(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import train as train_script
+
+    seen: list[EvalHookConfig] = []
+
+    class Stop(Exception):
+        pass
+
+    def fake_build(cfg: Any, hook_cfg: EvalHookConfig, *a: Any, **k: Any) -> Any:
+        seen.append(hook_cfg)
+        raise Stop
+
+    monkeypatch.setattr(train_script, "build_eval_hook", fake_build)
+    kw: dict[str, Any] = {
+        "max_hours": None,
+        "runs_root": tmp_path / "r",
+        "checkpoints_root": tmp_path / "c",
+        "config_dir": ROOT / "configs",
+    }
+    with pytest.raises(Stop):
+        r4.launch("std", 0, **kw)  # défaut inchangé
+    with pytest.raises(Stop):
+        r4.launch("std", 0, eval_config="run_s1v2_eval.yaml", **kw)
+    assert [h.protocol for h in seen] == ["s1_light", "s1_v2"]
 
 
 def _segments(out: Path, statuses: list[str]) -> None:
