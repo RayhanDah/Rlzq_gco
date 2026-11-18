@@ -1,88 +1,48 @@
 # État du projet RL-GCO
 
-Mis à jour : 2026-11-14 (**G2 validé**, Phase 3 terminée, Phase 4a : A0 à A6 faits, A7 à la demande).
+Mis à jour : 2026-11-18 (Phase 4a : runs GCO-std faits, protocole v2 en préparation, G3 non franchissable).
 
 ## Où on en est
-- Phase 0 terminée. **Gate G1 validé** le 2026-11-10 (décisions : `docs/GCO_SPEC.md` §10).
-- **Gate G2 validé** le 2026-11-11 (GO utilisateur ; décisions : `docs/GCO_SPEC.md` §12, `docs/adr/001-infra.md`) :
-  option A3, laptop = plateforme principale (≈ 50k ts/s soutenus mesurés), Kaggle T4 = appoint, rôle du TPU après
-  sa sonde.
-- **Phase 1 (studio) terminée** : `CLAUDE.md`, 17 agents, 10 skills, 7 rules, hooks testés (`tests/hooks`), ADR-000, dépôt git (remote privé `origin`).
-- **Phase 2 (infra) terminée** (2026-11-10 → 11). Fait : rocketsim 2.2.1 + numpy 2.5.4 dans le venv, meshes soccar
-  vérifiés (`scripts/fetch_meshes.py`), plafond sim laptop mesuré (21k env-steps/s à 1 proc, ≈ 72k à 14 procs, 20 s,
-  commit 54a10a6, `docs/adr/001-infra.md` M1), kernel sonde prêt (`scripts/kaggle_probe.py`). RocketGPU @f0508a1
-  compilé en local (gcc, PGO) : ≈ 130–215k env-steps/s en 1 processus selon l'état thermique, ≈ 2–2,5× RocketSim
-  (M1c, M1d). Build scripté : `scripts/build_rocketgpu.py` ; la sonde Kaggle le construit (CPU, puis CUDA si GPU).
-  Bout-en-bout prototype (M3, c110603) : ≈ 16,5k ts/s CPU, ≈ 52–58k ts/s avec learner sur GPU intégré Arc (torch XPU,
-  `vendor/venv-xpu`). Sonde portable Colab prête (`--colab`).
-- **Sondes Kaggle (2026-11-11, `docs/research/kaggle_probe.md`)** : T4 = 4 vCPU, RocketGPU CPU ≈ 55k env-steps/s.
-  RocketGPU CUDA ne compile que pour sm_120 (Blackwell) : aucun GPU Kaggle/Colab utilisable pour la simulation.
-  Sonde TPU en file.
-- **Phase 3 (implémentation) ouverte** : récompense GCO mergée (`src/rewards`, tests §7, ADR-002, 1bcd5ae).
-  Lanceur de relais Kaggle mergé (`scripts/kaggle_run.py`, `docs/research/kaggle_relay.md`, revue faite) : jamais
-  exécuté contre Kaggle, à valider sur un dataset jetable avant tout vrai run.
-- Livrables :
-  - `docs/private/00_inventory.md` (local, non versionné : machine, contenu du dossier) ;
-  - `docs/01_papers.md` (papiers et config PPO v0) ;
-  - `docs/02_ecosystem.md` (versions et compatibilité) ;
-  - `docs/03_reference_configs.md` (studios Claude Code et leçons communautaires) ;
-  - `docs/GCO_SPEC.md` (définition, budget de steps) ;
-  - `docs/PLAN.md` (plan d'ensemble) ;
-  - `docs/research/` (notes sur sources publiques) ; preuves issues des discussions Discord dans `docs/private/` (local, non versionné).
-- Venv `.venv` (uv, Python 3.12) : groupes dev, sim (rocketsim 2.2.1, numpy 2.5.4), native (cmake, ninja, pybind11), learn (torch 2.15.0 CPU) ; `vendor/venv-xpu` : torch 2.15.0+xpu.
-
-- **Sprint Phase 3** (`production/sprints/2026-11-11.md`) : T0 à T7 mergés (`src/{obs,actions,env,models,training,
-  rlbot_bot}`, `scripts/train.py`, `configs/smoke.yaml` ; ADR-003 et ADR-004 acceptés). Reprise exacte mesurée,
-  simulateur bit à bit (CPU). **Smoke test 1M steps : PASS** le 2026-11-13 sur XPU (`docs/reports/smoke_test.md`,
-  commit ea0e7de : 0 NaN, reprise à l'itération 9, ≈ 82k ts/s sur 13 s, non soutenu). **Phase 3 terminée.**
+- **Phases 0 à 3 terminées.** G1 validé le 2026-11-10 (`docs/GCO_SPEC.md` §10), G2 le 2026-11-11 (§12,
+  `docs/adr/001-infra.md` : laptop = plateforme principale, Kaggle T4 en appoint). Studio, hooks, ADR-000 à 005.
+  Smoke test 1M : PASS (`docs/reports/smoke_test.md`, ea0e7de).
+- Venvs : `.venv` (uv, Python 3.12, torch 2.15.0 CPU, rocketsim 2.2.1) ; `vendor/venv-xpu` (torch 2.15.0+xpu).
+  Simulateur d'entraînement : RocketGPU @f0508a1 en CPU (`scripts/build_rocketgpu.py`).
+- **Phase 4a** (sprint `production/sprints/2026-11-13.md`, ADR-005) : A0 à A7 faits.
+  - 3 runs GCO-std de 1B (seeds 0, 1, 2), terminés le 2026-11-15, 16 et 18 ; ≈ 5,5 h chacun ; 1 perte du GPU reprise
+    automatiquement par seed, 1 restauration K4 (seed 0), aucun STOP.
+  - **Rapport A7** : `docs/reports/run_4a.md`. S1-léger jamais atteint ((a) bloquée par le plancher de 20 décisives
+    sur 512). Mesure hors ligne (§4 bis, f324b21) : SPRT +100 Elo contre l'aléatoire accepté sur l'instantané final
+    des 3 seeds (Elo décisif +159 à +203, 20 000 épisodes), (b) vraie sur s0 et s1. **Mais l'agent ne touche la balle
+    que dans 9 à 14 % des épisodes kickoff** (81–86 % sans aucune touche).
+  - Avis `research-director` (2026-11-18), suivi par l'utilisateur : résultat « S1 hors ligne, post hoc,
+    exploratoire » ; K1 non déclenché ; H1 non concluante ; ni prolongation ni G3.
 
 ## Prochaines actions
-1. **Phase 4a (run court)** : sprint `production/sprints/2026-11-13.md` : A0 (ADR-005, **accepté** le 2026-11-13 : 4 runs de 1B,
-   un par session de 8 h), A1 à A4 mergés (A3 pool : 445385a ; A4 évaluation en cours de run : dbd504e,
-   revues faites) ; A5 fait (M5 à M8) ; A6 fait (`scripts/run_4a.py`, R0 = 0,027) ; reste A7 (runs, à la demande). Choix d'A4 validés par l'utilisateur
-   le 2026-11-14 (ADR-005, « Précisions validées »). Prévu au départ :
-   protocole (ADR-005), durcissement de la boucle, évaluation (`src/eval`), pool d'adversaires, banc soutenu ≥ 30 min,
-   puis 6 runs (2 variantes × 3 seeds). Bancs et runs à la demande de l'utilisateur.
-2. Avant le run court 4a : points de la revue T6 listés dans le sprint (détection de S1, checkpoint à l'itération 0,
-   journal après restauration), délai d'action d'un tick de RLBot en ablation.
-3. Sonde TPU (`rayhanda/rlgco-probe-tpu`) toujours en file le 2026-11-13 : récupérer `probe.json`, compléter M2c.
-4. Prochain gate : **G3**, avant le premier run long (smoke test, run court 4a, config et kill criteria).
+1. **ADR-006** (protocole S1 v2, levée de D3 pour GCO-S seed 0, règle de décision, critère de succès,
+   instrumentation) : en rédaction par `research-director`, **à valider par l'utilisateur**.
+2. Instrumentation exigée par ADR-006, revue, smoke test sur le même commit.
+3. **GCO-S seed 0** (1B, ≈ 5,5 h) : lancé par l'utilisateur après validation d'ADR-006.
+4. Puis une seule intervention sur la seed 0 (γ 0,998 si S ≥ std, annealing plus lent sinon), ≈ 5,5 h ; si succès,
+   seeds 1 et 2 ; puis préparation de G3 (`configs/long_run.yaml`, kill criteria).
+5. Hors chemin critique : contraste P0 depuis les états génériques ; sonde TPU (`rayhanda/rlgco-probe-tpu`) ;
+   relais Kaggle (`scripts/kaggle_run.py`) jamais exécuté, à valider sur un dataset jetable.
 
 ## Risques ouverts
-- **R13** : écarts RocketGPU / RocketSim **mesurés** (T3) : boost au sol sans gaz (RocketGPU freine), ordre des
-  34 pads différent, boost initial 33,3 contre 33,3333. Sans effet avec la table de 90 actions (boost ⇒ plein
-  gaz) ; à tester dans T1 et T7. Aucune comparaison au jeu avant la Phase 5.
-- **R1** : amorçage de l'exploration en GCO à petit budget (aucune preuve publique sous 0,35B steps).
-- **R2** : throttling **mesuré** : 75k ts/s les 6 premières minutes, plateau ≈ 45–50k ensuite, moyenne 50,3k sur
-  57 min (M4, politique aléatoire). Vraie boucle avec pool et évaluation (M5, 2026-11-14) : 46,0k appris/s sur
-  45 min, pool de 7 à 49. **Pool plein (M6, 100 copies de θ₀) : ≈ 34,5k pendant 25 min puis ≈ 26,6k, 32,2k en
-  moyenne sur 35 min : 1B ne tient pas en 8 h** (8,6 à 10,4 h extrapolé). RAM disponible min 588 à 715 Mo sur 16 Go.
-  Causes corrigées (M7, b43211d) : inférence groupée du pool, thread learner persistant (fuite XPU de 2,3 Mo par
-  itération). Après correctifs : 58,9k appris/s sur 10 min à pool plein, mémoire privée plate. **Soutenu (M8, 2 h, pool plein) : 55,1k appris/s, plateau 51–54k
-  de 40 min à 2 h, RAM disponible min 2,7 Go : 1B ≈ 5,3 h (extrapolé), tient en 8 h.**
-- **R3** : parité RLBot : cohérence adaptateur ↔ obs **testée** (écart ≤ 7,2e-7), mais conventions réelles du jeu
-  (ordre d'Euler, signe du roll, ordre des pads, délai d'action) non vérifiées avant la Phase 5. `rlbot` 2.0.0b56
-  est une pré-version.
+- **R1** : amorçage de l'exploration en GCO à petit budget. **Mesuré** : à 1B, premier contact rare (§4 bis).
+- **R2** : débit **mesuré** soutenu ≈ 51k appris/s en vrai run (A7), 55,1k au banc M8 ; 1B ≈ 5,5 h.
+- **R3** : parité RLBot : conventions réelles du jeu non vérifiées avant la Phase 5 ; `rlbot` 2.0.0b56 pré-version.
 - **R4** : code pulsar2 / GigaLearn sans licence → référence uniquement.
-- **R5** : RLBC 2025 était en 2v2 uniquement ; aucune règle 2026 publiée.
-- **R6** : Rocket League sous EAC depuis avril 2026 → passer exclusivement par RLBot (lancé sans EAC), pas de dumper mémoire.
-- **R7** : quotas Kaggle (≈ 20 h TPU / 30 h GPU par semaine, sessions ≤ 9–12 h) rapportés par des tiers et modifiables.
-- **R8** : interruption possible d'une session à accélérateur sous-utilisé (CGU non lues).
-- **R9** : session T4 = 4 vCPU (**mesuré**, sonde du 2026-11-11) → collecte ≈ 55k env-steps/s ; RocketGPU CUDA ne
-  compile que pour sm_120.
-- **R10** : fuite du jeton Kaggle → jamais dans le dépôt, hooks de refus.
-- **R11** : groupe de 3 → 3 comptes Kaggle. **Décision utilisateur (2026-11-10)** : chaque membre opère son propre compte (`git pull` + une commande depuis son PC, son propre jeton) ; notebook commun et datasets partagés si possible. Le studio n'opère que le compte de l'utilisateur et ne manipule aucune clé tierce. Zone grise résiduelle : pooling de quotas (AUP « circumvent »).
-- **R12** : TPU avec file d'attente ≥ 35 h ; ≈ 2,5B steps par session de 9 h rapportés par l'utilisateur (**non mesuré**,
-  pipeline inconnu). À comparer au laptop seulement après la sonde TPU (en file). GPU + TPU : un kernel TPU a été accepté
-  en file pendant qu'un T4 tournait ; exécution simultanée non encore observée.
+- **R5** : RLBC 2025 en 2v2 uniquement ; aucune règle 2026 publiée.
+- **R6** : Rocket League sous EAC → passer exclusivement par RLBot.
+- **R7, R8, R9, R12** : Kaggle : quotas rapportés par des tiers ; T4 = 4 vCPU (≈ 55k env-steps/s, mesuré) ; RocketGPU
+  CUDA sm_120 seulement ; TPU en file, débit non mesuré.
+- **R10** : jeton Kaggle jamais dans le dépôt (hooks de refus).
+- **R11** : 3 comptes Kaggle, chacun opéré par son titulaire (décision du 2026-11-10).
+- **R13** : écarts RocketGPU / RocketSim mesurés (T3), sans effet avec la table de 90 actions ; écart sim/jeu non
+  mesuré avant la Phase 5.
+- **R14** : pertes du GPU XPU (`UR_RESULT_ERROR_DEVICE_LOST`), 4 en ≈ 22 h de runs, cause non établie (pilote Arc
+  32.0.101.8860). Reprise automatique (`scripts/run_4a.py`) ; pas de garde contre un processus figé.
 
 ## Expériences en cours
-- **run_4a_std_s1 puis run_4a_std_s2** enchaînés par `scripts/run_4a.py --seed 1 2 --max-hours 0` (2026-11-15),
-  reprise automatique après perte du GPU (ADR-005, décision du 2026-11-15).
-  - run_4a_std_s1 **terminé** (1B, 2026-11-16) : S1-léger **non atteint** ; (a) jamais, (b) une fois (it. 11 626) ;
-    1 DEVICE_LOST repris, 0 NaN.
-  - run_4a_std_s2 **terminé** (1B, 2026-11-18 02:08, repris le 18 à 14 250) : S1-léger **non atteint** ; (a) jamais,
-    (b) deux fois (it. 12 595, 15 501) ; 1 DEVICE_LOST repris, 0 NaN. **Aucune seed GCO-std n'a S1-léger : GCO-S non lancé** ;
-    suite : analyse A7 (`docs/reports/run_4a.md`), puis G3.
-- run_4a_std_s0 **terminé** (1B appris, 2026-11-15) : S1-léger **non atteint** ; (b) vraie aux 3 dernières
-  évaluations, (a) jamais (≤ 23 parties décisives sur 512) ; 1 arrêt DEVICE_LOST repris, 1 restauration K4 (NaN).
+- Aucune. Résultats 4a : `runs/run_4a_std_s{0,1,2}/`, évaluation hors ligne `runs/run_4a_offline_eval/`.
