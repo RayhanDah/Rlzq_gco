@@ -67,6 +67,11 @@ n décisives : Φ((μn − A)/(σ√n)) + e^{2μA/σ²} Φ((−A − μn)/(σ√
   hypothèse) : 49 buts attendus, puissance ≈ 0,92 (approximation normale, calculé).
 - Les approximations (passage continu, contrôle aux frontières de paires, part de décisives aléatoire) surestiment un peu la
   puissance. Vérification Monte Carlo recommandée (eval-lead, non bloquante).
+- **Vérification Monte Carlo (2026-11-18, faite)** : 4 000 tirages par cas, graine 12345, `eval.sprt.sprt_scan` (décision
+  aux frontières de paires, plafond = épisodes du point), épisodes indépendants (la corrélation par paire de kickoff est
+  ignorée), commit 7d7859c, laptop. Puissance à p = 0,70 : 2 048 épisodes → 0,61 / 0,68 / 0,78 (part de décisives 2,0 /
+  2,2 / 2,6 %) ; **3 072 → 0,84 / 0,89 / 0,92**. À p = 0,64 (+100 Elo), 3 072, 2,2 % : 0,58. Sous H0 (p = 0,5), 3 072,
+  2,2 % : 2,6 % de H1 acceptée par point. L'approximation ci-dessus est confirmée à ± 0,02.
 
 ## Décision
 
