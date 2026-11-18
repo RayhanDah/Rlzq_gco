@@ -563,7 +563,8 @@ def test_v2_journal_i1_et_touches_i2(tmp_path: Path, monkeypatch: pytest.MonkeyP
     hook(1), hook(2)
     rec = evals(tmp_path)[-1]
     r, f = rec["random"], rec["frozen"]
-    assert rec["protocol"] == "s1_v2" and rec["passed"] is True and rec["s1_reached"] is False
+    assert rec["protocol"] == "s1_v2" and rec["passed"] is True and rec["s1_reached_before"] is False
+    assert "s1_reached" not in rec  # l'armement est l'événement `s1_reached`, pas un champ du point
     assert (r["wins"], r["draws"], r["losses"]) == (30, 34, 0) and r["episodes"] == 64
     assert set(r["elo_decisive"]) == {"value", "low", "high"} and r["elo_decisive"]["value"] > 0
     sp = r["sprt"]
@@ -631,3 +632,86 @@ def test_v2_config_et_etats_v1_rechargeables(tmp_path: Path, monkeypatch: pytest
     # un état v1 n'est pas rechargé par un hook v2 (les points ne sont pas comparables)
     with pytest.raises(EvalHookError, match="config"):
         make_hook(tmp_path / "c", V2).load_state_dict(old)
+
+
+def _flat(outcomes: list[int]) -> MatchResult:
+    """Résultat dont l'ordre de jeu (paire, côté) est exactement `outcomes` (longueur paire)."""
+    n = len(outcomes)
+    return MatchResult(
+        outcome=np.asarray(outcomes, dtype=np.int8).reshape(-1, 2),
+        ticks=np.full((n // 2, 2), TICKS_1MIN, dtype=np.int64),
+        seed=0,
+        n_pairs=n // 2,
+        n_envs=4,
+        tick_skip=8,
+        env_steps=0,
+        wall_s=0.0,
+    )
+
+
+def _v2_single(tmp: Path, monkeypatch: pytest.MonkeyPatch, res: MatchResult) -> dict[str, Any]:
+    monkeypatch.setattr(
+        hook_mod, "play_match", lambda a, b, s, n, **kw: res if isinstance(b, RandomPolicy) else PASS_FROZEN
+    )
+    hook = make_hook(tmp, V2)
+    bound(hook)
+    hook(1), hook(2)
+    return evals(tmp)[-1]
+
+
+def test_v2_plafond_du_sprt_egal_aux_episodes_et_echec(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Arrange : 5 V / 3 D parmi 64 épisodes (LLR final ≈ 0,25) : aucune borne franchie ; (b) vraie (PASS_FROZEN)
+    rec = _v2_single(tmp_path, monkeypatch, _result(5, 3))
+    # Assert : le plafond (= episodes_random) est atteint sans décision : échec, pas « continue »
+    sp = rec["random"]["sprt"]
+    assert sp["decision"] == "cap_reached" and sp["n_episodes"] == V2.episodes_random == 64
+    assert rec["condition_a"] is False and rec["condition_b"] is True and rec["passed"] is False
+
+
+def test_v2_borne_franchie_a_mi_paire_ne_compte_qu_a_la_frontiere(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Arrange : nul, puis 12 V (la borne haute est franchie à l'épisode 13, 1er de la paire 7), puis une D (2e de la
+    # paire 7) : à la frontière de paire, LLR = 2,964 - 0,329 = 2,635 < 2,944 ; le reste, des nuls
+    flat = [0] + [1] * 12 + [-1] + [0] * 50
+    rec = _v2_single(tmp_path, monkeypatch, _flat(flat))
+    # Assert : pas d'acceptation à mi-paire
+    sp = rec["random"]["sprt"]
+    assert sp["decision"] == "cap_reached" and sp["n_episodes"] == 64 and rec["passed"] is False
+
+
+def test_v2_theta0_reste_l_adversaire_apres_reprise_et_retour_en_arriere(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Arrange : un 1er processus évalue (points 2 et 4) ; sa politique a appris
+    sa = ScriptV2("PPPPPP")
+    monkeypatch.setattr(hook_mod, "play_match", sa)
+    probe = Healthy()
+    a = make_hook(tmp_path, V2, probe=probe)
+    live = bound(a)
+    theta0 = {k: v.clone() for k, v in live.state_dict().items()}
+    for it in range(1, 5):
+        with torch.no_grad():
+            for p in live.parameters():
+                p.add_(0.05)
+        probe.value = it - 1
+        a(it)
+    state = json.loads(json.dumps(a.state_dict()))
+    # Act : nouveau processus (même dossier d'instantanés), état rechargé, politique vivante de poids DIFFÉRENTS
+    sb = ScriptV2("PPPPPP")
+    monkeypatch.setattr(hook_mod, "play_match", sb)
+    b = make_hook(tmp_path, V2, probe=probe)
+    b.load_state_dict(state)
+    bound(b, seed=99)
+    for it in range(5, 7):
+        probe.value = it - 1
+        b(it)
+    # retour en arrière (restauration vers 3) puis rejeu du point 4
+    probe.value = 3
+    b(4)
+    b(5)
+    # Assert : dans tous les cas, l'adversaire de (b) a les poids de θ₀
+    seen = [w for role, _, w in sa.calls + sb.calls if role == "frozen"]
+    assert len(seen) >= 4 and b.rollbacks == 1
+    for w in seen:
+        assert all(torch.equal(w[k], theta0[k]) for k in theta0)

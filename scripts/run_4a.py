@@ -84,6 +84,20 @@ def session_mode(out_dir: Path, ck_dir: Path) -> str:
     return "new"
 
 
+def resolve_eval_config(config_dir: Path, name: str | Path) -> Path:
+    """Fichier de config d'évaluation : un nom dans `config_dir`, sinon un chemin existant (relatif au répertoire
+    courant, ou absolu). Lève `FileNotFoundError` si aucun des deux n'existe."""
+    p = Path(name)
+    if p.is_absolute():
+        if p.is_file():
+            return p
+    else:
+        for cand in (config_dir / p, p):
+            if cand.is_file():
+                return cand
+    raise FileNotFoundError(f"config d'évaluation introuvable : {name} (cherchée dans {config_dir} puis comme chemin)")
+
+
 class SessionRefused(RuntimeError):
     """La session ne doit pas démarrer (décision humaine requise)."""
 
@@ -252,7 +266,7 @@ def launch(
         cfg = dataclasses.replace(cfg, device=device)
     if config_edit is not None:
         cfg = config_edit(cfg)
-    hook_cfg = EvalHookConfig.from_yaml(config_dir / eval_config)  # nom relatif à config_dir, ou chemin absolu
+    hook_cfg = EvalHookConfig.from_yaml(resolve_eval_config(config_dir, eval_config))
     out_dir, ck_dir = runs_root / name, checkpoints_root / name
     mode = session_mode(out_dir, ck_dir)
     resume = mode == "resume"

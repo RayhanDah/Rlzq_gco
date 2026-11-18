@@ -135,6 +135,26 @@ def test_option_eval_config_choisit_la_config_d_eval(tmp_path: Path, monkeypatch
     assert [h.protocol for h in seen] == ["s1_light", "s1_v2"]
 
 
+def test_resolution_de_la_config_d_eval(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Arrange : un nom dans config_dir, un fichier ailleurs (relatif au répertoire courant et absolu)
+    cdir = tmp_path / "configs"
+    cdir.mkdir()
+    (cdir / "a.yaml").write_text("protocol: s1_v2\n", encoding="utf-8")
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "b.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    # Assert : nom -> config_dir ; `configs/a.yaml` (relatif au cwd) n'est pas résolu en configs/configs/a.yaml
+    assert r4.resolve_eval_config(cdir, "a.yaml") == cdir / "a.yaml"
+    assert r4.resolve_eval_config(cdir, "configs/a.yaml") == Path("configs/a.yaml")
+    assert r4.resolve_eval_config(cdir, "other/b.yaml") == Path("other/b.yaml")
+    assert r4.resolve_eval_config(cdir, other / "b.yaml") == other / "b.yaml"
+    with pytest.raises(FileNotFoundError, match="introuvable"):
+        r4.resolve_eval_config(cdir, "absent.yaml")
+    with pytest.raises(FileNotFoundError):
+        r4.resolve_eval_config(cdir, tmp_path / "absent.yaml")
+
+
 def _segments(out: Path, statuses: list[str]) -> None:
     out.mkdir(parents=True, exist_ok=True)
     lines = [json.dumps({"status": st, "cause": "K2 : entropie" if st == "stopped" else None}) for st in statuses]

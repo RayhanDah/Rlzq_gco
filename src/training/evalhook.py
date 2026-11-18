@@ -14,15 +14,18 @@ S1 est atteint quand `consecutive` (3) évaluations de suite réussissent ; il e
 Protocole `s1_v2` (`EvalHookConfig.protocol`, ADR-006 D2, D3, D7 I1/I2 ; `s1_light` reste le défaut, inchangé) :
 à chaque point (0,1B appris), `episodes_random` contre l'aléatoire ET `episodes_frozen` contre θ₀ FIXE (jamais un gelé
 glissant). Point RÉUSSI = (a) SPRT H0 : 0 contre H1 : +`sprt_elo1` Elo (alpha = beta = 0,05, nuls exclus, SANS
-plancher de
-décisives, rejoué aux frontières de paires, plafond = `episodes_random` : plafond sans décision = échec ; `eval.match.
-sprt_on_match`) ET (b) borne basse du Garwood des buts de A par minute contre θ₀ > R0. `s1_reached` s'arme au
-`consecutive`-ième point réussi de suite (2 dans `configs/run_s1v2_eval.yaml`), avec la confirmation par checkpoint sain
-et les retours en arrière ci-dessous, inchangés. K7 : `k7_consecutive` points (2) dont la borne haute de Wilson (>=
-`min_decisive` décisives, plancher de K7 seulement) est < 0,5. Journal `evals.jsonl` : V/N/D, Elo décisif + IC bootstrap
+plancher de décisives, rejoué aux frontières de paires, plafond = `episodes_random` : plafond sans décision = échec ;
+`eval.match.sprt_on_match`) ET (b) borne basse du Garwood des buts de A par minute contre θ₀ > R0.
+`s1_reached` s'arme au `consecutive`-ième point réussi de suite (2 dans `configs/run_s1v2_eval.yaml`), avec la
+confirmation par checkpoint sain et les retours en arrière ci-dessous, inchangés.
+K7 : `k7_consecutive` points (2) dont la borne haute de Wilson (>= `min_decisive` décisives, plancher de K7
+seulement) est < 0,5. Journal `evals.jsonl` : V/N/D, Elo décisif + IC bootstrap
 par paires (`summarize`, graine 0), `sprt` (décision, LLR, épisodes et décisives à la décision), buts/min avec Garwood,
-(b), point réussi, `s1_reached` à ce point, `k7_bad`, durées. I2 (les deux protocoles) : `touches` (`eval.match.
-touch_summary`) dans les blocs `random` et `frozen`. Rien de cela ne consomme de RNG global (testé).
+(b), point réussi, `s1_reached_before` (état AVANT la tentative d'armement de ce point ; l'armement lui-même est
+l'événement `s1_reached`), `k7_bad`, durées. I2 (les deux protocoles) : `touches` (`eval.match.touch_summary`) dans les
+blocs `random` et `frozen`. Rien de cela ne consomme de RNG global (testé).
+S1-seed OFFICIEL en v2 (ADR-006 D2) : le 1er point de la paire réussie, à lire dans `series[0]` de l'événement
+`s1_reached` ; `s1_eval_iteration` et `s1_iteration` désignent le 2e point (armement) et l'itération de confirmation.
 
 Ne pas compter une évaluation faite sur un état ensuite écarté (revue A1 vers A4) :
 - RETOUR EN ARRIÈRE : un appel avec une itération <= celle d'une évaluation retenue signifie que la trajectoire a été
@@ -678,7 +681,6 @@ class EvalHook:
             frz.update(reference="theta0", eval_index=fk, iteration=fit, snapshot=fname)
             cond_a = sprt.decision == Decision.ACCEPT_H1  # plafond atteint sans décision = échec
             rec["protocol"] = "s1_v2"
-            rec["s1_reached"] = self.s1_reached  # état au moment du point (l'armement est un événement `s1_reached`)
         else:
             frz.update(eval_index=fk, iteration=fit, snapshot=fname, lag_target_index=max(k - cfg.lag_evals, 0))
             cond_a = rand["verdict"] == DecisiveVerdict.PASSED.value
