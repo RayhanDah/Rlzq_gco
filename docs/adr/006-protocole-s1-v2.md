@@ -188,6 +188,24 @@ n décisives : Φ((μn − A)/(σ√n)) + e^{2μA/σ²} Φ((−A − μn)/(σ√
 - **Révision** si : coût d'éval mesuré > 10 % ; part de décisives < 1,5 % aux points tardifs (puissance < 0,6) ; Monte Carlo
   de la puissance < 0,8 au point de conception ; publication des codes Terminal / Pulsar 2.5 (spec §8).
 
+## Implémentation et vérifications (2026-11-18, avant validation)
+- I1, I2 : `src/training/evalhook.py` (`protocol: s1_v2`), `configs/run_s1v2_eval.yaml`, `scripts/run_4a.py --eval-config` ;
+  I3, I4 : `src/env/batch_env.py`, `src/training/rollout.py`, `src/training/logging.py` (scalaires `env/ends_*`,
+  `env/goals_kickoff|generic`). Fusions 07bc6d3 et 07d51e6, revues `code-reviewer` APPROVE (majeur corrigé : test du
+  plafond du SPRT, vu échouer). Tests : 601 unitaires, 142 d'intégration avec RocketGPU (2 xfail connus, R13).
+- Smoke test : **PASS** sur 07d51e6 (`scripts/train.py configs/smoke.yaml --smoke`, `runs/smoke_07d51e6b/`, XPU, reprise
+  exacte, 0 NaN, ≈ 58k pas/s sur la boucle, non soutenu) ; les scalaires I3/I4 sont présents dans `metrics.jsonl`.
+- Essai réel du protocole v2 (07d51e6, 2026-11-18, laptop, XPU) : `scripts/run_4a.py --variant s --seed 0 --std-s1-observed
+  --max-hours 0 --max-iterations 4 --eval-config <copie de run_s1v2_eval.yaml avec un point toutes les 2 itérations>
+  --runs-root runs/trial_v2_07d51e6 --checkpoints-root checkpoints/trial_v2_07d51e6`. **Coût mesuré d'un point v2
+  (2 × 3 072 épisodes) : 64,6 s et 63,7 s** (26,7 s contre l'aléatoire, 36,8 s contre θ₀) ; 10 points ≈ 11 min, ≈ 3,2 % d'un
+  run de 5,5 h (extrapolé). Journal conforme (SPRT, (b) contre θ₀, touches, `s1_reached_before`).
+- **θ₀ identique** entre std s0 (`checkpoints/run_4a_std_s0/eval_snapshots/ckpt_000000_it00000000.pt`) et GCO-S s0 :
+  SHA-256 des poids de la politique 7fab4c74… pour les deux.
+- Commande de GCO-S graine 0 (après validation) :
+  `vendor/venv-xpu/Scripts/python scripts/run_4a.py --variant s --seed 0 --max-hours 0 --eval-config run_s1v2_eval.yaml
+  --std-s1-observed`. Le drapeau `--std-s1-observed` est le garde-fou d'ADR-005 D3 ; ici il vaut levée par D4 de cet ADR.
+
 ## Points à valider par l'utilisateur
 1. Statut de 4a : exploratoire ; K1 non déclenché ; H1 non concluante ; G3 fermé.
 2. S1-seed v2 : tous les 0,1B, 3 072 + 3 072 épisodes, SPRT sans plancher, 2 points consécutifs, confirmation 20 000 épisodes

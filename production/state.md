@@ -21,8 +21,9 @@ Mis à jour : 2026-11-18 (Phase 4a : runs GCO-std faits, protocole v2 en prépar
 ## Prochaines actions
 1. **ADR-006** (protocole S1 v2, levée de D3 pour GCO-S seed 0, règle de décision, critère de succès,
    instrumentation) : en rédaction par `research-director`, **à valider par l'utilisateur**.
-2. Instrumentation exigée par ADR-006, revue, smoke test sur le même commit.
-3. **GCO-S seed 0** (1B, ≈ 5,5 h) : lancé par l'utilisateur après validation d'ADR-006.
+2. Instrumentation I1 à I4 **faite** (07d51e6, revues APPROVE), smoke test **PASS** sur 07d51e6, essai réel v2 fait
+   (64 s par point, θ₀ identique à std s0) : ADR-006 « Implémentation et vérifications ».
+3. **GCO-S seed 0** (1B, ≈ 5,5 h) : lancé par l'utilisateur après validation d'ADR-006 (commande dans l'ADR).
 4. Puis une seule intervention sur la seed 0 (γ 0,998 si S ≥ std, annealing plus lent sinon), ≈ 5,5 h ; si succès,
    seeds 1 et 2 ; puis préparation de G3 (`configs/long_run.yaml`, kill criteria).
 5. Hors chemin critique : contraste P0 depuis les états génériques ; sonde TPU (`rayhanda/rlgco-probe-tpu`) ;
