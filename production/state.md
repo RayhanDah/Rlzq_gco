@@ -22,10 +22,11 @@ Mis à jour : 2026-11-19 (Phase 4a : GCO-std ×3 et GCO-S s0 faits, témoin dens
 1. **ADR-006 accepté** (2026-11-18). **GCO-S s0 fait** (2026-11-19, `docs/reports/gcos_s0.md`) : S1-seed à **0,2B**,
    confirmé hors ligne ; à 1B 4,31 % de victoires par épisode contre 2,40 % pour std s0 (une graine) ; touche 14,6 %.
    Règle D5 : S ≥ std, intervention désignée (2) γ 0,998 (ADR-007, proposé).
-2. **ADR-011 accepté** (GO utilisateur 2026-11-19) : témoin dense HORS SPEC, diagnostic du pipeline. Code en cours
-   (branche `diag-dense` sur `phase4b`) ; revue, fusion, smoke ; **lancement seulement sur GO de l'utilisateur**.
-3. **SIL prête** (ADR-009 proposé, amendé après revue : mode joint, `disp_share`) : branche `phase4b` (0805c01, revues
-   APPROVE), désactivée par défaut ; banc D7 ≤ 30 min (calibrage de c_sil, RAM, float16) avant tout run, sur demande.
+2. **ADR-011 accepté** (GO utilisateur 2026-11-19) : témoin dense HORS SPEC, diagnostic du pipeline. **Prêt** : revue
+   APPROVE, fusionné (015c65d), smoke PASS standard et dense, essai du lanceur (ADR-011 « Implémentation »).
+   **Lancement seulement sur GO de l'utilisateur** : `scripts/run_4a.py --variant diag_dense --seed 0 --max-hours 3`.
+3. **SIL dans main** (ADR-009 proposé, amendé après revue : mode joint, `disp_share` ; revues APPROVE), désactivée par
+   défaut ; banc D7 ≤ 30 min (calibrage de c_sil, RAM, float16) avant tout run, sur demande.
 4. Ordre recommandé par `research-director` : témoin dense, puis SIL, puis ADR-007, puis tâche auxiliaire (ADR-010,
    esquisse). À valider par l'utilisateur (ADR-009, ADR-007). Ensuite seeds 1 et 2, puis préparation de G3.
 5. Contraste P0 générique **mesuré** (ADR-005 : 0,15 but/min par camp, 7 à 8,5 × le kickoff). Hors chemin critique : sonde TPU (`rayhanda/rlgco-probe-tpu`) ;
