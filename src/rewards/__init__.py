@@ -8,7 +8,9 @@ from rewards.config import (
     RewardVariant,
     VariantRules,
     rules_for,
+    uses_shaping,
 )
+from rewards.dense import KinematicState, dense_shaping
 from rewards.gco import (
     GoalNet,
     RewardFunction,
@@ -25,15 +27,18 @@ __all__ = [
     "PHYSICS_TICK_RATE_HZ",
     "SPEC_VERSION",
     "GoalNet",
+    "KinematicState",
     "RewardConfig",
     "RewardFunction",
     "RewardVariant",
     "StepOutcome",
     "Team",
     "VariantRules",
+    "dense_shaping",
     "episode_end",
     "gco_team_rewards",
     "make_reward",
     "rules_for",
     "scorer_only_rewards",
+    "uses_shaping",
 ]

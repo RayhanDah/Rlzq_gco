@@ -46,6 +46,7 @@ from training.checkpoint import (
     CheckpointIncompatibleError,
     CheckpointManager,
     check_identity,
+    require_in_spec,
 )
 
 F32Array = npt.NDArray[np.float32]
@@ -125,6 +126,7 @@ def load_checkpoint_policy(
     obs_dim: int,
     tick_skip: int,
     device: str | torch.device = "cpu",
+    purpose: Literal["eval", "training_opponent", "export"] = "eval",
 ) -> tuple[NetPolicy, PolicyInfo]:
     """Charge la politique d'un checkpoint (somme de contrôle vérifiée avant désérialisation, `weights_only`).
 
@@ -135,6 +137,8 @@ def load_checkpoint_policy(
     p = Path(path)
     raw = p.read_bytes()
     state = CheckpointManager.load(p)
+    if purpose != "eval":
+        require_in_spec(state, purpose)  # ADR-011 D2 : un checkpoint HORS SPEC ne sert qu'à l'évaluation
     saved = state["identity"]
     expected = replace(
         CheckpointIdentity.current(
@@ -174,11 +178,14 @@ def load_policy(
     obs_dim: int,
     tick_skip: int,
     device: str | torch.device = "cpu",
+    purpose: Literal["eval", "training_opponent", "export"] = "eval",
 ) -> tuple[Policy, PolicyInfo]:
-    """`"random"` -> agent aléatoire ; sinon chemin d'un checkpoint."""
+    """`"random"` -> agent aléatoire ; sinon chemin d'un checkpoint (`purpose` : voir `load_checkpoint_policy`)."""
     if spec == "random":
         return RandomPolicy(seed), PolicyInfo(kind="random")
-    return load_checkpoint_policy(spec, mode=mode, seed=seed, obs_dim=obs_dim, tick_skip=tick_skip, device=device)
+    return load_checkpoint_policy(
+        spec, mode=mode, seed=seed, obs_dim=obs_dim, tick_skip=tick_skip, device=device, purpose=purpose
+    )
 
 
 # ------------------------------------------------------------------------------------------------ kickoffs appariés

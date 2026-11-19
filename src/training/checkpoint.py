@@ -222,6 +222,34 @@ def capture(
     }
 
 
+HORS_SPEC_LABEL = "HORS SPEC"
+
+
+def off_spec_reward_variant(state: Mapping[str, Any]) -> str | None:
+    """Nom de la variante de récompense du checkpoint si elle est HORS SPEC (`dense-diag`, `scorer-only`), sinon None.
+    Lu dans `train_config["reward"]["variant"]` (écrit par `capture`) ; absent ou inconnu : None (rien à refuser ici,
+    `check_identity` compare le hash de récompense)."""
+    from rewards import RewardVariant, rules_for
+
+    reward = (state.get("train_config") or {}).get("reward") or {}
+    try:
+        variant = RewardVariant(str(reward.get("variant")))
+    except ValueError:
+        return None
+    return None if rules_for(variant).in_spec else variant.value
+
+
+def require_in_spec(state: Mapping[str, Any], purpose: str) -> None:
+    """Refuse (`CheckpointIncompatibleError`) un checkpoint HORS SPEC pour `purpose` : « init » (initialiser un run),
+    « training_opponent » (pool, adversaire), « export » (RLBot). ADR-011 D2 : un checkpoint `dense-diag`
+    ne sert qu'à l'évaluation. Aucun chemin d'export n'existe encore : ce garde-fou est appelé par tout chargement."""
+    variant = off_spec_reward_variant(state)
+    if variant is not None:
+        raise CheckpointIncompatibleError(
+            f"checkpoint {HORS_SPEC_LABEL} (récompense {variant}) refusé pour {purpose} : évaluation seule (ADR-011)"
+        )
+
+
 def check_identity(
     state: Mapping[str, Any],
     expected: CheckpointIdentity,
@@ -238,6 +266,13 @@ def check_identity(
         for k, v in dataclasses.asdict(expected).items()
         if saved.get(k) != v
     ]
+    off_spec = off_spec_reward_variant(state)
+    if off_spec is not None and saved.get("reward_config_hash") != expected.reward_config_hash:
+        # ADR-011 D2 : un checkpoint hors spec n'initialise jamais un run d'une autre récompense (message explicite)
+        raise CheckpointIncompatibleError(
+            f"checkpoint {HORS_SPEC_LABEL} (récompense {off_spec}) refusé pour initialiser ce run : "
+            "hash de récompense différent (ADR-011 D2)"
+        )
     if train_config is not None and state["train_config_hash"] != hash_config(train_config):
         diffs.append("train_config_hash: la configuration d'entraînement a changé")
     if diffs:

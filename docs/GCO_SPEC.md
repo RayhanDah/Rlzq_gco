@@ -161,6 +161,8 @@ Facteurs de dégradation à appliquer :
 6. Pas de fuite : la récompense ne dépend que de l'événement « but » (mock de l'état : toute autre variable modifiée laisse r inchangé).
 7. Interface de variantes : `GCO-S`, `GCO-std`, `GCO-ext` et le scorer-only (hors spec, ablation) sont instanciables par config.
    Le hash de la config de récompense est écrit dans chaque checkpoint.
+   Variante supplémentaire **hors spec**, diagnostic, jamais promue : `dense-diag` (§2.1 + façonnage dense par pas, pas de
+   zéro-somme exact ; `src/rewards/dense.py`), run témoin de l'ADR-011. Les tests 1 à 6 ne portent que sur les variantes in-spec.
 8. Non-régression : toute modification de `src/rewards/` exige une mise à jour de cette spec et un ADR.
 
 ## 8. Implications pour la conception
