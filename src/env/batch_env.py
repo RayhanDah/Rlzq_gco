@@ -25,7 +25,7 @@ from env.sim_adapter import Simulator
 from obs import build_obs as default_build_obs
 from obs.schema import obs_dim as schema_obs_dim
 from obs.state import BatchState
-from rewards import GoalNet, RewardFunction
+from rewards import GoalNet, RewardFunction, uses_shaping
 
 F32Array = npt.NDArray[np.float32]
 I64Array = npt.NDArray[np.int64]
@@ -221,7 +221,10 @@ class BatchEnv:
 
         state = sim.state()
         scorer = None if self._cfg.rules.team_attribution else self._last_toucher
-        out = self._reward.step(goal_net, state.car_team, self._ticks_since_touch, self._episode_ticks, scorer)
+        if uses_shaping(self._cfg.variant):  # `dense-diag` (HORS SPEC, ADR-011) : état de fin de pas, avant tout reset
+            out = self._reward.dense_step(goal_net, state.car_team, self._ticks_since_touch, self._episode_ticks, state)
+        else:
+            out = self._reward.step(goal_net, state.car_team, self._ticks_since_touch, self._episode_ticks, scorer)
 
         obs = self._as_obs(self._build_obs(state, self._prev_idx))
         done = out.terminated | out.truncated

@@ -39,6 +39,8 @@ class RewardVariant(StrEnum):
     GCO_STD = "GCO-std"
     GCO_EXT = "GCO-ext"
     SCORER_ONLY = "scorer-only"
+    DENSE_DIAG = "dense-diag"
+    """HORS SPEC (ADR-011) : §2.1 + façonnage dense (`rewards.dense`), run témoin de diagnostic, jamais promu."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,22 +84,24 @@ _GCO_S_RULES = VariantRules(
     demonstrations=False,
 )
 
+_GCO_STD_RULES = VariantRules(
+    in_spec=True,
+    ablation_only=False,
+    team_attribution=True,
+    generic_initial_states=True,
+    targeted_initial_states=False,
+    external_opponents=False,
+    learned_advantage_signals=True,
+    intrinsic_bonuses=True,
+    learned_signals_require_c1_c4=True,
+    self_imitation=True,
+    auxiliary_tasks=True,
+    demonstrations=False,
+)
+
 _RULES: dict[RewardVariant, VariantRules] = {
     RewardVariant.GCO_S: _GCO_S_RULES,
-    RewardVariant.GCO_STD: VariantRules(
-        in_spec=True,
-        ablation_only=False,
-        team_attribution=True,
-        generic_initial_states=True,
-        targeted_initial_states=False,
-        external_opponents=False,
-        learned_advantage_signals=True,
-        intrinsic_bonuses=True,
-        learned_signals_require_c1_c4=True,
-        self_imitation=True,
-        auxiliary_tasks=True,
-        demonstrations=False,
-    ),
+    RewardVariant.GCO_STD: _GCO_STD_RULES,
     RewardVariant.GCO_EXT: VariantRules(
         in_spec=True,
         ablation_only=True,
@@ -116,12 +120,21 @@ _RULES: dict[RewardVariant, VariantRules] = {
     RewardVariant.SCORER_ONLY: VariantRules(
         **{**asdict(_GCO_S_RULES), "in_spec": False, "ablation_only": True, "team_attribution": False}
     ),
+    # ADR-011 : règles de GCO-std (le témoin partage l'env, les états initiaux et le PPO de std s0), mais hors spec et
+    # ablation seulement. Le façonnage ne se lit pas dans les règles (le hash des variantes existantes ne doit pas
+    # changer) : voir `uses_shaping`.
+    RewardVariant.DENSE_DIAG: VariantRules(**{**asdict(_GCO_STD_RULES), "in_spec": False, "ablation_only": True}),
 }
 
 
 def rules_for(variant: RewardVariant) -> VariantRules:
     """Règles déclarées de `variant` (tableau §3)."""
     return _RULES[variant]
+
+
+def uses_shaping(variant: RewardVariant) -> bool:
+    """Vrai si la récompense ajoute un façonnage à §2.1 (seulement `dense-diag`, HORS SPEC, ADR-011)."""
+    return variant is RewardVariant.DENSE_DIAG
 
 
 def _seconds_to_ticks(name: str, seconds: float) -> int:

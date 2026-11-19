@@ -57,12 +57,13 @@ import torch
 from env import BatchEnv, InitialStateSampler, RocketGPUSimulator, Simulator
 from env.batch_env import ObsBuilder
 from models import PolicyNet, ValueNet
-from rewards import RewardFunction
+from rewards import RewardFunction, RewardVariant, rules_for
 
 if TYPE_CHECKING:
     from training.evalhook import EvalHook
 import training.logging as training_logging
 from training.checkpoint import (
+    HORS_SPEC_LABEL,
     CheckpointIdentity,
     CheckpointManager,
     capture,
@@ -306,6 +307,14 @@ class _StopSignal:
         self._event.set()
 
 
+def _spec_label(cfg: RunConfig) -> dict[str, Any]:
+    """Étiquette « HORS SPEC » (ADR-011 D2) pour une récompense hors spec (`dense-diag`, `scorer-only`) : dans
+    `run_meta.json`, l'événement `start` et chaque ligne de `segments.jsonl`. Vide pour les variantes de la spec."""
+    if rules_for(RewardVariant(cfg.reward.variant)).in_spec:
+        return {}
+    return {"hors_spec": True, "label": HORS_SPEC_LABEL, "reward_variant": cfg.reward.variant}
+
+
 def _meta(
     cfg: RunConfig,
     device: torch.device,
@@ -316,6 +325,7 @@ def _meta(
     commit: str,
 ) -> dict[str, Any]:
     return {
+        **_spec_label(cfg),
         "name": cfg.name,
         "resume": resume,
         "start_iteration": start_iteration,
@@ -605,7 +615,14 @@ def run(
     try:
         _append_jsonl(
             out / EVENTS_FILE,
-            {"event": "start", "t": time.time(), "meta_file": meta_path.name, "note": start_note, "resume": resume},
+            {
+                "event": "start",
+                "t": time.time(),
+                "meta_file": meta_path.name,
+                "note": start_note,
+                "resume": resume,
+                **_spec_label(cfg),
+            },
         )
         if not resume:
             if pool is not None:
@@ -814,7 +831,7 @@ def run(
         s1_iteration=s1_iteration,
         error=error_info,
     )
-    row = summary.as_dict()
+    row = {**_spec_label(cfg), **summary.as_dict()}
     row["steps_per_s"] = [x if math.isfinite(x) else None for x in sps]
     if failure is not None:
         try_append_jsonl(out / SEGMENTS_FILE, {"t": time.time(), **row})

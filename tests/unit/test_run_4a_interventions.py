@@ -262,3 +262,49 @@ def test_reprise_et_refus_apres_stop_pour_une_intervention(tmp_path: Path, varia
     (out / "segments.jsonl").write_text('{"status": "completed"}\n', encoding="utf-8")
     code, report = r4.launch(variant, 0, config_dir=CONFIGS, **kw)
     assert (code, report["run"], report["status"], report["session_mode"]) == (0, name, "completed", "none")
+
+
+# ------------------------------------------------------------------------------ témoin dense HORS SPEC (ADR-011)
+
+
+def test_diag_dense_ne_differe_de_std_que_par_la_recompense() -> None:
+    std_raw = yaml.safe_load((CONFIGS / "run_4a_std.yaml").read_text(encoding="utf-8"))
+    dd_raw = yaml.safe_load((CONFIGS / r4.DIAGNOSTICS["diag_dense"]).read_text(encoding="utf-8"))
+    std_cfg = RunConfig.from_yaml(CONFIGS / "run_4a_std.yaml").to_dict()
+    dd_cfg = RunConfig.from_yaml(CONFIGS / "diag_dense.yaml").to_dict()
+    expected = {("reward", "variant"): ("GCO-std", "dense-diag"), ("name",): ("run_4a_std", "diag_dense")}
+    assert _diff(std_raw, dd_raw) == expected
+    assert _diff(std_cfg, dd_cfg) == expected
+
+
+def test_diag_dense_nom_config_eval_et_parseur(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[argparse.Namespace] = []
+
+    def fake_supervise(args: argparse.Namespace, max_hours: float | None) -> int:
+        captured.append(args)
+        return 0
+
+    monkeypatch.setattr(r4, "_supervise_main", fake_supervise)
+    assert r4.run_name("diag_dense", 0) == "diag_dense_s0" and r4.config_file("diag_dense") == "diag_dense.yaml"
+    assert r4.default_eval_config("diag_dense") == "run_s1v2_eval.yaml"
+    assert "diag_dense" not in r4.INTERVENTIONS  # pas une intervention GCO-std
+    assert r4.main(["--variant", "diag_dense", "--seed", "0", "--allow-dirty"]) == 0
+    assert (captured[0].variant, captured[0].eval_config) == ("diag_dense", "run_s1v2_eval.yaml")
+
+
+def test_launch_diag_dense_et_refus_si_la_config_n_est_pas_dense(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[tuple[Any, EvalHookConfig]] = []
+    _capture_launch(monkeypatch, seen)
+    kw: dict[str, Any] = {"max_hours": None, "runs_root": tmp_path / "r", "checkpoints_root": tmp_path / "c"}
+    with pytest.raises(_Stop):
+        r4.launch("diag_dense", 0, config_dir=CONFIGS, **kw)
+    ((cfg, hook),) = seen
+    assert (cfg.name, cfg.seed, cfg.reward.variant, hook.protocol) == ("diag_dense_s0", 0, "dense-diag", "s1_v2")
+    cdir = tmp_path / "configs"
+    cdir.mkdir()
+    shutil.copy(CONFIGS / "run_4a_std.yaml", cdir / "diag_dense.yaml")
+    shutil.copy(CONFIGS / "run_s1v2_eval.yaml", cdir / "run_s1v2_eval.yaml")
+    with pytest.raises(ValueError, match="dense-diag attendu"):
+        r4.launch("diag_dense", 0, config_dir=cdir, **kw)

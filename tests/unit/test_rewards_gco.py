@@ -306,7 +306,9 @@ def test_7_7_variantes_instanciables_par_config() -> None:
 
 
 def test_7_7_regles_des_variantes_transcrivent_le_tableau_3() -> None:
-    s, std, ext, so = (rules_for(v) for v in RewardVariant)
+    s, std, ext, so = (
+        rules_for(v) for v in RewardVariant if v is not RewardVariant.DENSE_DIAG
+    )  # dense-diag : test_rewards_dense.py
     assert not any([s.generic_initial_states, s.learned_advantage_signals, s.intrinsic_bonuses, s.self_imitation])
     assert std.generic_initial_states and std.learned_advantage_signals and std.self_imitation and std.auxiliary_tasks
     assert not std.targeted_initial_states and not std.external_opponents and not std.demonstrations

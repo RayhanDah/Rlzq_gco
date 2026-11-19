@@ -24,6 +24,11 @@ Interventions (ADR-006 D5, ADR-007, ADR-008, ADR-009) : `--variant int_gamma998`
 `<variante>_s<seed>`, avec les mêmes garanties (sessions enfants, reprise après perte du GPU, refus après STOP, arbre
 propre). Évaluation par défaut : `run_s1v2_eval.yaml` (protocole d'ADR-006). Pas de garde-fou GCO-S : des GCO-std.
 
+Témoin HORS SPEC (ADR-011) : `--variant diag_dense` lance `configs/diag_dense.yaml`
+(récompense `dense-diag`, seul levier
+contre std s0) sous le nom `diag_dense_s<seed>`, mêmes garanties de session ; run étiqueté « HORS SPEC » dans run_meta,
+events et segments, jamais promu (ses checkpoints ne servent qu'à l'évaluation, `training.checkpoint.require_in_spec`).
+
 Enchaînement et reprise automatique (décision de l'utilisateur du 2026-11-15, runs lancés la nuit) :
 `--seed 1 2` enchaîne les runs ; le suivant ne démarre que si le précédent est terminé (budget atteint). Chaque
 session tourne dans un processus enfant (`--child`) : après une perte du GPU par le pilote
@@ -64,6 +69,8 @@ INTERVENTIONS = {
     "int_slow_anneal": "int_slow_anneal.yaml",
     "int_sil": "int_sil.yaml",  # ADR-009 (proposé) : self-imitation, bloc `sil` seul ajouté
 }
+# Témoin de diagnostic HORS SPEC (ADR-011) : récompense dense-diag, une seule modification par rapport à std s0.
+DIAGNOSTICS = {"diag_dense": "diag_dense.yaml"}
 EVAL_CONFIG = "run_4a_eval.yaml"
 INTERVENTION_EVAL_CONFIG = "run_s1v2_eval.yaml"  # ADR-006 D2, D3 : protocole S1-seed v2
 EXIT_OK, EXIT_ERROR, EXIT_KILL, EXIT_DEVICE_LOST = 0, 1, 3, 4
@@ -81,7 +88,9 @@ def config_file(variant: str) -> str:
         return VARIANTS[variant]
     if variant in INTERVENTIONS:
         return INTERVENTIONS[variant]
-    raise ValueError(f"variante {variant!r} : {sorted(VARIANTS) + sorted(INTERVENTIONS)} attendu")
+    if variant in DIAGNOSTICS:
+        return DIAGNOSTICS[variant]
+    raise ValueError(f"variante {variant!r} : {sorted(VARIANTS) + sorted(INTERVENTIONS) + sorted(DIAGNOSTICS)} attendu")
 
 
 def run_name(variant: str, seed: int) -> str:
@@ -89,12 +98,12 @@ def run_name(variant: str, seed: int) -> str:
     config_file(variant)
     if seed < 0:
         raise ValueError(f"seed={seed} : >= 0 attendu")
-    return f"{variant}_s{seed}" if variant in INTERVENTIONS else f"run_4a_{variant}_s{seed}"
+    return f"{variant}_s{seed}" if variant in INTERVENTIONS or variant in DIAGNOSTICS else f"run_4a_{variant}_s{seed}"
 
 
 def default_eval_config(variant: str) -> str:
     """Config d'évaluation par défaut : S1-léger pour std et s (inchangé), S1-seed v2 pour une intervention."""
-    return INTERVENTION_EVAL_CONFIG if variant in INTERVENTIONS else EVAL_CONFIG
+    return INTERVENTION_EVAL_CONFIG if variant in INTERVENTIONS or variant in DIAGNOSTICS else EVAL_CONFIG
 
 
 def has_checkpoint(ck_dir: Path) -> bool:
@@ -290,6 +299,8 @@ def launch(
     cfg = RunConfig.from_yaml(config_dir / config_file(variant))
     if variant in INTERVENTIONS and cfg.reward.variant != "GCO-std":
         raise ValueError(f"intervention {variant} : GCO-std attendu (ADR-006 D5), {cfg.reward.variant} trouvé")
+    if variant in DIAGNOSTICS and cfg.reward.variant != "dense-diag":
+        raise ValueError(f"diagnostic {variant} : dense-diag attendu (ADR-011), {cfg.reward.variant} trouvé")
     cfg = dataclasses.replace(cfg, name=name, seed=seed)
     if device:
         cfg = dataclasses.replace(cfg, device=device)
@@ -334,10 +345,10 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument(
         "--variant",
-        choices=sorted(VARIANTS) + sorted(INTERVENTIONS),
+        choices=sorted(VARIANTS) + sorted(INTERVENTIONS) + sorted(DIAGNOSTICS),
         required=True,
         help="std = GCO-std, s = GCO-S ; int_gamma998 (ADR-007), int_slow_anneal (ADR-008), int_sil (ADR-009) : "
-        "interventions GCO-std",
+        "interventions GCO-std ; diag_dense (ADR-011) : témoin à récompense dense, HORS SPEC, jamais promu",
     )
     ap.add_argument("--seed", type=int, nargs="+", required=True, help="0, 1 ou 2 (ADR-005 D3) ; plusieurs : enchaînés")
     ap.add_argument("--max-hours", type=float, default=7.5, help="durée murale par run (défaut 7,5 h ; 0 = aucune)")

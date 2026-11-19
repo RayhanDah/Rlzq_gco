@@ -28,7 +28,8 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
-from rewards.config import RewardConfig, RewardVariant
+from rewards.config import RewardConfig, RewardVariant, uses_shaping
+from rewards.dense import KinematicState, dense_shaping
 
 FloatArray = npt.NDArray[np.float32]
 BoolArray = npt.NDArray[np.bool_]
@@ -172,7 +173,11 @@ class RewardFunction:
     def rewards(
         self, goal_net: npt.ArrayLike, agent_team: npt.ArrayLike, scorer: npt.ArrayLike | None = None
     ) -> FloatArray:
-        """Récompenses (E, A). `scorer` est exigé par scorer-only et refusé par les variantes GCO (choix A10)."""
+        """Récompenses (E, A). `scorer` est exigé par scorer-only et refusé par les variantes GCO (choix A10).
+
+        Signature fermée (§7.6) : `dense-diag` (HORS SPEC, ADR-011) lit l'état et passe par `dense_rewards`."""
+        if uses_shaping(self.variant):
+            raise ValueError(f"{self.variant.value} : lit l'état de fin de pas, utiliser dense_rewards / dense_step")
         if self._config.rules.team_attribution:
             if scorer is not None:
                 raise ValueError(f"{self.variant.value} : le signal ne dépend pas du buteur, scorer doit être None")
@@ -180,6 +185,21 @@ class RewardFunction:
         if scorer is None:
             raise ValueError(f"{self.variant.value} : scorer est requis")
         return scorer_only_rewards(goal_net, agent_team, scorer)
+
+    def dense_rewards(self, goal_net: npt.ArrayLike, agent_team: npt.ArrayLike, state: KinematicState) -> FloatArray:
+        """`dense-diag` seulement (HORS SPEC, ADR-011 D1) : §2.1 exact + façonnage de `rewards.dense`, état en fin de
+        pas. Le façonnage s'applique à TOUS les pas, buts et troncatures compris (récompense par pas) ; le zéro-somme
+        exact de §2.1 n'y tient plus."""
+        if not uses_shaping(self.variant):
+            raise ValueError(f"{self.variant.value} : le signal ne dépend pas de l'état, dense_rewards refusé")
+        base = gco_team_rewards(goal_net, agent_team)
+        teams = _agent_team(agent_team, base.shape[0])
+        if not np.array_equal(teams, np.broadcast_to(np.asarray(state.car_team), teams.shape)):
+            raise ValueError("agent_team != state.car_team")
+        shaping = dense_shaping(state)
+        if shaping.shape != base.shape:
+            raise ValueError(f"façonnage {shaping.shape} != récompense {base.shape}")
+        return (base + shaping).astype(np.float32, copy=False)
 
     def episode_end(
         self, goal_net: npt.ArrayLike, ticks_since_touch: npt.ArrayLike, episode_ticks: npt.ArrayLike
@@ -196,6 +216,19 @@ class RewardFunction:
     ) -> StepOutcome:
         """Récompenses et drapeaux de fin pour un step de décision sur E arènes."""
         rewards = self.rewards(goal_net, agent_team, scorer)
+        terminated, truncated = self.episode_end(goal_net, ticks_since_touch, episode_ticks)
+        return StepOutcome(rewards=rewards, terminated=terminated, truncated=truncated)
+
+    def dense_step(
+        self,
+        goal_net: npt.ArrayLike,
+        agent_team: npt.ArrayLike,
+        ticks_since_touch: npt.ArrayLike,
+        episode_ticks: npt.ArrayLike,
+        state: KinematicState,
+    ) -> StepOutcome:
+        """`step` de `dense-diag` (HORS SPEC) : mêmes fins d'épisode (§2.2), récompense `dense_rewards`."""
+        rewards = self.dense_rewards(goal_net, agent_team, state)
         terminated, truncated = self.episode_end(goal_net, ticks_since_touch, episode_ticks)
         return StepOutcome(rewards=rewards, terminated=terminated, truncated=truncated)
 
