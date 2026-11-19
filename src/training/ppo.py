@@ -168,8 +168,8 @@ class Learner:
 
     `sil` : self-imitation (`training.sil`) si fournie et `enabled` ; sinon (défaut) aucun objet SIL n'existe et la
     mise à jour est celle du PPO seul. Activée : chaque lot entre dans le suivi des épisodes avant la mise à jour, puis
-    les pas SIL suivent les epochs PPO (mode `separate`, optimiseur `sil_optimizer`, Adam distinct par défaut) ou
-    s'ajoutent à chaque minibatch PPO (mode `joint`).
+    un lot SIL s'ajoute à chaque minibatch PPO, même optimiseur (mode `joint`, ADR-009 D3 amendé, défaut), ou des pas
+    SIL suivent les epochs PPO avec `sil_optimizer` (mode `separate`, Adam distinct par défaut).
     """
 
     def __init__(
@@ -238,8 +238,9 @@ class Learner:
         return torch.cat([self.value(c) for c in chunks])
 
     def update(self, batch: RolloutBatch) -> PPOStats:
-        """Une mise à jour PPO sur `batch`. Avec la SIL : `grad_norm` est la norme du gradient TOTAL (PPO + SIL)
-        avant clip ; les normes séparées sont dans `sil` (`SILStats`)."""
+        """Une mise à jour PPO sur `batch`. `grad_norm` : norme globale (π et V) avant clip du gradient appliqué par
+        l'optimiseur PPO, moyenne des minibatchs ; en mode SIL `joint` avec un lot SIL, c'est celle du gradient TOTAL
+        (PPO + SIL) ; en mode `separate`, celle de PPO seul. Les normes séparées sur π sont dans `sil` (`SILStats`)."""
         cfg, dev = self.cfg, self.device
         staleness = self.version - batch.policy_version
         if not 0 <= staleness <= cfg.max_staleness:
@@ -289,6 +290,9 @@ class Learner:
                 learned_per_iteration=n_samples,
                 device=dev,
                 n_ppo_steps=cfg.epochs * n_mb,
+                generic=batch.ep_generic,
+                policy_params=self.policy_params,
+                ppo_optimizer=self.optimizer,
             )
 
         def advantages() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -331,17 +335,19 @@ class Learner:
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 if sil_it is not None:  # journal C4 ; mode joint : gradient de c_sil·L_sil ajouté avant le clip
-                    sil_it.note_ppo_grad(self.policy_params)
-                    sil_it.joint_step(self.policy, self.value, self.policy_params)
+                    sil_it.note_ppo_grad()
+                    sil_it.joint_step(self.policy, self.value)
                 grad_norm = torch.nn.utils.clip_grad_norm_(self.params, cfg.max_grad_norm)
                 self.optimizer.step()
+                if sil_it is not None:  # mode joint : moments fantômes, part de déplacement (ADR-009 D5)
+                    sil_it.after_ppo_step(grad_norm, cfg.max_grad_norm)
                 with torch.no_grad():
                     kl = ((ratio - 1.0) - logratio).mean()
                     clip_frac = ((ratio - 1.0).abs() > cfg.clip).float().mean()
                     acc += torch.stack([pg_loss.detach(), v_loss.detach(), ent.detach(), kl, clip_frac, grad_norm])
         assert first is not None
         if sil_it is not None:  # mode separate : pas SIL après les epochs PPO, optimiseur SIL distinct
-            sil_it.separate_steps(self.policy, self.value, self.params, self.policy_params, lr)
+            sil_it.separate_steps(self.policy, self.value, self.params, lr)
         # Une seule lecture hôte par itération (ADR-001 M4).
         vals = torch.cat([acc / (cfg.epochs * n_mb), first]).tolist()
         self.version += 1

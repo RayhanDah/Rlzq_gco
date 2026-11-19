@@ -19,7 +19,8 @@ CONFIGS = ROOT / "configs"
 EXPECTED_DIFF: dict[str, dict[tuple[str, ...], tuple[Any, Any]]] = {
     "int_gamma998": {("ppo", "gamma"): (0.995, 0.998)},
     "int_slow_anneal": {("initial_states", "anneal_timesteps"): (500_000_000, 1_000_000_000)},
-    # ADR-009 : un seul bloc ajouté, `sil` (absent de std), avec les valeurs de l'ADR (D1–D5, KS1, KS2)
+    # ADR-009 amendé : un seul bloc ajouté, `sil` (absent de std), valeurs de l'ADR (D1–D5, KS1, KS2) ; mode joint :
+    # `updates_per_iteration` et `max_grad_norm` absents (None des deux côtés, donc hors du diff)
     "int_sil": {
         ("sil", k): (None, v)
         for k, v in {
@@ -28,10 +29,8 @@ EXPECTED_DIFF: dict[str, dict[tuple[str, ...], tuple[Any, Any]]] = {
             "anneal_start_timesteps": 500_000_000,
             "anneal_end_timesteps": 900_000_000,
             "value_coef": 0.01,
-            "mode": "separate",
-            "updates_per_iteration": 2,
-            "batch_size": 8192,
-            "max_grad_norm": 0.5,
+            "mode": "joint",
+            "batch_size": 4096,
             "capacity": 250_000,
             "horizon_steps": 300,
             "priority_alpha": 0.6,
@@ -39,10 +38,10 @@ EXPECTED_DIFF: dict[str, dict[tuple[str, ...], tuple[Any, Any]]] = {
             "is_beta": 0.1,
             "keep_conceded": False,
             "store_float16": True,
-            "rho_alert": 0.5,
-            "rho_alert_patience": 50,
-            "rho_stop": 0.8,
-            "rho_stop_patience": 500,
+            "share_alert": 0.5,
+            "share_alert_patience": 50,
+            "share_stop": 0.8,
+            "share_stop_patience": 500,
             "ram_min_available_mb": 1000.0,
             "ram_low_max_s": 600.0,
         }.items()

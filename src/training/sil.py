@@ -1,6 +1,6 @@
 """Self-imitation learning (SIL, Oh et al. 2018, « Self-Imitation Learning », ICML, arXiv:1806.05635) pour la boucle
-PPO : intervention (3) de l'ADR-005 D6, réglages de l'ADR-009 (proposé), autorisée en GCO-std (`docs/GCO_SPEC.md` §3),
-désactivée par défaut.
+PPO : intervention (3) de l'ADR-005 D6, réglages de l'ADR-009 (proposé, amendé le 2026-11-19), autorisée en GCO-std
+(`docs/GCO_SPEC.md` §3), désactivée par défaut.
 
 Perte (papier §3, éq. 1–3), sur des transitions (s, a, R) rejouées, avec poids d'importance w :
     L_sil = c_sil(t) · moyenne[ w · ( −log π(a|s)·(R − V(s))₊ + β·½·((R − V(s))₊)² ) ],
@@ -10,12 +10,15 @@ et al. 2016). Poids w_i = (N·P(i))^(−β_is) / max_j w_j = (p_i / p_min)^(−�
 
 Conditions C1–C4 (spec §3, ADR-009 D6) :
 - C1 : R vient uniquement de la récompense ±1 de l'env (`RolloutBatch.rew`), du drapeau `term`, de `learn_mask` et de
-  γ = `ppo.gamma`. Une récompense non nulle hors terminal lève une erreur (hypothèse §2.1 violée).
+  γ = `ppo.gamma`. Une récompense non nulle hors terminal lève une erreur (hypothèse §2.1 violée). L'origine de
+  l'épisode (kickoff / générique) est stockée pour le diagnostic seulement : ni le tirage ni la perte ne la lisent.
 - C2 : c_sil = `coef` jusqu'à `anneal_start_timesteps` appris, linéaire jusqu'à 0 à `anneal_end_timesteps`, puis 0 :
-  plus aucun pas ni collecte, buffer et anneau libérés (`released`).
-- C3 : `enabled` (désactivé : le learner n'instancie rien, comportement bit à bit identique au PPO seul).
-- C4 : journal par itération (`SILStats`, `sil/*`) dont rho = |g_π,sil| / (|g_π,sil| + |g_π,ppo|) (normes avant clip
-  sur les paramètres de la politique) ; alerte et arrêts par `sil_guard` (rho, RAM disponible).
+  plus aucun calcul ni collecte, buffer et anneau libérés (`released`).
+- C3 : `enabled` (désactivé : le learner n'instancie rien, comportement bit à bit identique au PPO seul ; c_sil = 0 :
+  aucun calcul SIL dans la mise à jour, trajectoire identique aussi).
+- C4 : journal par itération (`SILStats`, `sil/*`) ; indicateur `disp_share` = part de la SIL dans le DÉPLACEMENT des
+  paramètres de π (ADR-009 D5, ci-dessous) ; `grad_share` (part de gradient avant clip) en diagnostic ; alerte et
+  arrêts par `sil_guard` (disp_share, RAM disponible).
 
 Données (ADR-009 D1) :
 - épisodes terminés par un but (`term`) de l'agent appris (`learn_mask`), récompense +1 seulement par défaut
@@ -23,19 +26,27 @@ Données (ADR-009 D1) :
   n'existe pas, le compléter par V(s′) rendrait la cible circulaire, le traiter comme 0 contredirait la spec §2.2 ;
 - R_t = γ^(T−1−t)·r_T (la transition du but porte R = r_T), exact pour chaque transition gardée ;
 - fenêtre circulaire des `horizon_steps` derniers pas par agent : un épisode plus long perd sa tête, sans biais sur R ;
-- obs stockées en float16 par défaut (`store_float16`, parité testée), actions en int16.
+- obs stockées en float16 par défaut (`store_float16`, parité testée), actions en int16, origine sur 1 octet.
 
 Mises à jour (`mode`) :
-- `separate` (ADR-009 D3, défaut) : après les epochs PPO, `updates_per_iteration` pas SIL de `batch_size` transitions,
-  si le buffer en contient au moins `batch_size`, avec un optimiseur Adam DISTINCT (état PPO jamais modifié), même LR
-  que PPO à l'itération et clip global `max_grad_norm` propre ;
-- `joint` (option) : un minibatch SIL de `batch_size` par minibatch PPO, gradient ajouté à celui de PPO avant le clip,
-  même pas d'optimiseur PPO (aucun optimiseur SIL). Avec un Adam séparé, c_sil n'agit sur le déplacement des poids
-  qu'à travers ε (rapport m̂/(√v̂ + ε)) : effet sous-linéaire. Mesuré le 2026-11-19 (CPU, réseaux v0 initiaux, obs
-  aléatoires, 20 pas de 8 192, script hors dépôt) : |Δθ| = 0,59 / 0,11 / 0,017 pour c_sil = 0,1 / 0,01 / 0,001.
+- `joint` (ADR-009 D3 amendé, défaut) : à chaque minibatch PPO, un lot SIL de `batch_size` transitions (si le buffer
+  en contient au moins autant) ; son gradient s'ajoute à celui de PPO AVANT le clip global de PPO ; même Adam, même LR,
+  aucun optimiseur SIL, aucun pas de plus. `updates_per_iteration` et `max_grad_norm` sont refusés dans ce mode.
+- `separate` (première version de l'ADR-009, gardée en option) : après les epochs PPO, `updates_per_iteration` pas d'un
+  Adam DISTINCT, clip `max_grad_norm` propre. Constat M1 (revue de 414b83f) : c_sil n'y agit sur le déplacement qu'à
+  travers ε ; mesuré le 2026-11-19 (CPU, réseaux v0 initiaux, obs aléatoires, 20 pas de 8 192, script hors dépôt) :
+  |Δθ| = 0,59 / 0,11 / 0,017 pour c_sil = 0,1 / 0,01 / 0,001.
 
-État (reprise exacte, y compris après perte du GPU : tout est en numpy CPU, l'optimiseur SIL passe par son
-`state_dict`) : anneau, buffer (obs, actions, R, priorités, itération d'entrée), générateur, compteurs.
+Part de déplacement (ADR-009 D5), mode joint, paramètres de π seulement, à chaque pas k : g^ppo_k, g^sil_k gradients
+avant clip, f_k facteur du clip global (`min(max_norm / (‖g‖ + 1e-6), 1)`, formule de `clip_grad_norm_`, torch
+2.15.0). Moments fantômes m^x_k = β₁·m^x_(k−1) + (1 − β₁)·f_k·g^x_k, initialisés à m^ppo = `exp_avg`, m^sil = 0 ;
+Δθ^x_k = −(lr / (1 − β₁^t))·m^x_k / (√v_k / √(1 − β₂^t) + ε), v_k = `exp_avg_sq` APRÈS le pas (formule de
+`torch/optim/adam.py`, `_single_tensor_adam`, sans weight decay ni amsgrad). m^ppo + m^sil = `exp_avg`, d'où
+Δθ^ppo_k + Δθ^sil_k = Δθ_k. Par itération D^x = ‖Σ_k Δθ^x_k‖₂ et disp_share = D^sil / (D^sil + D^ppo). Mode separate :
+D^ppo = ‖θ après PPO − θ avant‖, D^sil = ‖θ après SIL − θ après PPO‖ (exact, deux optimiseurs).
+
+État (reprise exacte, y compris après perte du GPU : tout repasse par le CPU) : anneau, buffer (obs, actions, R,
+priorités, itération d'entrée, origine), générateur, compteurs, moments fantômes, optimiseur SIL (mode separate).
 """
 
 from __future__ import annotations
@@ -55,7 +66,8 @@ F32 = npt.NDArray[np.float32]
 BOOL = npt.NDArray[np.bool_]
 SIL_SEED_OFFSET = 104_729  # flux du tirage SIL distinct de celui des permutations PPO (même seed de learner)
 ACTION_DTYPE = np.int16
-MODES = ("separate", "joint")
+MODES = ("joint", "separate")
+CLIP_EPS = 1e-6  # `torch.nn.utils.clip_grad_norm_` (torch 2.15.0, clip_grad.py) : max_norm / (total_norm + 1e-6)
 
 
 class _Optimizer(Protocol):
@@ -72,18 +84,18 @@ class _Optimizer(Protocol):
 
 @dataclass(frozen=True, kw_only=True)
 class SILConfig:
-    """Hyperparamètres SIL. Défauts = ADR-009 (proposé) ; sources : Oh et al. 2018, annexe A, tableau 4 (PPO+SIL) et
-    tableau 3 (A2C+SIL)."""
+    """Hyperparamètres SIL. Défauts = ADR-009 amendé (proposé) ; sources : Oh et al. 2018, annexe A, tableau 4
+    (PPO+SIL) et tableau 3 (A2C+SIL)."""
 
     enabled: bool = False  # C3 : interrupteur ; False = PPO seul, bit à bit
     anneal_start_timesteps: int  # C2 (ADR-009 D4 : 0,5B) : c_sil = coef jusqu'ici (timesteps APPRIS)
     anneal_end_timesteps: int  # C2 (ADR-009 D4 : 0,9B) : c_sil = 0 à partir d'ici
-    coef: float = 0.1  # tableau 4 : « SIL loss weight » 0,1 (tableau 3, A2C : 1)
+    coef: float = 0.1  # tableau 4 : « SIL loss weight » 0,1 ; provisoire, calibré au banc (ADR-009 D5)
     value_coef: float = 0.01  # β ; tableau 3 : 0,01 ; tableau 4 : {0,01 ; 0,05}
-    mode: str = "separate"  # ADR-009 D3 ; "joint" : perte ajoutée aux minibatchs PPO (voir docstring du module)
-    updates_per_iteration: int = 2  # ADR-009 D3 (mode separate)
-    batch_size: int = 8_192  # ADR-009 D3 (tableaux 3–4 : 512 pour des lots PPO de 2 048)
-    max_grad_norm: float = 0.5  # ADR-009 D3 : clip global propre au pas SIL (mode separate)
+    mode: str = "joint"  # ADR-009 D3 amendé ; "separate" : Adam distinct (première version)
+    batch_size: int = 4_096  # ADR-009 D3 : lot SIL par minibatch PPO (mode joint)
+    updates_per_iteration: int | None = None  # mode separate seulement (refusé en joint)
+    max_grad_norm: float | None = None  # mode separate seulement : clip propre au pas SIL (refusé en joint)
     capacity: int = 250_000  # ADR-009 D3 : plafond RAM (tableau 4 : 50 000) ; en transitions, éviction FIFO
     horizon_steps: int = 300  # ADR-009 D1 : 20 s à 15 Hz avant le but (écart au papier, qui garde l'épisode)
     priority_alpha: float = 0.6  # tableau 3 : 0,6 ; tableau 4 : {0,6 ; 1,0}
@@ -91,14 +103,15 @@ class SILConfig:
     is_beta: float = 0.1  # tableau 4 : « Bias correction for prioritized replay » 0,1 (convention de Schaul)
     keep_conceded: bool = False  # ADR-009 D1 : épisodes perdants exclus en v1
     store_float16: bool = True  # ADR-009 D1 : sous réserve du test de parité D7-5
-    rho_alert: float = 0.5  # ADR-009 D5 (C4) : alerte si rho > 0,5 ...
-    rho_alert_patience: int = 50  # ... pendant 50 itérations consécutives
-    rho_stop: float = 0.8  # ADR-009 KS2 : STOP si rho > 0,8 ...
-    rho_stop_patience: int = 500  # ... pendant 500 itérations consécutives, tant que c_sil > 0
+    share_alert: float = 0.5  # ADR-009 D5 (C4) : alerte si disp_share > 0,5 ...
+    share_alert_patience: int = 50  # ... pendant 50 itérations consécutives
+    share_stop: float = 0.8  # ADR-009 KS2 : STOP si disp_share > 0,8 ...
+    share_stop_patience: int = 500  # ... pendant 500 itérations consécutives, tant que c_sil > 0
     ram_min_available_mb: float = 1_000.0  # ADR-009 KS1 : STOP si RAM disponible < 1 Go ...
     ram_low_max_s: float = 600.0  # ... pendant plus de 10 min (durée des itérations cumulée)
 
     def __post_init__(self) -> None:
+        sep = self.mode == "separate"
         checks = {
             "0 <= anneal_start_timesteps <= anneal_end_timesteps": 0
             <= self.anneal_start_timesteps
@@ -106,16 +119,24 @@ class SILConfig:
             "coef >= 0": self.coef >= 0.0,
             "value_coef >= 0": self.value_coef >= 0.0,
             f"mode dans {MODES}": self.mode in MODES,
-            "updates_per_iteration >= 1": self.updates_per_iteration >= 1,
+            "mode joint : updates_per_iteration et max_grad_norm interdits (un lot par minibatch PPO, clip de PPO)": sep
+            or (self.updates_per_iteration is None and self.max_grad_norm is None),
+            "mode separate : updates_per_iteration >= 1 et max_grad_norm > 0 requis": not sep
+            or (
+                self.updates_per_iteration is not None
+                and self.updates_per_iteration >= 1
+                and self.max_grad_norm is not None
+                and self.max_grad_norm > 0.0
+            ),
             "batch_size >= 1": self.batch_size >= 1,
-            "max_grad_norm > 0": self.max_grad_norm > 0.0,
             "capacity >= batch_size": self.capacity >= self.batch_size,
             "horizon_steps >= 1": self.horizon_steps >= 1,
             "priority_alpha > 0": self.priority_alpha > 0.0,
             "priority_eps > 0": self.priority_eps > 0.0,
             "0 <= is_beta <= 1": 0.0 <= self.is_beta <= 1.0,
-            "0 < rho_alert <= 1 et 0 < rho_stop <= 1": 0.0 < self.rho_alert <= 1.0 and 0.0 < self.rho_stop <= 1.0,
-            "patiences >= 1": min(self.rho_alert_patience, self.rho_stop_patience) >= 1,
+            "0 < share_alert <= 1 et 0 < share_stop <= 1": 0.0 < self.share_alert <= 1.0
+            and 0.0 < self.share_stop <= 1.0,
+            "patiences >= 1": min(self.share_alert_patience, self.share_stop_patience) >= 1,
             "ram_min_available_mb >= 0 et ram_low_max_s >= 0": self.ram_min_available_mb >= 0.0
             and self.ram_low_max_s >= 0.0,
         }
@@ -154,7 +175,7 @@ def goal_returns(reward: float, length: int, gamma: float) -> F32:
 
 
 class ReplayBuffer:
-    """Buffer FIFO priorisé de transitions (obs, action, R, priorité, itération d'entrée), tableaux préalloués."""
+    """Buffer FIFO priorisé : obs, action, R, priorité, itération d'entrée, origine (1 = générique), préalloués."""
 
     def __init__(self, capacity: int, obs_dim: int, obs_dtype: type[np.floating[Any]] = np.float16) -> None:
         if capacity < 1 or obs_dim < 1:
@@ -165,19 +186,27 @@ class ReplayBuffer:
         self.ret = np.zeros(capacity, dtype=np.float32)
         self.prio = np.zeros(capacity, dtype=np.float32)
         self.born = np.zeros(capacity, dtype=np.int32)
+        self.origin = np.zeros(capacity, dtype=np.uint8)  # diagnostic seulement (C1) : jamais lu par tirage ou perte
         self.size = 0
         self.pos = 0  # prochaine case écrite
 
+    _FIELDS = ("obs", "act", "ret", "prio", "born", "origin")
+
     @property
     def nbytes(self) -> int:
-        return int(sum(a.nbytes for a in (self.obs, self.act, self.ret, self.prio, self.born)))
+        return int(sum(getattr(self, a).nbytes for a in self._FIELDS))
 
     def max_priority(self) -> float:
         return float(np.max(self.prio[: self.size])) if self.size else 1.0
 
-    def add(self, obs: npt.NDArray[Any], act: npt.NDArray[Any], ret: F32, iteration: int) -> None:
-        """Ajoute L transitions dans l'ordre, à la priorité maximale courante (1 si vide) ; au-delà de la capacité,
-        les plus anciennes sont écrasées."""
+    def generic_frac(self) -> float:
+        return float(np.mean(self.origin[: self.size])) if self.size else 0.0
+
+    def add(
+        self, obs: npt.NDArray[Any], act: npt.NDArray[Any], ret: F32, iteration: int, generic: bool = False
+    ) -> None:
+        """Ajoute L transitions d'un épisode, dans l'ordre, à la priorité maximale courante (1 si vide) ; au-delà de la
+        capacité, les plus anciennes sont écrasées."""
         n = int(ret.shape[0])
         if obs.shape != (n, self.obs_dim) or act.shape != (n,):
             raise ValueError(f"formes incohérentes : obs {obs.shape}, act {act.shape}, ret {ret.shape}")
@@ -190,6 +219,7 @@ class ReplayBuffer:
         self.ret[idx] = ret
         self.prio[idx] = p
         self.born[idx] = iteration
+        self.origin[idx] = 1 if generic else 0
         self.pos = int((self.pos + n) % self.capacity)
         self.size = min(self.size + n, self.capacity)
 
@@ -216,22 +246,16 @@ class ReplayBuffer:
 
     def state_dict(self) -> dict[str, Any]:
         """Vues des cases remplies (à sérialiser aussitôt : `checkpoint.encode` copie)."""
-        n = self.size
-        return {
-            "obs": self.obs[:n],
-            "act": self.act[:n],
-            "ret": self.ret[:n],
-            "prio": self.prio[:n],
-            "born": self.born[:n],
-            "pos": self.pos,
-        }
+        out: dict[str, Any] = {name: getattr(self, name)[: self.size] for name in self._FIELDS}
+        out["pos"] = self.pos
+        return out
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
         n = int(np.asarray(state["ret"]).shape[0])
         shape = np.asarray(state["obs"]).shape
         if n > self.capacity or shape != (n, self.obs_dim):
             raise ValueError(f"buffer SIL : {n} transitions de forme {shape} incompatibles")
-        for name in ("obs", "act", "ret", "prio", "born"):
+        for name in self._FIELDS:
             getattr(self, name)[:n] = state[name]
         self.size, self.pos = n, int(state["pos"])
 
@@ -294,29 +318,33 @@ class EpisodeTracker:
 
 @dataclass(frozen=True)
 class SILStats:
-    """Journal C4 d'une itération (`sil/*`, ADR-009 D5). Jamais de NaN : une SIL sans pas (buffer trop petit, c_sil
-    nul, libérée) écrit des zéros, pour ne pas déclencher la garde des valeurs non finies."""
+    """Journal C4 d'une itération (`sil/*`, ADR-009 D5 amendé). Jamais de NaN : une SIL sans pas (buffer trop petit,
+    c_sil nul, libérée) écrit des zéros, pour ne pas déclencher la garde des valeurs non finies."""
 
     coef: float
-    steps_done: float  # pas SIL appliqués
-    steps_inactive: float  # minibatchs tirés sans aucun (R − V)₊ > 0 : pas sauté (mode separate)
+    steps_done: float  # lots SIL appliqués
+    steps_inactive: float  # lots tirés sans aucun (R − V)₊ > 0 (mode separate : pas sauté)
     released: float  # 1.0 après la fin de l'annealing (buffer et anneau libérés)
     buffer_size: float
     buffer_new: float  # transitions ajoutées par ce lot
     buffer_age_mean: float  # âge moyen des transitions du buffer, en itérations
+    buffer_generic_frac: float  # part des transitions du buffer issues d'un épisode à état initial générique
     buffer_bytes: float
     tracker_bytes: float
     episodes_added: float
     episodes_total: float
-    loss_policy: float  # moyenne sur les pas SIL, avant coefficient
+    loss_policy: float  # moyenne sur les lots SIL, avant coefficient
     loss_value: float
     frac_pos: float  # part des transitions tirées avec (R − V)₊ > 0
     adv_pos_mean: float  # moyenne de (R − V)₊ sur les transitions tirées
     adv_pos_max: float
     ppo_adv_abs_raw: float  # |A| PPO brut moyen (première epoch), même unité que (R − V)₊
-    grad_norm_pi_sil: float  # norme du gradient SIL (c_sil compris) sur π, avant clip, moyenne des pas SIL
+    grad_norm_pi_sil: float  # norme du gradient SIL (c_sil compris) sur π, avant clip, moyenne des lots SIL
     grad_norm_pi_ppo: float  # norme du gradient PPO sur π, avant clip, moyenne des minibatchs PPO
-    rho: float  # grad_norm_pi_sil / (grad_norm_pi_sil + grad_norm_pi_ppo) ; 0 sans pas SIL
+    grad_share: float  # grad_norm_pi_sil / (grad_norm_pi_sil + grad_norm_pi_ppo) ; diagnostic (ancien `rho`)
+    disp_norm_sil: float  # D^sil = ‖Σ_k Δθ^sil_k‖ sur π (voir docstring du module)
+    disp_norm_ppo: float  # D^ppo
+    disp_share: float  # D^sil / (D^sil + D^ppo) : indicateur C4 (alerte, KS2) ; 0 sans pas SIL
 
     def as_dict(self) -> dict[str, float]:
         return {f.name: float(getattr(self, f.name)) for f in fields(self)}
@@ -348,11 +376,55 @@ def _grad_norm(params: Sequence[torch.nn.Parameter]) -> torch.Tensor:
     return torch.stack(norms).norm() if norms else torch.zeros(())
 
 
+def _norm(tensors: Sequence[torch.Tensor]) -> float:
+    return float(torch.stack([t.norm() for t in tensors]).norm()) if tensors else 0.0
+
+
+class AdamView:
+    """Lecture des moments d'Adam d'un paramètre : `torch.optim.Adam` (`state[p]` : `exp_avg`, `exp_avg_sq`, `step`,
+    vérifié dans `torch/optim/adam.py`, torch 2.15.0) ou Adam manuel des tests (`params`, `m`, `v`, `t`, `b1`, `b2`,
+    `eps`). Refuse weight decay, amsgrad, maximize (la décomposition D5 ne vaut plus)."""
+
+    def __init__(self, optimizer: Any) -> None:
+        self.opt = optimizer
+        group = optimizer.param_groups[0]
+        if isinstance(optimizer, torch.optim.Adam):
+            if group.get("weight_decay", 0.0) or group.get("amsgrad", False) or group.get("maximize", False):
+                raise ValueError("Adam avec weight decay, amsgrad ou maximize : décomposition D5 impossible")
+            self.kind = "torch"
+            self.beta1, self.beta2 = (float(b) for b in group["betas"])
+            self.eps = float(group["eps"])
+        elif all(hasattr(optimizer, a) for a in ("params", "m", "v", "t", "b1", "b2", "eps")):
+            self.kind = "manual"
+            self.beta1, self.beta2, self.eps = float(optimizer.b1), float(optimizer.b2), float(optimizer.eps)
+            self._index = {id(p): i for i, p in enumerate(optimizer.params)}
+        else:
+            name = type(optimizer).__name__
+            raise TypeError(f"optimiseur {name} : moments d'Adam illisibles (disp_share, ADR-009 D5)")
+
+    @property
+    def lr(self) -> float:
+        return float(self.opt.param_groups[0]["lr"])
+
+    def exp_avg(self, p: torch.nn.Parameter) -> torch.Tensor | None:
+        if self.kind == "torch":
+            st = self.opt.state.get(p)
+            return None if not st else st["exp_avg"]
+        out: torch.Tensor = self.opt.m[self._index[id(p)]]
+        return out
+
+    def exp_avg_sq_and_step(self, p: torch.nn.Parameter) -> tuple[torch.Tensor, float]:
+        if self.kind == "torch":
+            st = self.opt.state[p]
+            return st["exp_avg_sq"], float(st["step"])
+        return self.opt.v[self._index[id(p)]], float(self.opt.t)
+
+
 # ---------------------------------------------------------------------------------------------------- SIL
 
 
 class SelfImitation:
-    """État et calculs SIL d'un learner : suivi des épisodes, buffer priorisé, tirage, optimiseur SIL, compteurs."""
+    """État et calculs SIL d'un learner : suivi des épisodes, buffer priorisé, tirage, moments fantômes, compteurs."""
 
     def __init__(
         self,
@@ -366,7 +438,7 @@ class SelfImitation:
         if n_actions > np.iinfo(ACTION_DTYPE).max:
             raise ValueError(f"n_actions={n_actions} > {np.iinfo(ACTION_DTYPE).max} (actions stockées en int16)")
         if (cfg.mode == "separate") != (optimizer is not None):
-            raise ValueError("mode separate : un optimiseur SIL est requis ; mode joint : aucun")
+            raise ValueError("mode separate : un optimiseur SIL est requis ; mode joint : aucun (D7-9)")
         self.cfg, self.gamma, self.obs_dim = cfg, gamma, obs_dim
         self.optimizer = optimizer
         self.buffer: ReplayBuffer | None = ReplayBuffer(cfg.capacity, obs_dim, cfg.obs_dtype)
@@ -376,6 +448,10 @@ class SelfImitation:
         self.generator.manual_seed(seed + SIL_SEED_OFFSET)
         self.episodes_total = 0
         self.released = False
+        self.ghost_ppo: list[torch.Tensor] | None = None  # moments fantômes (mode joint), sur π
+        self.ghost_sil: list[torch.Tensor] | None = None
+        self.last_disp: tuple[list[torch.Tensor], list[torch.Tensor]] | None = None
+        """(Σ_k Δθ^ppo_k, Σ_k Δθ^sil_k) sur π de la dernière itération avec un lot SIL (diagnostic, test D7-8)."""
 
     def reseed(self, seed: int) -> None:
         self.generator.manual_seed(seed + SIL_SEED_OFFSET)
@@ -387,8 +463,9 @@ class SelfImitation:
         return b + (0 if self.tracker is None else self.tracker.nbytes)
 
     def release(self) -> None:
-        """Fin de l'annealing (C2) : plus de collecte ni de pas, mémoire rendue."""
+        """Fin de l'annealing (C2) : plus de collecte ni de calcul, mémoire rendue."""
         self.buffer, self.tracker, self.released = None, None, True
+        self.ghost_ppo = self.ghost_sil = None
 
     def ingest(
         self,
@@ -399,9 +476,11 @@ class SelfImitation:
         trunc: BOOL,
         learn_mask: BOOL,
         iteration: int,
+        generic: BOOL | None = None,
     ) -> tuple[int, int]:
         """Lot (T, N, …) dans l'ordre de collecte : met à jour l'anneau et stocke les épisodes admis (agents de
-        `learn_mask`). Rend (épisodes ajoutés, transitions ajoutées)."""
+        `learn_mask`). `generic` (T, N) : origine de l'épisode qui finit à (t, agent) (None : kickoff). Rend
+        (épisodes ajoutés, transitions ajoutées)."""
         if self.buffer is None:
             return 0, 0
         cols = np.flatnonzero(learn_mask)
@@ -417,7 +496,8 @@ class SelfImitation:
             ends = tr.step(obs[t, cols], act[t, cols], rew[t, cols], term_t, self.cfg.keep_conceded)
             for agent, reward, length in ends:
                 o, a = tr.segment(agent, length)
-                self.buffer.add(o, a, goal_returns(reward, length, self.gamma), iteration)
+                gen = bool(generic[t, cols[agent]]) if generic is not None else False
+                self.buffer.add(o, a, goal_returns(reward, length, self.gamma), iteration, gen)
                 n_ep, n_tr = n_ep + 1, n_tr + length
             tr.end_step(term_t | trunc[t, cols])
         self.episodes_total += n_ep
@@ -436,14 +516,17 @@ class SelfImitation:
         learned_per_iteration: int,
         device: torch.device,
         n_ppo_steps: int,
+        generic: BOOL | None = None,
+        policy_params: Sequence[torch.nn.Parameter] = (),
+        ppo_optimizer: Any = None,
     ) -> SILIteration:
         """Début d'une mise à jour : coefficient (timesteps appris AVANT cette mise à jour), libération en fin
         d'annealing, puis ingestion du lot AVANT tout pas (algorithme 1 du papier)."""
         coef = self.cfg.coef_at(iteration * learned_per_iteration)
         if coef == 0.0 and iteration * learned_per_iteration >= self.cfg.anneal_end_timesteps and not self.released:
             self.release()
-        n_ep, n_tr = self.ingest(obs, act, rew, term, trunc, learn_mask, iteration)
-        return SILIteration(self, coef, iteration, n_ep, n_tr, device, n_ppo_steps)
+        n_ep, n_tr = self.ingest(obs, act, rew, term, trunc, learn_mask, iteration, generic)
+        return SILIteration(self, coef, iteration, n_ep, n_tr, device, n_ppo_steps, policy_params, ppo_optimizer)
 
     def state_dict(self) -> dict[str, Any]:
         opt = self.optimizer
@@ -455,6 +538,8 @@ class SelfImitation:
             "generator": self.generator.get_state(),
             "episodes_total": self.episodes_total,
             "optimizer": None if opt is None else opt.state_dict(),
+            "ghost_ppo": self.ghost_ppo,
+            "ghost_sil": self.ghost_sil,
         }
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
@@ -477,12 +562,17 @@ class SelfImitation:
             self.optimizer.load_state_dict(dict(state["optimizer"]))
         self.generator.set_state(state["generator"].cpu())
         self.episodes_total = int(state["episodes_total"])
+        ghosts = (state.get("ghost_ppo"), state.get("ghost_sil"))
+        # sur CPU au chargement ; ramenés sur le device du learner au premier usage (`SILIteration`)
+        self.ghost_ppo = None if ghosts[0] is None else [t.clone() for t in ghosts[0]]
+        self.ghost_sil = None if ghosts[1] is None else [t.clone() for t in ghosts[1]]
 
 
 class SILIteration:
-    """SIL d'une mise à jour PPO. Appels de `Learner.update`, dans l'ordre : `note_raw_advantages` (première epoch),
-    pour chaque minibatch PPO `note_ppo_grad` puis (mode joint) `joint_step` entre le `backward` PPO et le clip,
-    enfin (mode separate) `separate_steps` après les epochs, puis `stats`."""
+    """SIL d'une mise à jour PPO. Appels de `Learner.update`, dans l'ordre : `note_raw_advantages` (première epoch) ;
+    pour chaque minibatch PPO, après le `backward` PPO : `note_ppo_grad`, `joint_step` (mode joint), puis après le clip
+    et le pas d'Adam : `after_ppo_step` ; enfin `separate_steps` (mode separate) et `stats`. Avec c_sil = 0 (ou SIL
+    libérée), tous ces appels sont sans effet ni calcul."""
 
     def __init__(
         self,
@@ -493,27 +583,64 @@ class SILIteration:
         n_tr: int,
         device: torch.device,
         n_ppo_steps: int,
+        policy_params: Sequence[torch.nn.Parameter],
+        ppo_optimizer: Any,
     ) -> None:
         self.sil, self.cfg, self.coef, self.iteration = sil, sil.cfg, coef, iteration
         self.n_ep, self.n_tr, self.device, self.n_ppo_steps = n_ep, n_tr, device, n_ppo_steps
-        self.steps = 0  # minibatchs SIL tirés (pas appliqués + pas sautés faute d'échantillon actif)
+        self.active = coef > 0.0 and not sil.released
+        self.joint = self.cfg.mode == "joint"
+        self.pi = list(policy_params)
+        self.steps = 0
         self.inactive = 0
-        self._ppo_grad = torch.zeros((), device=device)
-        self._adv_raw = torch.zeros((), device=device)
-        self._acc = np.zeros(6)  # loss_policy, loss_value, frac_pos, adv_pos_mean, |g_π,sil|, Σ (pour la moyenne)
+        self._ppo_grad = 0.0
+        self._ppo_grad_n = 0
+        self._adv_raw = 0.0
+        self._acc = np.zeros(5)  # loss_policy, loss_value, frac_pos, adv_pos_mean, |g_π,sil|
         self._adv_max = 0.0
+        self._g_ppo: list[torch.Tensor] | None = None
+        self._g_sil: list[torch.Tensor] | None = None
+        self._disp_ppo: list[torch.Tensor] | None = None
+        self._disp_sil: list[torch.Tensor] | None = None
+        self._theta0: list[torch.Tensor] | None = None
+        self._adam: AdamView | None = None
+        if self.active and self.joint and self.pi:
+            self._adam = AdamView(ppo_optimizer)
+            self._disp_ppo = [torch.zeros_like(p) for p in self.pi]
+            self._disp_sil = [torch.zeros_like(p) for p in self.pi]
+            if sil.ghost_ppo is None or sil.ghost_sil is None:
+                sil.ghost_ppo = [self._exp_avg_or_zero(p) for p in self.pi]  # m^ppo = exp_avg, m^sil = 0
+                sil.ghost_sil = [torch.zeros_like(p) for p in self.pi]
+            else:
+                sil.ghost_ppo = [t.to(p.device) for t, p in zip(sil.ghost_ppo, self.pi, strict=True)]
+                sil.ghost_sil = [t.to(p.device) for t, p in zip(sil.ghost_sil, self.pi, strict=True)]
+        if self.active and not self.joint and self.pi:
+            self._theta0 = [p.detach().clone() for p in self.pi]
+
+    def _exp_avg_or_zero(self, p: torch.nn.Parameter) -> torch.Tensor:
+        assert self._adam is not None
+        m = self._adam.exp_avg(p)
+        return torch.zeros_like(p) if m is None else m.detach().clone()
 
     @property
     def can_step(self) -> bool:
         b = self.sil.buffer
-        return self.coef > 0.0 and b is not None and b.size >= self.cfg.batch_size
+        return self.active and b is not None and b.size >= self.cfg.batch_size
 
     def note_raw_advantages(self, adv: torch.Tensor) -> None:
-        self._adv_raw = adv.detach().abs().mean()
+        if self.active:
+            self._adv_raw = float(adv.detach().abs().mean())
 
-    def note_ppo_grad(self, policy_params: Sequence[torch.nn.Parameter]) -> None:
-        """Norme du gradient PPO sur π (avant toute contribution SIL et avant le clip)."""
-        self._ppo_grad = self._ppo_grad + _grad_norm(policy_params).detach()
+    def note_ppo_grad(self) -> None:
+        """Gradient PPO sur π (avant toute contribution SIL et avant le clip) : norme et copie (moments fantômes)."""
+        if not self.active:
+            return
+        with torch.no_grad():
+            self._ppo_grad += float(_grad_norm(self.pi))
+            self._ppo_grad_n += 1
+            if self.joint:
+                self._g_ppo = [torch.zeros_like(p) if p.grad is None else p.grad.detach().clone() for p in self.pi]
+                self._g_sil = None
 
     def _loss(
         self, policy: PolicyNet, value: ValueNet
@@ -528,46 +655,62 @@ class SILIteration:
     def _record(
         self, idx: torch.Tensor, pl: torch.Tensor, vl: torch.Tensor, gap: torch.Tensor, g: float, applied: bool = True
     ) -> None:
-        gap_cpu = gap.cpu()  # une lecture hôte par pas SIL (mise à jour des priorités)
+        gap_cpu = gap.cpu()  # une lecture hôte par lot SIL (mise à jour des priorités)
         buf = self.sil.buffer
         assert buf is not None
         buf.update_priorities(idx, gap_cpu, self.cfg.priority_alpha, self.cfg.priority_eps)
-        self._acc += np.array(
-            [float(pl), float(vl), float((gap_cpu > 0).float().mean()), float(gap_cpu.mean()), g, 1.0]
-        )
+        self._acc += np.array([float(pl), float(vl), float((gap_cpu > 0).float().mean()), float(gap_cpu.mean()), g])
         self._adv_max = max(self._adv_max, float(gap_cpu.max()))
         self.steps += 1
         self.inactive += 0 if applied else 1
 
-    def joint_step(self, policy: PolicyNet, value: ValueNet, policy_params: Sequence[torch.nn.Parameter]) -> None:
+    def joint_step(self, policy: PolicyNet, value: ValueNet) -> None:
         """Mode joint : ajoute le gradient de c_sil·L_sil aux gradients PPO du minibatch (rien si `can_step` faux)."""
-        if self.cfg.mode != "joint" or not self.can_step:
+        if not self.joint or not self.can_step:
             return
-        with torch.no_grad():
-            saved = [None if p.grad is None else p.grad.detach().clone() for p in policy_params]
         idx, pl, vl, gap, loss = self._loss(policy, value)
         torch.autograd.backward([loss])
         with torch.no_grad():
-            diffs = [
-                (p.grad - g if g is not None else p.grad).norm()
-                for p, g in zip(policy_params, saved, strict=True)
-                if p.grad is not None
+            assert self._g_ppo is not None
+            self._g_sil = [
+                (torch.zeros_like(p) if p.grad is None else p.grad.detach() - g)
+                for p, g in zip(self.pi, self._g_ppo, strict=True)
             ]
-            g_sil = float(torch.stack(diffs).norm()) if diffs else 0.0
+            g_sil = _norm(self._g_sil)
         self._record(idx, pl.detach(), vl.detach(), gap, g_sil)
 
+    def after_ppo_step(self, total_grad_norm: torch.Tensor, max_norm: float) -> None:
+        """Après le clip global et le pas d'Adam d'un minibatch PPO (mode joint) : moments fantômes et déplacements
+        Δθ^ppo, Δθ^sil (docstring du module). `total_grad_norm` : valeur rendue par `clip_grad_norm_`."""
+        if not self.joint or self._adam is None or self._g_ppo is None:
+            return
+        ghost_ppo, ghost_sil = self.sil.ghost_ppo, self.sil.ghost_sil
+        assert ghost_ppo is not None and ghost_sil is not None
+        assert self._disp_ppo is not None and self._disp_sil is not None
+        adam = self._adam
+        b1, b2, eps, lr = adam.beta1, adam.beta2, adam.eps, adam.lr
+        with torch.no_grad():
+            f = torch.clamp(max_norm / (total_grad_norm.detach() + CLIP_EPS), max=1.0)
+            g_sil = self._g_sil if self._g_sil is not None else [torch.zeros_like(p) for p in self.pi]
+            for i, p in enumerate(self.pi):
+                ghost_ppo[i].mul_(b1).add_(f * self._g_ppo[i], alpha=1.0 - b1)
+                ghost_sil[i].mul_(b1).add_(f * g_sil[i], alpha=1.0 - b1)
+                v, t = adam.exp_avg_sq_and_step(p)
+                step_size = lr / (1.0 - b1**t)
+                denom = v.sqrt() / (1.0 - b2**t) ** 0.5 + eps
+                self._disp_ppo[i].add_(ghost_ppo[i] / denom, alpha=-step_size)
+                self._disp_sil[i].add_(ghost_sil[i] / denom, alpha=-step_size)
+        self._g_ppo = self._g_sil = None
+
     def separate_steps(
-        self,
-        policy: PolicyNet,
-        value: ValueNet,
-        params: Sequence[torch.nn.Parameter],
-        policy_params: Sequence[torch.nn.Parameter],
-        lr: float,
+        self, policy: PolicyNet, value: ValueNet, params: Sequence[torch.nn.Parameter], lr: float
     ) -> None:
         """Mode separate : `updates_per_iteration` pas de l'optimiseur SIL (rien si `can_step` faux)."""
         opt = self.sil.optimizer
-        if self.cfg.mode != "separate" or opt is None or not self.can_step:
+        if self.joint or opt is None or not self.can_step:
             return
+        assert self.cfg.updates_per_iteration is not None and self.cfg.max_grad_norm is not None
+        theta_ppo = [p.detach().clone() for p in self.pi]
         for group in opt.param_groups:
             group["lr"] = lr
         for _ in range(self.cfg.updates_per_iteration):
@@ -578,26 +721,37 @@ class SILIteration:
                 continue
             opt.zero_grad(set_to_none=True)
             torch.autograd.backward([loss])
-            g_sil = float(_grad_norm(policy_params))
+            g_sil = float(_grad_norm(self.pi))
             torch.nn.utils.clip_grad_norm_(list(params), self.cfg.max_grad_norm)
             opt.step()
             self._record(idx, pl.detach(), vl.detach(), gap, g_sil)
+        assert self._theta0 is not None
+        with torch.no_grad():
+            self._disp_ppo = [a - b for a, b in zip(theta_ppo, self._theta0, strict=True)]
+            self._disp_sil = [p.detach() - a for p, a in zip(self.pi, theta_ppo, strict=True)]
 
     def stats(self) -> SILStats:
         sil, buf, k = self.sil, self.sil.buffer, max(self.steps, 1)
-        pl, vl, frac_pos, adv_mean, g_sil = (float(x) / k for x in self._acc[:5])
-        g_ppo = float(self._ppo_grad) / max(self.n_ppo_steps, 1)
-        rho = g_sil / (g_sil + g_ppo) if self.steps and g_sil + g_ppo > 0.0 else 0.0
+        if self._disp_ppo is not None and self._disp_sil is not None:
+            sil.last_disp = (self._disp_ppo, self._disp_sil)
+        pl, vl, frac_pos, adv_mean, g_sil = (float(x) / k for x in self._acc)
+        g_ppo = self._ppo_grad / max(self._ppo_grad_n, 1)
+        applied = self.steps - self.inactive
+        grad_share = g_sil / (g_sil + g_ppo) if applied and g_sil + g_ppo > 0.0 else 0.0
+        d_sil = _norm(self._disp_sil) if applied and self._disp_sil is not None else 0.0
+        d_ppo = _norm(self._disp_ppo) if self._disp_ppo is not None else 0.0
+        disp_share = d_sil / (d_sil + d_ppo) if applied and d_sil + d_ppo > 0.0 else 0.0
         size = 0 if buf is None else buf.size
         age = float(self.iteration - buf.born[:size].mean()) if buf is not None and size else 0.0
         return SILStats(
             coef=self.coef,
-            steps_done=float(self.steps - self.inactive),
+            steps_done=float(applied),
             steps_inactive=float(self.inactive),
             released=float(sil.released),
             buffer_size=float(size),
             buffer_new=float(self.n_tr),
             buffer_age_mean=age,
+            buffer_generic_frac=0.0 if buf is None else buf.generic_frac(),
             buffer_bytes=float(0 if buf is None else buf.nbytes),
             tracker_bytes=float(0 if sil.tracker is None else sil.tracker.nbytes),
             episodes_added=float(self.n_ep),
@@ -607,10 +761,13 @@ class SILIteration:
             frac_pos=frac_pos,
             adv_pos_mean=adv_mean,
             adv_pos_max=self._adv_max,
-            ppo_adv_abs_raw=float(self._adv_raw),
+            ppo_adv_abs_raw=self._adv_raw,
             grad_norm_pi_sil=g_sil,
             grad_norm_pi_ppo=g_ppo,
-            rho=rho,
+            grad_share=grad_share,
+            disp_norm_sil=d_sil,
+            disp_norm_ppo=d_ppo,
+            disp_share=disp_share,
         )
 
 
@@ -621,8 +778,8 @@ class SILIteration:
 class SILGuardState:
     """Compteurs de la garde SIL (sauvegardés dans `extra["sil_guard"]` des checkpoints)."""
 
-    rho_alert_streak: int = 0
-    rho_stop_streak: int = 0
+    share_alert_streak: int = 0
+    share_stop_streak: int = 0
     ram_low_s: float = 0.0
 
 
@@ -630,28 +787,32 @@ def sil_guard(
     cfg: SILConfig,
     state: SILGuardState,
     *,
-    rho: float,
+    share: float,
     coef: float,
     ram_available_mb: float | None,
     iteration_s: float,
 ) -> tuple[SILGuardState, tuple[str, ...], tuple[str, str] | None]:
     """Fonction pure (ADR-009 D5, KS1, KS2) : (nouvel état, alertes « règle : détail », arrêt (règle, raison) ou None).
-    - alerte `sil_rho` : rho > `rho_alert` pendant `rho_alert_patience` itérations consécutives ;
-    - STOP `sil_rho` (KS2) : rho > `rho_stop` pendant `rho_stop_patience` itérations consécutives avec c_sil > 0 ;
+    `share` = `disp_share` de l'itération.
+    - alerte `sil_share` : share > `share_alert` pendant `share_alert_patience` itérations consécutives ;
+    - STOP `sil_share` (KS2) : share > `share_stop` pendant `share_stop_patience` itérations consécutives, c_sil > 0 ;
     - STOP `sil_ram` (KS1) : RAM disponible < `ram_min_available_mb` pendant plus de `ram_low_max_s` secondes
       (durées d'itération cumulées, remises à 0 dès une itération au-dessus du seuil ; mesure absente : inchangé)."""
-    a = state.rho_alert_streak + 1 if rho > cfg.rho_alert else 0
-    s = state.rho_stop_streak + 1 if rho > cfg.rho_stop and coef > 0.0 else 0
+    a = state.share_alert_streak + 1 if share > cfg.share_alert else 0
+    s = state.share_stop_streak + 1 if share > cfg.share_stop and coef > 0.0 else 0
     low = state.ram_low_s
     if ram_available_mb is not None:
         low = low + iteration_s if ram_available_mb < cfg.ram_min_available_mb else 0.0
-    new = SILGuardState(rho_alert_streak=a, rho_stop_streak=s, ram_low_s=low)
+    new = SILGuardState(share_alert_streak=a, share_stop_streak=s, ram_low_s=low)
     alerts: tuple[str, ...] = ()
-    if a >= cfg.rho_alert_patience:
-        alerts = (f"sil_rho : rho {rho:.3g} > {cfg.rho_alert:g} depuis {a} itérations (C4, ADR-009 D5)",)
+    if a >= cfg.share_alert_patience:
+        alerts = (f"sil_share : disp_share {share:.3g} > {cfg.share_alert:g} depuis {a} itérations (C4, ADR-009 D5)",)
     stop: tuple[str, str] | None = None
-    if s >= cfg.rho_stop_patience:
-        stop = ("sil_rho", f"rho {rho:.3g} > {cfg.rho_stop:g} depuis {s} itérations avec c_sil > 0 (ADR-009 KS2)")
+    if s >= cfg.share_stop_patience:
+        stop = (
+            "sil_share",
+            f"disp_share {share:.3g} > {cfg.share_stop:g} depuis {s} itérations avec c_sil > 0 (ADR-009 KS2)",
+        )
     elif low > cfg.ram_low_max_s:
         stop = (
             "sil_ram",

@@ -56,6 +56,9 @@ class RolloutBatch:
     last_obs: F32  # (N, D)
     learn_mask: BOOL  # (N,)
     policy_version: int
+    ep_generic: BOOL | None = None
+    """(T, N) : vrai si l'épisode qui se termine à (t, agent) avait un état initial générique (diagnostic SIL, ADR-009
+    D1 ; faux hors fin d'épisode). None : non renseigné (lots d'avant ce champ, env sans `end_generic`)."""
 
     @property
     def n_steps(self) -> int:
@@ -88,6 +91,8 @@ class RolloutBatch:
             "last_obs": ((n, d), np.float32),
             "learn_mask": ((n,), np.bool_),
         }
+        if self.ep_generic is not None:
+            expected["ep_generic"] = ((t_len, n), np.bool_)
         for name, (shape, dtype) in expected.items():
             arr = getattr(self, name)
             if arr.shape != shape or arr.dtype != dtype:
@@ -115,6 +120,7 @@ class RolloutBuffer:
         self.rew = np.zeros((n_steps, n_agents), dtype=np.float32)
         self.term = np.zeros((n_steps, n_agents), dtype=np.bool_)
         self.trunc = np.zeros((n_steps, n_agents), dtype=np.bool_)
+        self.ep_generic = np.zeros((n_steps, n_agents), dtype=np.bool_)
         self._final_obs: list[F32] = []
         self._final_t: list[I64] = []
         self._final_agent: list[I64] = []
@@ -130,9 +136,11 @@ class RolloutBuffer:
         trunc: BOOL,
         final_obs: F32,
         final_agent: I64,
+        ep_generic: BOOL | None = None,
     ) -> None:
         """Ajoute le step courant. `final_obs`/`final_agent` : lignes finales rendues par l'env (term ou trunc) ;
-        seules celles des agents tronqués non terminaux sont gardées (ADR-003 §6)."""
+        seules celles des agents tronqués non terminaux sont gardées (ADR-003 §6). `ep_generic` (N,) : origine des
+        épisodes qui finissent à ce step (None : faux)."""
         t = self._t
         if t >= self.n_steps:
             raise RuntimeError("tampon plein : appeler finish()")
@@ -142,6 +150,10 @@ class RolloutBuffer:
         np.copyto(self.rew[t], rew)
         np.copyto(self.term[t], term)
         np.copyto(self.trunc[t], trunc)
+        if ep_generic is None:
+            self.ep_generic[t] = False
+        else:
+            np.copyto(self.ep_generic[t], ep_generic)
         if final_agent.shape[0] != final_obs.shape[0]:
             raise ValueError("final_obs et final_agent de longueurs différentes")
         keep = np.flatnonzero(self.trunc[t, final_agent] & ~self.term[t, final_agent])
@@ -169,6 +181,7 @@ class RolloutBuffer:
             last_obs=np.array(last_obs, dtype=np.float32),
             learn_mask=np.array(learn_mask, dtype=np.bool_),
             policy_version=int(policy_version),
+            ep_generic=self.ep_generic,
         )
         batch.validate()
         self._final_obs, self._final_t, self._final_agent = [], [], []
@@ -201,6 +214,18 @@ END_COUNT_KEYS = (
     "goals_kickoff",
     "goals_generic",
 )
+
+
+def _agent_generic(info: Mapping[str, Any], n_agents: int) -> BOOL | None:
+    """(N,) : origine générique des épisodes finis à ce step, par agent (`ended` ∧ `end_generic` par arène, agents à
+    plat a = e·C + k, ADR-003 §5) ; None si l'env ne rend pas ces clés."""
+    ended, generic = info.get("ended"), info.get("end_generic")
+    if ended is None or generic is None:
+        return None
+    per_arena = np.asarray(ended, dtype=np.bool_) & np.asarray(generic, dtype=np.bool_)
+    if per_arena.size == 0 or n_agents % per_arena.size:
+        raise ValueError(f"end_generic {per_arena.shape} incompatible avec {n_agents} agents")
+    return np.repeat(per_arena, n_agents // per_arena.size)
 
 
 def _tally_ends(counts: dict[str, int], info: Mapping[str, Any]) -> None:
@@ -320,7 +345,7 @@ class Collector:
                 self.opponents.after_step(term, trunc, info)
             final_obs = np.asarray(info.get("final_obs", empty_obs), dtype=np.float32)
             final_agent = np.asarray(info.get("final_agent", empty_idx), dtype=np.int64)
-            buf.add(obs, act, logp, rew, term, trunc, final_obs, final_agent)
+            buf.add(obs, act, logp, rew, term, trunc, final_obs, final_agent, _agent_generic(info, n))
             self._obs = np.array(nxt, dtype=np.float32)
             self.agent_steps += n
             self.learnable_steps += self._n_learn

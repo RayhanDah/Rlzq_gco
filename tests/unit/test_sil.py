@@ -20,7 +20,7 @@ from test_checkpoint import _Adam  # noqa: E402
 from test_env import fake_obs  # noqa: E402
 from test_obs import prev_of, random_state  # noqa: E402
 from test_ppo import Corridor, _ManualAdam, _small_cfg  # noqa: E402
-from test_run import BASE, CheckpointManager, StatefulFakeSim, cfg_of, events, go, make_factory, rows  # noqa: E402
+from test_run import BASE, CheckpointManager, StatefulFakeSim, cfg_of, events, go, inject, make_factory, rows  # noqa: E402
 
 from models import PolicyNet, ValueNet  # noqa: E402
 from models.policy import init_linear, log_prob_entropy  # noqa: E402
@@ -57,8 +57,13 @@ def scfg(**kw: Any) -> SILConfig:
     return SILConfig(**(base | kw))
 
 
+def sep(**kw: Any) -> SILConfig:
+    """Mode separate (première version de l'ADR-009) : Adam distinct, 2 pas, clip 0,5."""
+    return scfg(mode="separate", updates_per_iteration=2, max_grad_norm=0.5, **kw)
+
+
 def make_sil(cfg: SILConfig | None = None, obs_dim: int = 3, optimizer: Any = None) -> SelfImitation:
-    cfg = cfg or scfg(mode="joint")
+    cfg = cfg or scfg()
     return SelfImitation(cfg, GAMMA, obs_dim, 5, seed=0, optimizer=optimizer)
 
 
@@ -126,7 +131,7 @@ def test_troncature_perdant_et_agent_gele_jamais_admis() -> None:
 
 
 def test_perdants_admis_seulement_avec_keep_conceded() -> None:
-    sil, b = make_sil(scfg(mode="joint", keep_conceded=True)), steps_arrays(4, 1)
+    sil, b = make_sil(scfg(keep_conceded=True)), steps_arrays(4, 1)
     b["rew"][2, 0], b["term"][2, 0] = -1.0, True
     assert ingest(sil, b) == (1, 3)
     assert sil.buffer is not None
@@ -276,7 +281,7 @@ def test_coefficient_aux_bornes_du_calendrier_adr_009() -> None:
 
 def test_liberation_en_fin_d_annealing() -> None:
     # Arrange : fin de l'annealing à 10 timesteps appris ; 4 appris par itération
-    sil = make_sil(scfg(mode="joint", anneal_start_timesteps=0, anneal_end_timesteps=10))
+    sil = make_sil(scfg(anneal_start_timesteps=0, anneal_end_timesteps=10))
     b = steps_arrays(2, 2)
     b["rew"][1, 0], b["term"][1, 0] = 1.0, True
     # Act : itérations 0, 1 (t = 0, 4 : coefficient > 0), puis 3 (t = 12 ≥ 10)
@@ -290,7 +295,7 @@ def test_liberation_en_fin_d_annealing() -> None:
     # Assert : plus de buffer ni d'anneau, rien d'ingéré, état minimal relisible
     assert it3.coef == 0.0 and sil.released and sil.buffer is None and sil.tracker is None and sil.nbytes == 0
     assert it3.n_ep == 0 and it3.stats().released == 1.0
-    other = make_sil(scfg(mode="joint", anneal_start_timesteps=0, anneal_end_timesteps=10))
+    other = make_sil(scfg(anneal_start_timesteps=0, anneal_end_timesteps=10))
     other.load_state_dict(decode(encode(sil.state_dict())))
     assert other.released and other.buffer is None
 
@@ -359,7 +364,7 @@ def _one_batch() -> Any:
 
 def test_pas_separes_n_alterent_pas_l_etat_adam_de_ppo() -> None:
     # Arrange : SIL activée (buffer prérempli, R = 1 > V) contre PPO seul, même lot, mêmes poids initiaux
-    on, off, batch = _learner(scfg()), _learner(None), _one_batch()
+    on, off, batch = _learner(sep()), _learner(None), _one_batch()
     on.policy.load_state_dict(off.policy.state_dict())
     _filled(on, 1.0)
     # Act
@@ -377,14 +382,15 @@ def test_pas_separes_n_alterent_pas_l_etat_adam_de_ppo() -> None:
 
 def test_aucun_pas_ni_gradient_si_tout_le_buffer_a_r_inferieur_a_v() -> None:
     # Arrange : R = −10 < V partout ; lot sans but gagné (rien de neuf n'entre dans le buffer)
-    on, off, batch = _learner(scfg()), _learner(None), _one_batch()
+    on, off, batch = _learner(sep()), _learner(None), _one_batch()
     batch = dataclasses.replace(batch, rew=np.minimum(batch.rew, 0.0))
     _filled(on, -10.0)
     # Act
     s = on.update(batch).sil
     off.update(batch)
     # Assert : minibatchs tirés mais sautés, Adam SIL intact, poids = PPO seul
-    assert (s["steps_done"], s["steps_inactive"], s["frac_pos"], s["rho"]) == (0.0, 2.0, 0.0, 0.0)
+    assert (s["steps_done"], s["steps_inactive"], s["frac_pos"], s["grad_share"]) == (0.0, 2.0, 0.0, 0.0)
+    assert s["disp_share"] == 0.0
     assert on.sil is not None and on.sil.optimizer is not None and on.sil.optimizer.t == 0  # type: ignore[attr-defined]
     assert _same(_params(on), _params(off))
 
@@ -402,27 +408,31 @@ def test_journal_c4_complet_fini_et_coherent() -> None:
     _filled(on, 1.0)
     # Act
     s = on.update(_one_batch()).sil
-    # Assert : toutes les clés de l'ADR-009 D5 (hors RAM, ajoutée par la boucle), finies ; rho dans [0, 1]
+    # Assert : toutes les clés de l'ADR-009 D5 (hors RAM, ajoutée par la boucle), finies ; parts dans ]0, 1[
     expected = {
         "coef", "steps_done", "buffer_size", "buffer_new", "buffer_age_mean", "loss_policy", "loss_value",
-        "frac_pos", "adv_pos_mean", "adv_pos_max", "grad_norm_pi_sil", "grad_norm_pi_ppo", "rho",
+        "frac_pos", "adv_pos_mean", "adv_pos_max", "grad_norm_pi_sil", "grad_norm_pi_ppo", "grad_share",
+        "disp_norm_sil", "disp_norm_ppo", "disp_share", "buffer_generic_frac",
     }  # fmt: skip
     assert expected <= set(s) and all(math.isfinite(v) for v in s.values())
-    assert 0.0 < s["rho"] < 1.0 and s["rho"] == pytest.approx(
+    assert 0.0 < s["grad_share"] < 1.0 and s["grad_share"] == pytest.approx(
         s["grad_norm_pi_sil"] / (s["grad_norm_pi_sil"] + s["grad_norm_pi_ppo"])
+    )
+    assert 0.0 < s["disp_share"] < 1.0 and s["disp_share"] == pytest.approx(
+        s["disp_norm_sil"] / (s["disp_norm_sil"] + s["disp_norm_ppo"])
     )
     assert s["frac_pos"] > 0.0 and s["adv_pos_max"] >= s["adv_pos_mean"] > 0.0 and s["ppo_adv_abs_raw"] > 0.0
     assert s["buffer_bytes"] > 0 and s["coef"] == pytest.approx(0.1)
 
 
 def test_mode_joint_ajoute_la_perte_aux_minibatchs_ppo_sans_optimiseur() -> None:
-    on, off, batch = _learner(scfg(mode="joint")), _learner(None), _one_batch()
+    on, off, batch = _learner(scfg()), _learner(None), _one_batch()
     _filled(on, 1.0)
     assert on.sil is not None and on.sil.optimizer is None
     s = on.update(batch)
     off.update(batch)
     assert s.sil["steps_done"] == on.cfg.epochs * s.n_minibatches  # un minibatch SIL par pas PPO
-    assert 0.0 < s.sil["rho"] < 1.0 and not _same(_params(on), _params(off))
+    assert 0.0 < s.sil["disp_share"] < 1.0 and not _same(_params(on), _params(off))
 
 
 def test_reprise_exacte_de_l_etat_sil_par_le_checkpoint() -> None:
@@ -431,7 +441,7 @@ def test_reprise_exacte_de_l_etat_sil_par_le_checkpoint() -> None:
     torch.manual_seed(0)
     col = Collector(Corridor(16, horizon=3), PolicyNet(7, 3, (16,)), 8, CPU, seed=1)
     batches = [copy.deepcopy(col.collect(0)) for _ in range(5)]
-    a = _learner(scfg())
+    a = _learner(scfg())  # mode joint : moments fantômes dans l'état
     _filled(a, 1.0)
     for bt in batches[:3]:
         a.update(dataclasses.replace(bt, policy_version=a.version))
@@ -448,6 +458,9 @@ def test_reprise_exacte_de_l_etat_sil_par_le_checkpoint() -> None:
     assert a.sil.buffer.size == b.sil.buffer.size and np.array_equal(a.sil.buffer.prio, b.sil.buffer.prio)
     assert a.sil.tracker is not None and b.sil.tracker is not None
     assert np.array_equal(a.sil.tracker.obs, b.sil.tracker.obs) and a.sil.tracker.cursor == b.sil.tracker.cursor
+    assert a.sil.ghost_ppo is not None and b.sil.ghost_ppo is not None and a.sil.ghost_sil is not None
+    assert b.sil.ghost_sil is not None and _same(a.sil.ghost_ppo, b.sil.ghost_ppo)
+    assert _same(a.sil.ghost_sil, b.sil.ghost_sil) and all(x["disp_share"] > 0 for x in tail_a)
     with pytest.raises(ValueError, match="SIL"):
         _learner(None).load_state_dict(a.state_dict())
 
@@ -455,40 +468,40 @@ def test_reprise_exacte_de_l_etat_sil_par_le_checkpoint() -> None:
 # ---------------------------------------------------------------------------------------------------- garde C4
 
 
-def test_garde_rho_alerte_apres_la_patience_et_stop_ks2() -> None:
-    cfg = scfg(rho_alert_patience=3, rho_stop_patience=2, ram_min_available_mb=0.0)
+def test_garde_part_de_deplacement_alerte_apres_la_patience_et_stop_ks2() -> None:
+    cfg = scfg(share_alert_patience=3, share_stop_patience=2, ram_min_available_mb=0.0)
     st = SILGuardState()
     seen = []
     for _ in range(3):
-        st, alerts, stop = sil_guard(cfg, st, rho=0.6, coef=0.1, ram_available_mb=None, iteration_s=1.0)
+        st, alerts, stop = sil_guard(cfg, st, share=0.6, coef=0.1, ram_available_mb=None, iteration_s=1.0)
         seen.append((bool(alerts), stop))
     assert seen == [(False, None), (False, None), (True, None)]  # 0,6 : alerte à 3, jamais de stop (≤ 0,8)
     st = SILGuardState()
-    st, _, stop = sil_guard(cfg, st, rho=0.9, coef=0.1, ram_available_mb=None, iteration_s=1.0)
+    st, _, stop = sil_guard(cfg, st, share=0.9, coef=0.1, ram_available_mb=None, iteration_s=1.0)
     assert stop is None
-    st, _, stop = sil_guard(cfg, st, rho=0.9, coef=0.1, ram_available_mb=None, iteration_s=1.0)
-    assert stop is not None and stop[0] == "sil_rho"
+    st, _, stop = sil_guard(cfg, st, share=0.9, coef=0.1, ram_available_mb=None, iteration_s=1.0)
+    assert stop is not None and stop[0] == "sil_share"
     # c_sil nul : pas de STOP KS2 ; une itération sous le seuil remet le compteur à 0
     _, _, stop = sil_guard(
-        cfg, SILGuardState(rho_stop_streak=5), rho=0.9, coef=0.0, ram_available_mb=None, iteration_s=1
+        cfg, SILGuardState(share_stop_streak=5), share=0.9, coef=0.0, ram_available_mb=None, iteration_s=1
     )
     assert stop is None
     st, _, _ = sil_guard(
-        cfg, SILGuardState(rho_alert_streak=9), rho=0.1, coef=0.1, ram_available_mb=None, iteration_s=1
+        cfg, SILGuardState(share_alert_streak=9), share=0.1, coef=0.1, ram_available_mb=None, iteration_s=1
     )
-    assert st.rho_alert_streak == 0
+    assert st.share_alert_streak == 0
 
 
 def test_garde_ram_ks1_sur_la_duree_cumulee() -> None:
     cfg = scfg(ram_min_available_mb=1000.0, ram_low_max_s=600.0)
     st = SILGuardState()
-    st, _, stop = sil_guard(cfg, st, rho=0.0, coef=0.1, ram_available_mb=900.0, iteration_s=400.0)
+    st, _, stop = sil_guard(cfg, st, share=0.0, coef=0.1, ram_available_mb=900.0, iteration_s=400.0)
     assert stop is None and st.ram_low_s == 400.0
-    st, _, stop = sil_guard(cfg, st, rho=0.0, coef=0.1, ram_available_mb=None, iteration_s=400.0)  # pas de mesure
+    st, _, stop = sil_guard(cfg, st, share=0.0, coef=0.1, ram_available_mb=None, iteration_s=400.0)  # pas de mesure
     assert stop is None and st.ram_low_s == 400.0
-    _, _, stop = sil_guard(cfg, st, rho=0.0, coef=0.1, ram_available_mb=800.0, iteration_s=300.0)
+    _, _, stop = sil_guard(cfg, st, share=0.0, coef=0.1, ram_available_mb=800.0, iteration_s=300.0)
     assert stop is not None and stop[0] == "sil_ram"
-    st, _, _ = sil_guard(cfg, st, rho=0.0, coef=0.1, ram_available_mb=1500.0, iteration_s=300.0)
+    st, _, _ = sil_guard(cfg, st, share=0.0, coef=0.1, ram_available_mb=1500.0, iteration_s=300.0)
     assert st.ram_low_s == 0.0
 
 
@@ -532,13 +545,13 @@ def test_memoire_aux_dimensions_du_run_int_sil_mesuree_en_octets() -> None:
     buf = ReplayBuffer(cfg.sil.capacity, 109, cfg.sil.obs_dtype)
     assert n_learn == 7_373
     assert tracker.nbytes == 7_373 * 300 * (109 * 2 + 2) + 7_373 * 8 == 486_676_984
-    assert buf.nbytes == 250_000 * (109 * 2 + 2 + 4 + 4 + 4) == 58_000_000
+    assert buf.nbytes == 250_000 * (109 * 2 + 2 + 4 + 4 + 4 + 1) == 58_250_000  # obs, act, R, prio, itér., origine
     assert tracker.nbytes + buf.nbytes < 0.6e9  # ADR-009 : ≈ 0,6 Go estimé
     del tracker, buf
 
 
 def test_taille_serialisee_de_l_etat_sil_proche_des_tableaux() -> None:
-    sil = make_sil(scfg(mode="joint", capacity=1000, horizon_steps=50, store_float16=True), obs_dim=109)
+    sil = make_sil(scfg(capacity=1000, horizon_steps=50, store_float16=True), obs_dim=109)
     b = steps_arrays(60, 40, 109)
     b["rew"][-1], b["term"][-1] = 1.0, True
     ingest(sil, b)
@@ -633,7 +646,7 @@ def test_run_sil_journal_annealing_et_reprise_exacte(tmp_path: Path) -> None:
     go(cfg, b, env_factory=sil_factory(), memory_probe=probe, resume=True)
     # Assert : journal C4 à chaque itération, RAM journalisée, SIL active puis libérée ; reprise = run continu
     ra = rows(a)
-    assert all("sil/rho" in r and r["sil/ram_available_mb"] == 4096.0 for r in ra)
+    assert all("sil/disp_share" in r and r["sil/ram_available_mb"] == 4096.0 for r in ra)
     # mise à jour k faite après 32·k appris : 0, 32, 64, 96 (< 100), 128 (rampe), 160 (= fin : 0, libérée)
     assert [r["sil/coef"] for r in ra] == pytest.approx([0.1, 0.1, 0.1, 0.1, 0.1 * (160 - 128) / 60, 0.0])
     assert all(r["sil/steps_done"] == 2.0 for r in ra[:5]) and ra[-1]["sil/released"] == 1.0
@@ -654,14 +667,134 @@ def test_run_stop_ks1_si_la_ram_disponible_reste_basse(tmp_path: Path) -> None:
     assert any(e.get("event") == "guard" and e.get("rule") == "sil_ram" for e in events(tmp_path / "r"))
 
 
-def test_run_alerte_rho_journalisee(tmp_path: Path) -> None:
-    cfg = cfg_of(sil={**SIL_RUN, "rho_alert": 1.0e-9, "rho_alert_patience": 1})
+def test_run_alerte_part_de_deplacement_journalisee(tmp_path: Path) -> None:
+    cfg = cfg_of(sil={**SIL_RUN, "share_alert": 1.0e-9, "share_alert_patience": 1})
     go(cfg, tmp_path / "r", env_factory=sil_factory(), memory_probe=lambda: (4096.0, 1.0))
-    assert any(e.get("event") == "alert" and e.get("rule") == "sil_rho" for e in events(tmp_path / "r"))
+    assert any(e.get("event") == "alert" and e.get("rule") == "sil_share" for e in events(tmp_path / "r"))
 
 
 def test_learner_refuse_un_optimiseur_absent_en_mode_separate() -> None:
     with pytest.raises(ValueError):
-        SelfImitation(scfg(), GAMMA, 3, 5, seed=0, optimizer=None)
+        SelfImitation(sep(), GAMMA, 3, 5, seed=0, optimizer=None)
     with pytest.raises(ValueError):
-        SelfImitation(scfg(mode="joint"), GAMMA, 3, 5, seed=0, optimizer=_ManualAdam([], 1e-3))
+        SelfImitation(scfg(), GAMMA, 3, 5, seed=0, optimizer=_ManualAdam([], 1e-3))
+
+
+# ---------------------------------------------------------------------------------------------------- ADR-009 amendé
+
+
+def test_mode_joint_par_defaut_sans_optimiseur_sil_et_options_separate_refusees() -> None:
+    """ADR-009 D7-9 : en mode joint, aucun optimiseur SIL n'est créé ; `updates_per_iteration` et `max_grad_norm`
+    sont refusés ; le mode separate les exige."""
+    assert SILConfig(anneal_start_timesteps=0, anneal_end_timesteps=1).mode == "joint"
+    learner = _learner(scfg())
+    assert learner.sil is not None and learner.sil.optimizer is None
+    for bad in ({"updates_per_iteration": 2}, {"max_grad_norm": 0.5}):
+        with pytest.raises(ValueError, match="mode joint"):
+            scfg(**bad)
+    with pytest.raises(ValueError, match="mode separate"):
+        scfg(mode="separate")
+    with pytest.raises(ConfigError, match="mode joint"):
+        cfg_of(sil={**SIL_RUN, "updates_per_iteration": 2})
+    cfg = RunConfig.from_yaml(ROOT / "configs" / "int_sil.yaml").sil
+    assert cfg is not None and cfg.mode == "joint" and cfg.batch_size == 4_096
+    assert cfg.updates_per_iteration is None and cfg.max_grad_norm is None
+
+
+def _delta(before: list[Any], learner: Learner) -> list[Any]:
+    return [p.detach() - b for p, b in zip(learner.policy.parameters(), before, strict=True)]
+
+
+def test_decomposition_du_deplacement_exacte_adam_manuel() -> None:
+    """ADR-009 D7-8 : Σ_k Δθ^ppo_k + Σ_k Δθ^sil_k = Δθ réel sur π, à 1e-5 relatif près, sur 3 mises à jour de suite
+    (moments fantômes continus d'une itération à l'autre) ; Adam manuel de `test_ppo` (même formule que torch,
+    vérifiée en intégration sur `torch.optim.Adam` fusionné et non fusionné : `tests/integration/test_sil_adam.py`)."""
+    # Arrange
+    on = _learner(scfg())
+    _filled(on, 1.0)
+    torch.manual_seed(0)
+    col = Collector(Corridor(16, horizon=3), PolicyNet(7, 3, (16,)), 8, CPU, seed=1)
+    for _ in range(3):
+        before = [p.detach().clone() for p in on.policy.parameters()]
+        # Act
+        full = on.update(dataclasses.replace(copy.deepcopy(col.collect(0)), policy_version=on.version))
+        s = full.sil
+        # Assert
+        assert on.sil is not None and on.sil.last_disp is not None
+        d_ppo, d_sil = on.sil.last_disp
+        real = _delta(before, on)
+        err = math.sqrt(sum(float((a + b - r).pow(2).sum()) for a, b, r in zip(d_ppo, d_sil, real, strict=True)))
+        norm = math.sqrt(sum(float(r.pow(2).sum()) for r in real))
+        assert norm > 0 and err / norm <= 1e-5
+        assert s["steps_done"] == on.cfg.epochs * full.n_minibatches and 0.0 < s["disp_share"] < 1.0
+
+
+def test_coefficient_nul_part_de_deplacement_nulle_et_aucun_calcul() -> None:
+    on, off, batch = _learner(scfg(coef=0.0)), _learner(None), _one_batch()
+    _filled(on, 1.0)
+    s = on.update(batch).sil
+    off.update(batch)
+    assert (s["disp_share"], s["grad_share"], s["steps_done"], s["grad_norm_pi_ppo"]) == (0.0, 0.0, 0.0, 0.0)
+    assert on.sil is not None and on.sil.ghost_ppo is None and _same(_params(on), _params(off))
+
+
+def test_origine_stockee_sur_un_octet_et_jamais_lue_par_le_tirage_ni_la_perte() -> None:
+    """ADR-009 D7-6 : l'origine est stockée (diagnostic `buffer_generic_frac`) ; permuter le champ origine ne change
+    ni les indices tirés, ni les poids, ni la perte."""
+    # Arrange : agent 0 marque après un état générique (t = 2), agent 1 après un kickoff (t = 3)
+    sil, b = make_sil(), steps_arrays(4, 2)
+    b["rew"][2, 0], b["term"][2, 0], b["rew"][3, 1], b["term"][3, 1] = 1.0, True, 1.0, True
+    generic = np.zeros((4, 2), np.bool_)
+    generic[2, 0] = True
+    sil.ingest(b["obs"], b["act"], b["rew"], b["term"], b["trunc"], np.ones(2, np.bool_), 0, generic)
+    buf = sil.buffer
+    assert buf is not None and buf.origin.dtype == np.uint8 and buf.origin.itemsize == 1
+    assert buf.origin[: buf.size].tolist() == [1, 1, 1, 0, 0, 0, 0] and buf.generic_frac() == pytest.approx(3 / 7)
+    other = make_sil()
+    other.load_state_dict(decode(encode(sil.state_dict())))
+    assert other.buffer is not None
+    other.buffer.origin[: other.buffer.size] = 1 - buf.origin[: buf.size]  # origine permutée
+    policy, value = PolicyNet(3, 5, (8,)), ValueNet(3, (8,))
+    out = []
+    for s_ in (sil, other):
+        assert s_.buffer is not None
+        idx, w = s_.buffer.sample(64, s_.generator, 0.1)
+        obs, act, ret = s_.buffer.batch(idx, CPU)
+        pl, vl, _ = sil_losses(policy, value, obs, act, ret, w)
+        out.append((idx, w, float(pl.detach()), float(vl.detach())))
+    assert torch.equal(out[0][0], out[1][0]) and torch.equal(out[0][1], out[1][1]) and out[0][2:] == out[1][2:]
+
+
+def test_origine_des_episodes_par_agent_depuis_info_et_dans_le_lot() -> None:
+    from training.rollout import _agent_generic
+
+    info = {"ended": np.array([True, True, False]), "end_generic": np.array([True, False, True])}
+    assert _agent_generic(info, 6).tolist() == [True, True, False, False, False, False]
+    assert _agent_generic({}, 6) is None
+    with pytest.raises(ValueError):
+        _agent_generic(info, 5)
+    # le lot collecté porte le champ (faux sans les clés de l'env, comme Corridor)
+    batch = _one_batch()
+    assert batch.ep_generic is not None and batch.ep_generic.shape == batch.rew.shape and not batch.ep_generic.any()
+
+
+def test_restauration_k4_recharge_l_etat_de_la_garde_sil(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Régression (revue de 414b83f, m2) : après une restauration K4 en cours de processus, l'état de la garde SIL
+    restait celui de la trajectoire écartée. Le compteur d'alerte final doit compter les seules itérations de la
+    trajectoire retenue."""
+    # Arrange : coefficient constant sur tout le run, seuil d'alerte quasi nul, NaN au 5e appel (restauration vers 4)
+    inject(monkeypatch, lambda n, st: dataclasses.replace(st, grad_norm=float("nan")) if n == 5 else st)
+    sil = {**SIL_RUN, "anneal_start_timesteps": 190, "anneal_end_timesteps": 191, "share_alert": 1e-9}
+    out = tmp_path / "r"
+    # Act
+    s = go(cfg_of(sil=sil), out, env_factory=sil_factory(), memory_probe=lambda: (4096.0, 1.0))
+    # Assert
+    assert s.status == "completed" and s.restores == 1
+    shares = [r["sil/disp_share"] for r in rows(out)]
+    expected = 0
+    for x in shares:
+        expected = expected + 1 if x > 1e-9 else 0
+    assert expected >= 2
+    final = CheckpointManager(out / "checkpoints").load_latest()
+    assert final is not None and final[1]["iteration"] == 6
+    assert final[1]["extra"]["sil_guard"]["share_alert_streak"] == expected

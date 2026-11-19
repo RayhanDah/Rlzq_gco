@@ -652,7 +652,7 @@ def run(
                 sil_guard_state, sil_alert_list, sil_stop = sil_guard(
                     cfg.sil,
                     sil_guard_state,
-                    rho=stats["sil/rho"],
+                    share=stats["sil/disp_share"],
                     coef=stats["sil/coef"],
                     ram_available_mb=ram_avail,
                     iteration_s=it_s,
@@ -713,6 +713,8 @@ def run(
                 # compteurs de la TRAJECTOIRE : retour à la valeur du checkpoint ; compteurs de VIE du run
                 # (restaurations, NaN, S1) : conservés, ils ne reculent jamais
                 tally.goals, tally.episode_ends = float(info.extra["goals"]), float(info.extra["episode_ends"])
+                if sil_on and "sil_guard" in info.extra:  # compteurs SIL de la trajectoire retenue (revue, m2)
+                    sil_guard_state = SILGuardState(**info.extra["sil_guard"])
                 if eval_hook is not None and "evalhook" in info.extra:
                     eval_hook.load_state_dict(info.extra["evalhook"])  # évaluations écartées avec la trajectoire
                     eval_hook.note_checkpoint(iteration, True)
