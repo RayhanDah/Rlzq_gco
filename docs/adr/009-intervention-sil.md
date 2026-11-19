@@ -2,7 +2,7 @@
 
 - Statut : **proposé** (validation utilisateur requise avant tout lancement ; D9 propose un changement d'ordre des
   interventions qui amende ADR-005 D6, **sans toucher ADR-006**)
-- Date : 2026-11-18
+- Date : 2026-11-18 ; révisé le 2026-11-19 (constat de revue M1 : mode joint, indicateur C4 en part de déplacement)
 - Décideurs : research-director (proposition) ; rl-algo-lead (implémentation, `configs/int_sil.yaml`, `--variant int_sil`,
   désactivée par défaut) ; utilisateur (validation, lancement)
 
@@ -45,9 +45,13 @@ ar5iv : §3 Éq. 1–3 et Algorithme 1, §4.2, §5.3–5.6, Annexe A Tab. 3–4)
     arbre de sommes ≈ 4 Mo ; total SIL ≈ **0,60 Go**, d'où une mémoire disponible minimale ≈ 2,1 Go (**estimé, non mesuré**) ;
   - entrées dans le buffer : ≤ 7,4 buts × 300 pas ≈ 2 200 transitions par itération (borne haute ; les buts depuis états
     génériques sont sans doute plus courts) : le buffer couvre ≥ 110 itérations (≥ 5,8M pas appris) ;
-  - échantillons par itération : PPO 2 epochs × 51 611 = 103 222 ; SIL (D3) 2 × 8 192 = 16 384, soit **0,16** (Oh PPO+SIL :
-    5 120 / 20 480 = 0,25 ; Oh A2C+SIL : 2 048 / 80 = 25,6). Pas d'optimiseur : PPO 6 par itération (3 minibatchs × 2 epochs,
-    `src/training/ppo.py:256`), SIL 2.
+  - échantillons par itération : PPO 2 epochs × 51 611 = 103 222 ; SIL (D3, mode joint) 6 × 4 096 = 24 576, soit **0,24**
+    (Oh PPO+SIL : 5 120 / 20 480 = 0,25 ; Oh A2C+SIL : 2 048 / 80 = 25,6). Pas d'optimiseur : 6 par itération (3 minibatchs ×
+    2 epochs, `src/training/ppo.py:256`), aucun pas de plus avec la SIL.
+- **Constat de revue M1 (2026-11-19, implémentation 414b83f)** : avec un Adam séparé, le pas ne dépend presque pas de c_sil.
+  Mesure de l'auteur, CPU, 20 pas : |Δθ| = 0,59 / 0,11 / 0,017 pour c = 0,1 / 0,01 / 0,001 (script hors dépôt : provenance
+  partielle, non reproductible depuis le dépôt). Conséquences : annealing de c en quasi-palier puis chute ; 2 pas à pleine LR
+  contre 6 pas PPO ; rho (normes de gradient) sous-estime la part de la SIL dans le déplacement. D'où la révision de D3 et D5.
 
 ## Décision
 
@@ -70,21 +74,29 @@ ar5iv : §3 Éq. 1–3 et Algorithme 1, §4.2, §5.3–5.6, Annexe A Tab. 3–4)
 ### D2. Perte et priorités (Oh et al. §3, Éq. 1–3)
 - L_sil = c_sil(t) · moyenne_lot[ w_i · ( −log π(a_i|s_i)·(R_i − V(s_i))₊ + β · ½·((R_i − V(s_i))₊)² ) ], (R − V)₊ sans
   gradient dans le terme de politique (poids d'échantillon, Oh §3).
-- **β = 0,01** (Oh Tab. 3, et borne basse de Tab. 4). **c_sil = 0,1** au plateau (Oh Tab. 4, PPO+SIL).
+- **β = 0,01** (Oh Tab. 3, et borne basse de Tab. 4). **c_sil = 0,1** au plateau (Oh Tab. 4, PPO+SIL), **provisoire** : calibré
+  au banc par la règle de D5 avant le GO.
 - Priorité p_i = ((R_i − V(s_i))₊ + 10⁻³)^**0,6** (exposant Oh Tab. 3–4) ; transition neuve à la priorité maximale courante ;
   priorités mises à jour après chaque pas SIL avec le V du pas. Poids d'importance w_i = (N·P(i))^(−0,1) / max_j w_j :
   « correction de biais 0,1 » d'Oh Tab. 4, lue selon la convention de Schaul et al. (prioritized replay) ; Oh ne la définit pas
   (interprétation, signalée).
 - Aucune normalisation de (R − V)₊ (contrairement aux avantages PPO, `ppo.py:276`) : c'est le poids d'Oh.
 
-### D3. Mises à jour (une intervention, PPO inchangé)
-- Après les 2 epochs PPO de chaque itération : **2 pas SIL**, lot de **8 192** transitions tirées du buffer, si le buffer contient
-  ≥ 8 192 transitions (sinon aucun pas, journalisé).
-- **Optimiseur Adam séparé** (mêmes β, ε et calendrier de LR 2·10⁻⁴ → 5·10⁻⁵ que PPO) ; clip global 0,5 propre au pas SIL.
-  Ainsi l'état Adam de PPO n'est jamais modifié par la SIL, et `sil.enabled: false` laisse la trajectoire bit à bit identique
-  à std (test D7-1).
-- Pas de transfert exact possible des ratios d'Oh (0,25 à 25,6 selon le cadre) : 2 pas de 8 192 (ratio d'échantillons 0,16,
-  D Mesures) est une **proposition dérivée** entre les deux cadres publiés. Le journal C4 (D5) dira si la SIL pèse.
+### D3. Mises à jour : mode **joint** (révisé le 2026-11-19 après le constat M1)
+- À **chaque minibatch PPO** (6 par itération) : un lot SIL de **4 096** transitions tiré du buffer ; la perte du minibatch devient
+  L_PPO + L_sil (L_sil contient c_sil(t), D2) ; un seul backward ou deux gradients sommés **avant** le clip global 0,5 de PPO ;
+  **même Adam**, même LR que PPO. Pas de lot SIL tant que le buffer a moins de 4 096 transitions (journalisé).
+- Pourquoi joint plutôt qu'Adam séparé (constat M1) ou LR SIL annealée :
+  1. dans une somme de pertes sous un même Adam, c_sil redevient un **vrai poids relatif** à PPO (le préconditionneur est commun) :
+     l'annealing de D4 est un fondu continu, pas un palier suivi d'une chute ;
+  2. aucun pas d'optimiseur ajouté (6 par itération, comme std) ; K4 (KL approx sur les données PPO) voit l'effet de la SIL dans
+     les mêmes pas ; le clip global borne la somme ;
+  3. même schéma que la tâche auxiliaire (ADR-010) et que les pertes auxiliaires d'UNREAL (Éq. 2, somme pondérée) ;
+  4. l'option « LR SIL ∝ c(t) » garde deux optimiseurs et transforme c en rapport de LR sans source ; écartée.
+  Prix : l'état Adam de PPO voit les gradients SIL quand c_sil > 0 ; la part de déplacement reste mesurable exactement (D5).
+- `sil.enabled: false`, et c_sil = 0 (après 0,9B), **sautent tout le calcul SIL** : trajectoire bit à bit identique à std quand
+  la SIL est désactivée (test D7-1).
+- Ratio d'échantillons 0,24, proche des 0,25 d'Oh PPO+SIL (D Mesures) : **proposition dérivée**, pas une valeur transférée.
 - **Buffer : 250 000 transitions**, éviction FIFO ; plafond fixé par la RAM (D Mesures), pas par une source.
 
 ### D4. Calendrier de c_sil (C2)
@@ -100,10 +112,24 @@ ar5iv : §3 Éq. 1–3 et Algorithme 1, §4.2, §5.3–5.6, Annexe A Tab. 3–4)
 `coef`, `steps_done`, `buffer_size`, `buffer_new`, `buffer_age_mean` (itérations), `buffer_generic_frac` (diagnostic),
 `loss_policy`, `loss_value`, `frac_pos` (part des transitions tirées avec (R−V)₊ > 0), `adv_pos_mean`, `adv_pos_max`,
 `grad_norm_pi_sil` et `grad_norm_pi_ppo` (normes avant clip sur les **paramètres de la politique**, moyennes de l'itération),
-`rho` = grad_norm_pi_sil / (grad_norm_pi_sil + grad_norm_pi_ppo), `ram_available_mb` et `ram_private_mb` (RAM rendue
-**obligatoire** pour ce run).
-- La SIL n'injecte rien dans les avantages : la métrique C4 « part de la variance des avantages » se transpose en **rho**.
-  **Alerte C4** : rho > 0,5 pendant 50 itérations consécutives (journalisée, au rapport).
+`grad_share` = grad_norm_pi_sil / (grad_norm_pi_sil + grad_norm_pi_ppo) (diagnostic secondaire, ancien `rho`),
+`disp_norm_sil`, `disp_norm_ppo`, **`disp_share`** (ci-dessous), `ram_available_mb` et `ram_private_mb` (RAM rendue
+**obligatoire** pour ce run). `buffer_generic_frac` et le champ origine sont **maintenus** (1 octet par transition ; seule
+mesure du transfert états génériques → kickoff) ; test D7-6 conservé.
+- **Indicateur C4 = part de déplacement** (révisé le 2026-11-19). Pour chaque pas k (minibatch PPO) et les seuls paramètres de π :
+  g^ppo_k et g^sil_k (gradients avant clip ; g^sil inclut c_sil), f_k = facteur du clip global (commun aux deux). Deux moments
+  fantômes, m^x_k = β₁·m^x_(k−1) + (1−β₁)·f_k·g^x_k pour x ∈ {ppo, sil}, initialisés à m^ppo = `exp_avg` d'Adam et m^sil = 0 au
+  1er pas SIL ; Δθ^x_k = −(lr_k / (1−β₁^t))·m^x_k / (√(v_k / (1−β₂^t)) + ε), avec v_k = `exp_avg_sq` d'Adam **après** le pas.
+  Comme m est linéaire en g et v commun, Δθ^ppo_k + Δθ^sil_k = Δθ_k exactement (Adam sans weight decay ni amsgrad ; test D7-8).
+  Par itération : D^x = ‖Σ_k Δθ^x_k‖₂ ; **disp_share = D^sil / (D^sil + D^ppo)** (0 sans pas SIL). Moments fantômes dans le
+  checkpoint (reprise exacte). La SIL n'injecte rien dans les avantages : disp_share remplace la « part de variance » de C4.
+- **Alerte C4** : disp_share > 0,5 pendant 50 itérations consécutives (seuil de la spec, appliqué à la bonne grandeur).
+- **Calibrage de c_sil avant le GO (mesuré, pré-enregistré)** : au banc D7 (≤ 30 min, buffer plein), médiane de disp_share sur
+  les 10 dernières minutes. Si > 0,5 : c_sil ← c_sil / √10 (0,1 → 0,03 → 0,01), nouveau banc ; on retient le plus grand c_sil
+  dont la médiane est ≤ 0,5. Si 0,01 dépasse encore 0,5 : pas de GO, révision de l'ADR. Si < 0,05 à c_sil = 0,1 : noté, run
+  maintenu (D Conséquences, critère de révision). Valeur retenue consignée ici avant le GO. Raison : un gradient SIL cohérent
+  s'additionne d'un pas à l'autre quand celui de PPO, bruité, se compense ; la part de déplacement peut dépasser de loin la
+  part de gradient (estimé, non mesuré).
 
 ### D6. Conformité C1–C4 (`GCO_SPEC.md` §3)
 - **C1** : aucune notion de Rocket League. Entrées : transitions (s, a), récompense ±1, drapeau `terminated`, `learn_mask`, γ, V
@@ -119,12 +145,19 @@ ar5iv : §3 Éq. 1–3 et Algorithme 1, §4.2, §5.3–5.6, Annexe A Tab. 3–4)
 1. `sil.enabled: false` : métriques PPO et poids identiques bit à bit à std sur N itérations (CPU, même graine).
 2. Aucune transition d'épisode tronqué, perdant, ou du camp gelé n'entre dans le buffer (épisodes synthétiques).
 3. Retours MC exacts sur épisodes synthétiques (γ^(T−t), fenêtre de 300, épisode plus long que la fenêtre).
-4. Reprise exacte en CPU avec l'état SIL (buffer, priorités, fenêtres, Adam SIL, RNG) dans le checkpoint.
-5. Parité float16 : |Δ log π| max ≤ 10⁻² et |ΔV| max ≤ 10⁻³ entre obs float32 et float16 sur un lot réel ; sinon float32 (D1).
+4. Reprise exacte en CPU avec l'état SIL (buffer, priorités, fenêtres, moments fantômes, RNG) dans le checkpoint.
+5. Parité float16 : |Δ log π| max ≤ 10⁻² et |ΔV| max ≤ 10⁻³ entre obs float32 et float16 (test unitaire sur lot synthétique,
+   puis au banc, voir ci-dessous) ; sinon float32 avec 150 pas (D1).
 6. La perte et le tirage sont invariants si l'on permute le champ « origine ».
 7. Valeurs de c_sil(t) aux bornes du calendrier D4.
+8. Décomposition D5 : ‖Δθ^ppo + Δθ^sil − Δθ‖ / ‖Δθ‖ ≤ 10⁻⁵ sur π (CPU, Adam non fusionné et fusionné si disponible) ;
+   disp_share = 0 et trajectoire inchangée quand c_sil = 0.
+9. Mode joint : aucun optimiseur SIL créé ; `updates_per_iteration` et `sil.max_grad_norm` refusés (ou sans effet, testé).
 Puis : smoke test vert sur le commit du run (CLAUDE.md règle 5), et **banc de 30 min** (`scripts/bench_run.py`, config int_sil,
-pool plein) mesurant débit appris et RAM disponible minimale, consignés ici avant le GO.
+pool plein), consigné ici avant le GO : débit appris ; RAM disponible minimale, **y compris le pic à l'écriture d'un checkpoint**
+(≈ +0,55 Go transitoires, estimé, non mesuré ; si le minimum passe sous 1,5 Go : fenêtre de 150 pas) ; **parité float16 sur un
+lot réel et sur l'instantané 1B de std s0** (`checkpoints/run_4a_std_s0/eval_snapshots/`, itération 19 376) ; médiane de
+disp_share pour le calibrage de D5.
 
 ### D8. Protocole et critère de succès
 - Run : `int_sil_s0`, GCO-std, **graine 0, 1B appris**, config = `configs/run_4a_std.yaml` + bloc `sil` (seule différence, vérifiée
@@ -145,7 +178,7 @@ pool plein) mesurant débit appris et RAM disponible minimale, consignés ici av
 | # | Critère | Action |
 |---|---|---|
 | KS1 | Mémoire disponible < 1,0 Go pendant > 10 min | STOP propre ; buffer et fenêtre révisés par amendement |
-| KS2 | rho > 0,8 pendant 500 itérations consécutives (≈ 26M appris) tant que c_sil > 0 | STOP : la SIL a remplacé PPO |
+| KS2 | disp_share > 0,8 pendant 500 itérations consécutives (≈ 26M appris) tant que c_sil > 0 | STOP : la SIL a remplacé PPO |
 | KS3 | Après 0,3B, borne haute de l'IC bootstrap de l'Elo décisif contre l'aléatoire < 0 sur 2 points v2 consécutifs | STOP : pire que l'aléatoire |
 | KS4 | Débit appris < 40k pas/s sur 30 min (−20 % de 4a) | alerte, au rapport (K6 à 25k inchangé) |
 Les touches restent un diagnostic, jamais un critère d'arrêt (ADR-006 D7). Pas d'arrêt anticipé pour succès ni pour absence
@@ -172,18 +205,20 @@ Le témoin dense (ADR-011), s'il est accepté, passe avant les deux.
 
 ## Conséquences
 - Plus facile : seule intervention qui vise directement le crédit des rares buts ; PPO, récompense et éval inchangés.
-- Plus difficile : premier code d'entraînement hors PPO (buffer, fenêtre, second optimiseur, état de checkpoint ≈ 0,6 Go de plus
-  par checkpoint, coût d'écriture à mesurer au banc) ; une graine (variance ×1,5 entre graines std à 1B) : un « neutre » ne réfute
+- Plus difficile : premier code d'entraînement hors PPO (buffer, fenêtre, moments fantômes, état de checkpoint ≈ 0,6 Go de plus
+  par checkpoint, coût d'écriture et pic de RAM à mesurer au banc) ; en mode joint, l'état Adam de PPO voit la SIL ; une graine (variance ×1,5 entre graines std à 1B) : un « neutre » ne réfute
   pas la SIL.
 - Menaces : exploitation de buts chanceux (stochasticité) ; buffer dominé par des buts depuis états génériques (suivi par
   `buffer_generic_frac`), dont le transfert au kickoff n'est pas garanti ; c_sil emprunté à MuJoCo.
-- Révision si : rho < 0,05 pendant tout le plateau (la SIL ne pèse pas : tester c_sil = 1, valeur d'Oh Tab. 3, par nouvel ADR) ;
+- Révision si : disp_share < 0,05 pendant tout le plateau (la SIL ne pèse pas : tester c_sil = 1, valeur d'Oh Tab. 3, par nouvel
+  ADR) ;
   KS1 au banc ; `frac_pos` < 1 % durablement (critique déjà optimiste, buffer inutile) ; publication des codes Terminal /
   Pulsar 2.5 (spec §8).
 
 ## Points à valider par l'utilisateur
 1. Réglages D1–D4 : buts gagnants seulement, tronqués exclus, fenêtre 300 pas, buffer 250 000, c_sil 0,1, β 0,01, priorités 0,6
-   et correction 0,1, 2 pas SIL de 8 192 par itération, Adam séparé, annealing 0,5B → 0,9B puis 0.
-2. Journal C4 (rho) et KS1 à KS4 ; RAM obligatoire pour ce run.
+   et correction 0,1, **mode joint** (lot SIL de 4 096 par minibatch PPO, même Adam), annealing 0,5B → 0,9B puis 0 ; c_sil
+   calibré au banc (règle D5).
+2. Journal C4 (**disp_share**, part de déplacement de π), alerte 0,5 sur 50 itérations, KS1 à KS4 ; RAM obligatoire.
 3. Critère de succès = ADR-006 D6, comparaison hors ligne à std s0.
 4. Ordre D9 : (témoin dense si accepté) → SIL si prête → (1) ou (2) selon ADR-006 D5 → (4) tâche auxiliaire (ADR-010).
