@@ -107,3 +107,23 @@ touche, 6db79a4). Trajectoire descriptive à chaque 0,1B avec 2 048 épisodes.
 2. Récompense D1 (guide officiel RLGym ÷ 10, but ±1 de §2.1) ; un seul levier contre std s0.
 3. Verdict D3 (PASS ≥ 50 % de touche + SPRT, FAIL < 25 % à 1B) ; arrêt à 0,5B si PASS.
 4. Place : après GCO-S s0, avant la SIL ; coût ≈ 3 à 5,6 h (estimé).
+
+## Implémentation et vérifications (2026-11-19)
+- Code : variante `dense-diag` (`src/rewards/dense.py`), `configs/diag_dense.yaml` (seuls `name` et `reward.variant`
+  diffèrent de `run_4a_std.yaml`, testé), `scripts/run_4a.py --variant diag_dense` (run `diag_dense_s<seed>`), refus de
+  checkpoint hors spec (`training.checkpoint.require_in_spec`, `purpose` de `load_checkpoint_policy`). Commit ff81e9b,
+  revue `code-reviewer` APPROVE (aucun majeur) ; fusion dans main 015c65d avec la SIL (ADR-009, désactivée par défaut).
+- Hashs de récompense inchangés pour les variantes in-spec (GCO-S 2b6485236c99aa29, GCO-std d531d5919a4d9181, GCO-ext
+  fb907ee1d40cc464, scorer-only b8051d9a95dbdec9) ; `dense-diag` 275f3f883e786a28.
+- Tests sur 015c65d : ruff, format, mypy verts ; 679 tests unitaires ; 144 d'intégration avec RocketGPU (2 xfail connus, R13).
+- Smoke tests **PASS** sur 015c65d, XPU, laptop Core Ultra 5 125H, 2026-11-19 : `scripts/train.py configs/smoke.yaml --smoke`
+  (`runs/smoke_015c65d/`) et la même config avec `reward.variant: dense-diag` (`runs/smoke_dense_015c65d/`, récompense
+  moyenne par pas 3,8e-4 > 0 : le façonnage est actif) ; 0 NaN, reprise exacte. Essai du lanceur (`--max-iterations 1`,
+  `runs/trial_dense_015c65d/`) : `run_meta` porte `HORS SPEC`, `reward_variant: dense-diag`, éval `run_s1v2_eval.yaml`.
+- Errata D3 : l'éval en cours de run est celle de `run_s1v2_eval.yaml` (3 072 épisodes contre l'aléatoire et 3 072 contre θ₀
+  tous les 0,1B, touches comprises) au lieu de 2 048 : sur-ensemble de la trajectoire descriptive prévue. Le verdict reste
+  celui de D3, hors ligne, 20 000 épisodes. `s1_reached` et K7 du hook sont sans objet pour ce run.
+- À retenir pour la Phase 5/6 : un futur pool d'adversaires externes ou un export RLBot devra appeler
+  `load_checkpoint_policy(..., purpose="training_opponent" | "export")` ; la garde n'est pas automatique (revue, mineur).
+- Commande, session 1 (sur GO de l'utilisateur) : `vendor/venv-xpu/Scripts/python scripts/run_4a.py --variant diag_dense
+  --seed 0 --max-hours 3`.
