@@ -1,7 +1,8 @@
 # ADR-011 — Run témoin à récompense dense, HORS SPEC, diagnostic du pipeline
 
-- Statut : **proposé**. **Décision réservée à l'utilisateur** (CLAUDE.md règle 9 : aucune récompense ajoutée dans la ligne
-  principale ; ce run est hors de la spec, même hors GCO-ext). Aucun code ni run avant son GO explicite.
+- Statut : **accepté** : GO de l'utilisateur le 2026-11-19 (« GO témoin dense »), points 1 à 4 tels que proposés. Run hors
+  spec, diagnostic, jamais promu (CLAUDE.md règle 9 : la ligne principale reste GCO-std). Lancement après GCO-S s0 et un smoke
+  test vert sur le commit du run.
 - Date : 2026-11-18
 - Décideurs : research-director (proposition) ; reward-engineer (implémentation après GO) ; utilisateur (décision)
 
