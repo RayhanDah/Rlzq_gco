@@ -1,8 +1,10 @@
 # ADR-007 — Intervention (2) : γ 0,995 → 0,998 (GCO-std, graine 0, 1B)
 
-- Statut : **proposé, conditionnel au résultat de GCO-S graine 0 (ADR-006 D5)** : s'applique si GCO-S s0 n'est **pas**
-  « S < std » (borne haute du Wilson 95 % des victoires par épisode ≥ 1,60 %), sinon c'est ADR-008. Validation utilisateur
-  requise avant tout lancement.
+- Statut : **accepté pour exécution par délégation** : l'utilisateur a validé le 2026-11-21 l'ordre « analyse post hoc SIL →
+  ADR-012 → ADR-007 → ADR-010 → variante SIL » et délégué la gestion des runs (« je te laisse gérer le projet et les runs ») ;
+  les 3 points en fin d'ADR n'ont pas été relus un par un par l'utilisateur. Condition ADR-006 D5 levée : borne haute du
+  Wilson des victoires par épisode de GCO-S s0 4,60 % ≥ 1,60 % (`docs/reports/gcos_s0.md`). Lancement seulement si la
+  phase A d'ADR-012 n'est pas SUCCÈS (sinon phase B d'abord, sur GO, ADR-012 D8). (Proposé le 2026-11-18, conditionnel.)
 - Date : 2026-11-18
 - Décideurs : rl-algo-lead (proposition) ; research-director ; utilisateur (validation, lancement).
 
@@ -65,8 +67,12 @@ compatible »).
 - **Inchangés** : récompense, observation, éval (indépendante de γ), `p_kick_at` (version de calendrier inchangée), hash de
   récompense. Le hash de trajectoire change (nouveau run, pas de reprise d'un checkpoint std).
 
-### D3. Exécution (après GO utilisateur seulement)
-- Prérequis (CLAUDE.md règle 5) : smoke test vert **sur le commit du run** (`scripts/train.py configs/smoke.yaml --smoke`).
+### D3. Exécution (après GO utilisateur seulement ; délégation du 2026-11-21, voir Statut)
+- Prérequis (CLAUDE.md règle 5) : smoke test vert **sur le commit du run** (`scripts/train.py configs/smoke.yaml --smoke`),
+  ce commit portant le Statut ci-dessus ; arbre propre (le lanceur refuse un arbre sale, `scripts/run_4a.py`). Contrôle après
+  démarrage : SHA-256 des poids de θ₀ égal à std s0 (méthode de `tests/unit/test_run_4a_interventions.py:414`).
+- Diagnostic suivi (pas un critère d'arrêt) : ‖g‖ avant clip (π et V partagent un Adam et un clip global 0,5,
+  `src/training/ppo.py:334-341` ; std ≤ 0,093).
 - Commande : `vendor/venv-xpu/Scripts/python scripts/run_4a.py --variant int_gamma998 --seed 0 --max-hours 0`
   (run `int_gamma998_s0` ; éval en cours de run par défaut `configs/run_s1v2_eval.yaml`, protocole ADR-006 D2, D3 ; ajouter
   `--eval-config run_s1v2_eval.yaml` explicitement ne change rien). Pas de `--std-s1-observed` : c'est un GCO-std.
@@ -86,9 +92,11 @@ compatible »).
   ≥ **6,28 %** **et** SPRT +100 Elo accepte H1 sur la même éval ;
   (ii) 1re paire de points consécutifs avec H1 sur les évals hors ligne à 2 048 épisodes `--seed 0` au plus tard à **0,2B**
   (paire complète ≤ 0,3B).
-  Référence std s0 : 3,14 % de décisives à 1B, 1re paire à 0,5B (ni (i) ni (ii)).
-- **Neutre** sinon : γ = 0,995 conservé, intervention suivante de `GCO_SPEC.md` §8 (ADR-008 si elle n'a pas été faite,
-  sinon self-imitation), un ADR chacune.
+  Référence std s0 : 3,14 % de décisives à 1B, 1re paire à 0,5B (ni (i) ni (ii)). Références descriptives seulement (jamais
+  comparées pour ce critère) : GCO-S s0 (`docs/reports/gcos_s0.md`) et SIL s0 (`docs/reports/int_sil_s0.md`, 4,33 % à 1B).
+- **Neutre** sinon : γ = 0,995 conservé ; suite selon l'ordre validé par l'utilisateur le 2026-11-21 : ADR-010 (tâche
+  auxiliaire), puis variante SIL éventuelle, un ADR chacune. (Rédaction initiale : ADR-008 ou self-imitation ; la SIL a été
+  faite ; ADR-008 ne s'applique pas, GCO-S s0 n'étant pas « S < std », ADR-006 D5.)
 
 ## Conséquences
 - Plus facile : un seul champ, aucun code d'entraînement touché, run comparable à std s0 par une commande identique.
@@ -104,7 +112,7 @@ compatible »).
 - Révision si : EV < 0,5 durablement après 0,2B (diagnostic, pas un critère d'arrêt), ou succès ambigu (un seul volet de
   (i)) ; on passerait alors à l'option « montée 0,995 → 0,998 » ou au protocole Five Fig. 6 (nouvel ADR).
 
-## Points à valider par l'utilisateur
+## Points soumis à l'utilisateur (couverts par la délégation du 2026-11-21, non relus individuellement)
 1. Application conditionnelle : seulement si GCO-S s0 n'est pas « S < std » (ADR-006 D5).
 2. γ = 0,998 constant dès l'itération 0 (et non montée progressive ni reprise d'un checkpoint) ; λ = 0,95 inchangé.
 3. Commande de lancement D3, smoke test sur le commit du run d'abord.
