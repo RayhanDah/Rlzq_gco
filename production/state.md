@@ -50,9 +50,13 @@ Mis à jour : 2026-11-21 (Phase 4a : témoin dense fini, AMBIGU ; run SIL `int_s
   32.0.101.8860). Reprise automatique (`scripts/run_4a.py`) ; pas de garde contre un processus figé.
 
 ## Expériences en cours
-- **Run SIL `int_sil_s0`** (ADR-009, GCO-std, graine 0, 1B) : lancé le 2026-11-21 par Claude sur décision de l'utilisateur,
-  `scripts/run_4a.py --variant int_sil --seed 0 --max-hours 0` ; durée ≈ 8,5 h au débit du banc (extrapolé). Comparaison hors
-  ligne à std s0 (ADR-006 D4) après le run. Point à 16 h 40 : itération 14 731 / 19 376, débit ≈ 31k appris/s, aucun STOP ;
-  RAM disponible tombée à 0,5 Go quelques minutes (Chrome ≈ 5 Go), KS1 non déclenché (compteur remis à 0 au-dessus de 1 Go).
+- **Phase A d'ADR-012 `diag_dense_lr3_s0`** (HORS SPEC, graine 0, LR ×3, arrêt à l'itération 9 688 = 0,5B) : lancée le
+  2026-11-21 18 h 34 sur 042b335 (smoke `runs/smoke_dense_lr3_042b335` PASS), `run_4a.py --variant diag_dense_lr3 --seed 0
+  --max-hours 0 --max-iterations 9688` ; ≈ 3,1 h (estimé). θ₀ identique au témoin (SHA-256 7fab4c74…cb8a, mesuré).
+- **Run SIL `int_sil_s0` terminé** (2026-11-21 18 h 26, 8,1 h, 1 segment, 0 restauration, aucun KS) : critère ADR-006 D6
+  **NEUTRE** (1B : décisives 4,33 % [4,06 ; 4,63] < 6,28 %, SPRT H1 ; 1re paire H1 à 0,3B). Descriptif : pic à 0,7B
+  (8,8 % de décisives, touche 41,7 %) puis retour à 3,7 % / 21,7 % à 1B, pendant l'annealing de c_sil ; persistance D4
+  déclenchée (« gain dépendant de la SIL »). Rapport `docs/reports/int_sil_s0.md` ; avis research-director : SIL v1 non promue,
+  ordre proposé (à valider) : analyse post hoc, ADR-012, ADR-007, ADR-010, variante SIL éventuelle (nouvel ADR, C2).
 - Témoin dense terminé : `runs/diag_dense_s0/`, éval hors ligne `runs/diag_dense_offline_eval/` (1 perte du GPU reprise).
 - Résultats 4a : `runs/run_4a_std_s{0,1,2}/`, `runs/run_4a_s_s0/`, évaluation hors ligne `runs/run_4a_offline_eval/`.
