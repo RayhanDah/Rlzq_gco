@@ -24,7 +24,8 @@ Mis à jour : 2026-11-21 (Phase 4a : témoin dense fini, AMBIGU ; run SIL `int_s
    Règle D5 : S ≥ std, intervention désignée (2) γ 0,998 (ADR-007, proposé).
 2. **Témoin dense fini (ADR-011)** : verdict D3 **AMBIGU** à 1B (A touche 50,4 % [49,75 ; 51,13], 20 000 épisodes, SPRT H1 ;
    0,5B : 23,0 %). Le pipeline apprend le contact quand le signal existe, lentement. Suite D3 : **ADR-012 accepté** (utilisateur,
-   2026-11-21) : audit d'un levier, LR ×3, phase A `diag_dense_lr3_s0` à 0,5B **après** la SIL ; préalables P1 et P2 en cours.
+   2026-11-21) : audit d'un levier, LR ×3, phase A `diag_dense_lr3_s0` à 0,5B **après** la SIL ; P1 fait (×3 confirmé), P2 fait et revu (APPROVE, 7722c59) ;
+   reste le smoke sur le commit du run, puis `run_4a.py --variant diag_dense_lr3 --seed 0 --max-hours 0 --max-iterations 9688`.
 3. **ADR-009 SIL accepté** (utilisateur, 2026-11-21, « SIL quoi qu'il arrive »). Préalables D7 faits : smoke PASS (aedf0ca),
    2 bancs, parité float16 PASS, c_sil 0,1 retenu, fenêtre 150 pas (règle RAM). Débit 32,6k/s (KS4 en alerte).
 4. Ordre : SIL (en cours), puis ADR-012 phase A (≈ 3,3 h, estimé) et phase B si SUCCÈS et GO, puis ADR-007 (à valider), puis tâche auxiliaire (ADR-010, esquisse). Ensuite seeds 1
