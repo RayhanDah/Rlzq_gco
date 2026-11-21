@@ -28,6 +28,10 @@ Témoin HORS SPEC (ADR-011) : `--variant diag_dense` lance `configs/diag_dense.y
 (récompense `dense-diag`, seul levier
 contre std s0) sous le nom `diag_dense_s<seed>`, mêmes garanties de session ; run étiqueté « HORS SPEC » dans run_meta,
 events et segments, jamais promu (ses checkpoints ne servent qu'à l'évaluation, `training.checkpoint.require_in_spec`).
+Audit des réglages PPO (ADR-012 D1, D2) : `--variant diag_dense_lr3` lance `configs/diag_dense_lr3.yaml` (le même
+témoin, seul levier : calendrier de LR ×3) sous le nom `diag_dense_lr3_s<seed>`, même traitement que `diag_dense`
+(HORS SPEC, éval `run_s1v2_eval.yaml`). Arrêt à 0,5B : `--max-iterations 9688` (le budget de la config reste 1B pour
+que la LR à l'itération t soit exactement 3× celle du témoin).
 
 Enchaînement et reprise automatique (décision de l'utilisateur du 2026-11-15, runs lancés la nuit) :
 `--seed 1 2` enchaîne les runs ; le suivant ne démarre que si le précédent est terminé (budget atteint). Chaque
@@ -69,8 +73,9 @@ INTERVENTIONS = {
     "int_slow_anneal": "int_slow_anneal.yaml",
     "int_sil": "int_sil.yaml",  # ADR-009 (proposé) : self-imitation, bloc `sil` seul ajouté
 }
-# Témoin de diagnostic HORS SPEC (ADR-011) : récompense dense-diag, une seule modification par rapport à std s0.
-DIAGNOSTICS = {"diag_dense": "diag_dense.yaml"}
+# Témoins de diagnostic HORS SPEC (ADR-011) : récompense dense-diag, une seule modification par rapport à std s0 ;
+# diag_dense_lr3 (ADR-012 D1, D2) : une seule modification par rapport à diag_dense (calendrier de LR ×3).
+DIAGNOSTICS = {"diag_dense": "diag_dense.yaml", "diag_dense_lr3": "diag_dense_lr3.yaml"}
 EVAL_CONFIG = "run_4a_eval.yaml"
 INTERVENTION_EVAL_CONFIG = "run_s1v2_eval.yaml"  # ADR-006 D2, D3 : protocole S1-seed v2
 EXIT_OK, EXIT_ERROR, EXIT_KILL, EXIT_DEVICE_LOST = 0, 1, 3, 4
@@ -348,7 +353,8 @@ def main(argv: list[str] | None = None) -> int:
         choices=sorted(VARIANTS) + sorted(INTERVENTIONS) + sorted(DIAGNOSTICS),
         required=True,
         help="std = GCO-std, s = GCO-S ; int_gamma998 (ADR-007), int_slow_anneal (ADR-008), int_sil (ADR-009) : "
-        "interventions GCO-std ; diag_dense (ADR-011) : témoin à récompense dense, HORS SPEC, jamais promu",
+        "interventions GCO-std ; diag_dense (ADR-011) : témoin à récompense dense, HORS SPEC, jamais promu ; "
+        "diag_dense_lr3 (ADR-012) : le même témoin, LR ×3",
     )
     ap.add_argument("--seed", type=int, nargs="+", required=True, help="0, 1 ou 2 (ADR-005 D3) ; plusieurs : enchaînés")
     ap.add_argument("--max-hours", type=float, default=7.5, help="durée murale par run (défaut 7,5 h ; 0 = aucune)")

@@ -4,16 +4,24 @@ rapport à `configs/run_4a_std.yaml` et lancement par `scripts/run_4a.py --varia
 from __future__ import annotations
 
 import argparse
+import dataclasses
+import hashlib
+import json
 import shutil
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
+from test_env import fake_obs
+from test_run import StatefulFakeSim, adam_factory, cfg_of, make_factory
 from test_run_4a import ROOT, r4
 
-from training import RunConfig
-from training.evalhook import EvalHookConfig
+from rewards import RewardFunction
+from training import CheckpointManager, RunConfig
+from training.evalhook import EVALS_FILE, EvalHookConfig
+from training.run import _spec_label
 
 CONFIGS = ROOT / "configs"
 EXPECTED_DIFF: dict[str, dict[tuple[str, ...], tuple[Any, Any]]] = {
@@ -308,3 +316,158 @@ def test_launch_diag_dense_et_refus_si_la_config_n_est_pas_dense(
     shutil.copy(CONFIGS / "run_s1v2_eval.yaml", cdir / "run_s1v2_eval.yaml")
     with pytest.raises(ValueError, match="dense-diag attendu"):
         r4.launch("diag_dense", 0, config_dir=cdir, **kw)
+
+
+# ------------------------------------------------------------------ audit des réglages PPO, LR ×3 (ADR-012 D1, D2, P2)
+
+LR3_DIFF: dict[tuple[str, ...], tuple[Any, Any]] = {
+    ("name",): ("diag_dense", "diag_dense_lr3"),
+    ("ppo", "lr_start"): (2.0e-4, 6.0e-4),
+    ("ppo", "lr_end"): (5.0e-5, 1.5e-4),
+}
+DENSE_DIAG_REWARD_HASH = "275f3f883e786a28"  # préfixe consigné dans ADR-011 (Implémentation) et ADR-012 D2
+
+
+def _ppo_text(path: Path, key: str) -> str:
+    """Texte de la valeur `ppo.<key>` dans le YAML (une seule occurrence, indentée, commentaire retiré)."""
+    (line,) = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.startswith(f"  {key}:")]
+    return line.split(":", 1)[1].split("#", 1)[0].strip()
+
+
+def test_diag_dense_lr3_ne_differe_du_temoin_que_par_la_lr() -> None:
+    # Arrange : YAML brut et configs construites (valeurs par défaut et dérivées comprises)
+    base_path, lr3_path = CONFIGS / "diag_dense.yaml", CONFIGS / r4.DIAGNOSTICS["diag_dense_lr3"]
+    base_raw = yaml.safe_load(base_path.read_text(encoding="utf-8"))
+    lr3_raw = yaml.safe_load(lr3_path.read_text(encoding="utf-8"))
+    base, lr3 = RunConfig.from_yaml(base_path), RunConfig.from_yaml(lr3_path)
+    # Act
+    raw_diff, cfg_diff = _diff(base_raw, lr3_raw), _diff(base.to_dict(), lr3.to_dict())
+    h_base = RewardFunction(base.reward.build()).config_hash  # même calcul que `training.run` (run.py:422)
+    h_lr3 = RewardFunction(lr3.reward.build()).config_hash
+    # Assert : hors `name`, exactement les deux clés de D1
+    assert raw_diff == LR3_DIFF
+    assert cfg_diff == LR3_DIFF
+    # facteur 3 exact en décimal sur le texte du YAML (en flottant, 3 * 2e-4 != 6e-4 d'un ulp)
+    for key in ("lr_start", "lr_end"):
+        assert Decimal(_ppo_text(lr3_path, key)) == 3 * Decimal(_ppo_text(base_path, key))
+    # même calendrier (longueur 1B, forme linéaire) : LR(t) = 3 × LR témoin(t) ; tolérance 1e-12 = arrondi flottant
+    assert base.total_iterations == lr3.total_iterations == 19_376 and lr3.batch_learned_steps == 51_611
+    for t in (0, 1, 1_938, 9_687, 9_688, 19_375, 19_376):
+        assert lr3.ppo.lr_at(t) == pytest.approx(3 * base.ppo.lr_at(t), rel=1e-12, abs=0)
+        assert lr3.ppo.ent_coef_at(t) == base.ppo.ent_coef_at(t)
+    # récompense inchangée (hash du témoin) et étiquette HORS SPEC (ADR-011 D2)
+    assert h_lr3 == h_base and h_lr3.startswith(DENSE_DIAG_REWARD_HASH)
+    assert _spec_label(lr3) == {"hors_spec": True, "label": "HORS SPEC", "reward_variant": "dense-diag"}
+
+
+def test_diag_dense_lr3_nom_config_eval_parseur_et_ligne_enfant(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Arrange
+    captured: list[argparse.Namespace] = []
+
+    def fake_supervise(args: argparse.Namespace, max_hours: float | None) -> int:
+        captured.append(args)
+        return 0
+
+    monkeypatch.setattr(r4, "_supervise_main", fake_supervise)
+    argv = ["--variant", "diag_dense_lr3", "--seed", "0", "--max-hours", "0", "--max-iterations", "9688"]
+    # Act : commande de D2 (arrêt à 0,5B)
+    code = r4.main([*argv, "--allow-dirty"])
+    # Assert
+    assert code == 0
+    assert r4.run_name("diag_dense_lr3", 0) == "diag_dense_lr3_s0"
+    assert r4.config_file("diag_dense_lr3") == "diag_dense_lr3.yaml"
+    assert r4.default_eval_config("diag_dense_lr3") == r4.default_eval_config("diag_dense") == "run_s1v2_eval.yaml"
+    assert "diag_dense_lr3" not in r4.INTERVENTIONS  # pas une intervention GCO-std
+    (args,) = captured
+    assert (args.variant, args.eval_config, args.max_iterations) == ("diag_dense_lr3", "run_s1v2_eval.yaml", 9688)
+    args.runs_root, args.checkpoints_root = Path("R"), Path("C")
+    cmd = r4.child_command(args, 0, False, None)  # chaque session enfant (reprise après perte du GPU) garde le plafond
+    assert cmd[2:7] == ["--child", "--variant", "diag_dense_lr3", "--seed", "0"]
+    assert cmd[cmd.index("--max-iterations") + 1] == "9688"
+    assert cmd[cmd.index("--eval-config") + 1] == "run_s1v2_eval.yaml"
+
+
+def test_diag_dense_lr3_eval_due_a_l_iteration_9688(tmp_path: Path) -> None:
+    # Arrange : hook réel de la config réelle (D2 : instantané de l'itération 9 688) ; simulateur jamais construit
+    import train as train_script
+
+    cfg = RunConfig.from_yaml(CONFIGS / "diag_dense_lr3.yaml")
+    hook_cfg = EvalHookConfig.from_yaml(CONFIGS / r4.default_eval_config("diag_dense_lr3"))
+    hook = train_script.build_eval_hook(
+        cfg,
+        hook_cfg,
+        tmp_path / "runs",
+        tmp_path / "ck",
+        resume=False,
+        sim_factory=lambda n: StatefulFakeSim(n, 2),
+        build_obs=fake_obs,
+        obs_dim=7,
+    )
+    # Act
+    due = [it for it in range(1, 10_001) if hook.is_due(it)]
+    # Assert : 0,1B à 0,5B appris = itérations du tableau M1 d'ADR-012 ; 9 688 est la 5e éval, 9 687 ne l'est pas
+    assert hook.learned_steps_per_iteration == 51_611 and hook_cfg.every_timesteps == 100_000_000
+    assert due == [1_938, 3_876, 5_813, 7_751, 9_688]
+    assert hook.eval_index(9_688) == 5 and hook.eval_index(9_687) == 4
+
+
+def _weights_sha256(path: Path) -> str:
+    """SHA-256 des poids de politique d'un instantané d'évaluation (noms triés, octets des tenseurs), comme ADR-006."""
+    weights = CheckpointManager.load(path)["trainer"]["learner"]["policy"]
+    h = hashlib.sha256()
+    for name in sorted(weights):
+        h.update(name.encode("utf-8"))
+        h.update(weights[name].detach().cpu().contiguous().numpy().tobytes())
+    return h.hexdigest()
+
+
+def test_diag_dense_lr3_theta0_identique_au_temoin_et_instantane_au_plafond(tmp_path: Path) -> None:
+    # Arrange : vraie boucle (`launch` -> `training.run` -> hook) en CPU, simulateur factice. De chaque config
+    # versionnée on garde le modèle, la graine, la variante de récompense et les deux LR ; le reste est réduit.
+    cdir = tmp_path / "configs"
+    cdir.mkdir()
+    for name in ("diag_dense.yaml", "diag_dense_lr3.yaml"):
+        shutil.copy(CONFIGS / name, cdir / name)
+    # éval due toutes les 3 itérations (96 / 32) : le plafond 3 tombe sur une itération d'éval, comme 9 688 en D2
+    (cdir / "run_s1v2_eval.yaml").write_text(
+        "protocol: s1_v2\nevery_timesteps: 96\nfrozen_lag_timesteps: 96\nepisodes_random: 4\nepisodes_frozen: 4\n"
+        "n_envs: 2\n",
+        encoding="utf-8",
+    )
+
+    def shrink(cfg: Any) -> Any:
+        # checkpoint 0 et final seulement : moins d'écritures (la reprise n'est pas l'objet de ce test)
+        tiny = cfg_of(reward={"variant": cfg.reward.variant}, checkpoint={"every_iterations": 100})
+        ppo = dataclasses.replace(tiny.ppo, lr_start=cfg.ppo.lr_start, lr_end=cfg.ppo.lr_end)
+        return dataclasses.replace(tiny, name=cfg.name, seed=cfg.seed, model=cfg.model, ppo=ppo)
+
+    kw: dict[str, Any] = {
+        "max_hours": None,
+        "runs_root": tmp_path / "r",
+        "checkpoints_root": tmp_path / "c",
+        "config_dir": cdir,
+        "config_edit": shrink,
+        "max_iterations": 3,
+        "run_kwargs": {"env_factory": make_factory(), "optimizer_factory": adam_factory, "handle_sigint": False},
+        "hook_kwargs": {"sim_factory": lambda n: StatefulFakeSim(n, 2), "build_obs": fake_obs, "obs_dim": 7},
+    }
+    # Act
+    reports = {v: r4.launch(v, 0, **kw) for v in ("diag_dense", "diag_dense_lr3")}
+    # Assert
+    snaps: dict[str, Path] = {}
+    for variant, (code, rep) in reports.items():
+        name = f"{variant}_s0"
+        assert (code, rep["run"], rep["status"], rep["end_iteration"]) == (0, name, "paused", 3)
+        meta = json.loads((tmp_path / "r" / name / "run_meta.json").read_text(encoding="utf-8"))
+        assert (meta["hors_spec"], meta["label"], meta["reward_variant"]) == (True, "HORS SPEC", "dense-diag")
+        snaps[variant] = tmp_path / "c" / name / "eval_snapshots"
+        lines = (tmp_path / "r" / name / EVALS_FILE).read_text(encoding="utf-8").splitlines()
+        evals = [json.loads(ln) for ln in lines if ln.strip()]
+        # plafond absolu = itération d'éval : l'éval et son instantané sont écrits avant l'arrêt `paused`
+        at_cap = [e for e in evals if e.get("event") == "eval" and e.get("iteration") == 3]
+        assert len(at_cap) == 1 and at_cap[0]["snapshot"]
+        assert (snaps[variant] / at_cap[0]["snapshot"]).is_file()
+    theta0 = {v: _weights_sha256(snaps[v] / "ckpt_000000_it00000000.pt") for v in snaps}
+    at_3 = {v: _weights_sha256(next(snaps[v].glob("ckpt_*_it00000003.pt"))) for v in snaps}
+    assert theta0["diag_dense"] == theta0["diag_dense_lr3"]  # θ₀ ne dépend pas de la LR (ADR-012 D7 P2)
+    assert at_3["diag_dense"] != at_3["diag_dense_lr3"]  # sensibilité du test : la LR agit bien après θ₀
