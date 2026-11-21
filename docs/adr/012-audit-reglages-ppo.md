@@ -168,6 +168,10 @@ KL de D3 (lue après le run, sans code). Pas d'arrêt anticipé pour succès. Un
   `ppo.lr_end` diffèrent de `diag_dense.yaml` » ; hash de récompense inchangé ; θ₀ identique au témoin (SHA-256 des poids de
   l'itération 0, comme ADR-006).
 - **P3** : revue `code-reviewer` ; smoke test vert sur le commit du run (CLAUDE.md règle 5).
+- **Résultat P1 (2026-11-21, experiment-analyst, lecture seule de `runs/diag_dense_s0/metrics.jsonl`, 19 376 itérations
+  contiguës, HEAD a1a57c5)** : moyenne de tranche de `ppo/approx_kl` maximale **1,20·10⁻³** (tranche 0–0,1B ; autres tranches
+  6,4·10⁻⁴ à 1,03·10⁻³) ; 9 × 1,20·10⁻³ = 0,0108 < 0,02, donc **×3 confirmé**, pas de repli. Maximum d'une itération : 4,43·10⁻²
+  dans la tranche 0–0,1B (itérations de démarrage), ≤ 5,25·10⁻³ ailleurs. Une graine : constat descriptif.
 
 ### D8. Place dans le calendrier
 - **Après le run SIL** (≈ 5,5 h, estimé) et ses évals hors ligne. Phase A ≈ **3,3 h** : 0,5B ≈ 3,1 h (session 1 du témoin :
