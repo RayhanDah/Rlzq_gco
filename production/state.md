@@ -23,11 +23,11 @@ Mis à jour : 2026-11-21 (Phase 4a : témoin dense fini, AMBIGU ; run SIL `int_s
    confirmé hors ligne ; à 1B 4,31 % de victoires par épisode contre 2,40 % pour std s0 (une graine) ; touche 14,6 %.
    Règle D5 : S ≥ std, intervention désignée (2) γ 0,998 (ADR-007, proposé).
 2. **Témoin dense fini (ADR-011)** : verdict D3 **AMBIGU** à 1B (A touche 50,4 % [49,75 ; 51,13], 20 000 épisodes, SPRT H1 ;
-   0,5B : 23,0 %). Le pipeline apprend le contact quand le signal existe, lentement. Suite D3 : **ADR-012 proposé** (audit d'un
-   levier, LR ×3), après la SIL, **à valider par l'utilisateur**.
+   0,5B : 23,0 %). Le pipeline apprend le contact quand le signal existe, lentement. Suite D3 : **ADR-012 accepté** (utilisateur,
+   2026-11-21) : audit d'un levier, LR ×3, phase A `diag_dense_lr3_s0` à 0,5B **après** la SIL ; préalables P1 et P2 en cours.
 3. **ADR-009 SIL accepté** (utilisateur, 2026-11-21, « SIL quoi qu'il arrive »). Préalables D7 faits : smoke PASS (aedf0ca),
    2 bancs, parité float16 PASS, c_sil 0,1 retenu, fenêtre 150 pas (règle RAM). Débit 32,6k/s (KS4 en alerte).
-4. Ordre : SIL (en cours), puis ADR-012 et ADR-007 (à valider), puis tâche auxiliaire (ADR-010, esquisse). Ensuite seeds 1
+4. Ordre : SIL (en cours), puis ADR-012 phase A (≈ 3,3 h, estimé) et phase B si SUCCÈS et GO, puis ADR-007 (à valider), puis tâche auxiliaire (ADR-010, esquisse). Ensuite seeds 1
    et 2, puis préparation de G3.
 5. Contraste P0 générique **mesuré** (ADR-005 : 0,15 but/min par camp, 7 à 8,5 × le kickoff). Hors chemin critique : sonde TPU (`rayhanda/rlgco-probe-tpu`) ;
    relais Kaggle (`scripts/kaggle_run.py`) jamais exécuté, à valider sur un dataset jetable.
@@ -51,6 +51,7 @@ Mis à jour : 2026-11-21 (Phase 4a : témoin dense fini, AMBIGU ; run SIL `int_s
 ## Expériences en cours
 - **Run SIL `int_sil_s0`** (ADR-009, GCO-std, graine 0, 1B) : lancé le 2026-11-21 par Claude sur décision de l'utilisateur,
   `scripts/run_4a.py --variant int_sil --seed 0 --max-hours 0` ; durée ≈ 8,5 h au débit du banc (extrapolé). Comparaison hors
-  ligne à std s0 (ADR-006 D4) après le run.
+  ligne à std s0 (ADR-006 D4) après le run. Point à 16 h 40 : itération 14 731 / 19 376, débit ≈ 31k appris/s, aucun STOP ;
+  RAM disponible tombée à 0,5 Go quelques minutes (Chrome ≈ 5 Go), KS1 non déclenché (compteur remis à 0 au-dessus de 1 Go).
 - Témoin dense terminé : `runs/diag_dense_s0/`, éval hors ligne `runs/diag_dense_offline_eval/` (1 perte du GPU reprise).
 - Résultats 4a : `runs/run_4a_std_s{0,1,2}/`, `runs/run_4a_s_s0/`, évaluation hors ligne `runs/run_4a_offline_eval/`.

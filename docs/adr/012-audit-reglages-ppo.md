@@ -1,6 +1,7 @@
 # ADR-012 — Audit des réglages PPO, un levier : taux d'apprentissage ×3 (témoin dense d'abord, GCO-std ensuite si succès)
 
-- Statut : **proposé** (suite prévue par ADR-011 D3 pour le verdict AMBIGU ; à valider par l'utilisateur, points en fin d'ADR)
+- Statut : **accepté** (validation de l'utilisateur le 2026-11-21, les 5 points en fin d'ADR ; suite prévue par ADR-011 D3
+  pour le verdict AMBIGU)
 - Date : 2026-11-21
 - Décideurs : research-director (proposition) ; experiment-analyst (P1) ; rl-algo-lead (config, variante du lanceur, tests) ;
   eval-lead (évals hors ligne) ; code-reviewer ; utilisateur (validation, lancement)
@@ -187,7 +188,7 @@ KL de D3 (lue après le run, sans code). Pas d'arrêt anticipé pour succès. Un
 - Révision si : P1 contredit M1 (KL moyen de tranche ≥ 2,2·10⁻³, d'où le repli ×2) ; KL de la Phase A > 0,02 dès 0,1B ;
   publication d'un jalon public (pas jusqu'à la 1re touche) pour la recette RLGym.
 
-## Points à valider par l'utilisateur
+## Points validés par l'utilisateur (2026-11-21, « Je valide l'ADR-012 »)
 1. Levier unique : LR ×3 (6e-4 → 1,5e-4, même forme), repli ×2 selon P1 ; ent_coef, epochs et clip écartés pour cet audit.
 2. Phase A sur le témoin dense HORS SPEC, graine 0, arrêt à 0,5B ; succès si la borne basse du Wilson de « A touche » ≥ 46,0 %
    avec SPRT H1 ; nuisible si la borne haute < 22,4 %, KL de tranche > 0,02 ou STOP.
