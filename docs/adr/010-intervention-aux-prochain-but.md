@@ -165,6 +165,19 @@ règle 5) ; bancs D5 (`scripts/bench_run.py --config configs/bench_int_aux.yaml 
 bench_int_aux --minutes 30 --prefill-pool 100 --sample-s 1`, arbre propre, machine libre : **jamais en parallèle d'un run**), résumé
 par un script `scripts/aux_bench_summary.py` ; résultats (λ, débit, occupation learner, RAM, parité) consignés ici avant le GO.
 
+**État des préalables (2026-11-21)** : tests 1 à 8 faits (rl-algo-lead, ea9cbf1, 51 tests dans `tests/unit/test_auxtask.py`,
+11,5 s mesurés par la revue ; suite unitaire 750 passés, 3 ignorés), revue `code-reviewer` APPROVE (aucun bloquant ; hashs de toutes
+les configs existantes inchangés, recalculés avec l'ancien et le nouveau `src/`). Restent : smoke, bancs D5, parité f16 sur lot réel
+(`scripts/aux_f16_parity.py`, préparé). Précisions d'implémentation, validées en revue :
+- λ du banc : 0,1 puis 0,0316 puis 0,01 (÷ √10 exact, règle d'ADR-009 D5 ; « 0,03 » et « 0,3 » ci-dessus en sont les arrondis),
+  montée à 0,316 puis 1 si la médiane est < 0,05 à 0,1 ; le script compare les λ à 10 % près et retient la valeur mesurée.
+- Un terminal avec r = 0 (fin sans but) donne la classe 0 (« signe de r(i) »).
+- Calendrier optionnel `aux.anneal_start_timesteps` / `aux.anneal_end_timesteps` (absent ⇒ λ constant, D6) : permet la lecture
+  prudente de C2 par la seule config si l'utilisateur la choisit ; fin < budget exigée ; fenêtre et rejeu libérés en fin de calendrier.
+- SIL et aux actives ensemble : refusé (config et learner), conformément à D11.
+- `configs/smoke_aux.yaml` : `batch_size` 1 024 au lieu de 8 192 (le smoke ne remplirait pas un lot de 8 192 ; estimé), seul écart
+  testé avec `int_aux`.
+
 ### D9. Journal C4 (`metrics.jsonl`, chaque itération ; `aux/*`)
 `coef`, `loss`, `batch_present` (minibatchs avec lot), `recall_pos`, `recall_neg`, `recall_zero`, `precision_pos`, `precision_neg`,
 `precision_zero` (sur le lot rééquilibré : le rappel ne dépend pas du rééquilibrage, la précision si), `frac_pos`, `frac_neg`,
