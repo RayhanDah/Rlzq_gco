@@ -54,6 +54,22 @@ EXPECTED_DIFF: dict[str, dict[tuple[str, ...], tuple[Any, Any]]] = {
             "ram_low_max_s": 600.0,
         }.items()
     },
+    # ADR-010 D8-2 : un seul bloc ajouté, `aux` ; λ constant (calendrier absent : None des deux côtés, hors du diff)
+    "int_aux": {
+        ("aux", k): (None, v)
+        for k, v in {
+            "enabled": True,
+            "coef": 0.1,  # provisoire : fixé par les bancs D5 avant le GO
+            "horizon_steps": 150,  # D2
+            "batch_size": 8192,  # D3
+            "capacity_per_class": 125_000,  # D3
+            "store_float16": True,
+            "share_alert": 0.5,  # D6 (C4)
+            "share_alert_patience": 50,
+            "ram_min_available_mb": 1000.0,  # KS1
+            "ram_low_max_s": 600.0,
+        }.items()
+    },
 }
 
 

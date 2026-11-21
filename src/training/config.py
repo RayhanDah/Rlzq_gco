@@ -19,6 +19,11 @@ Section `sil` (self-imitation, `training.sil.SILConfig`, ADR-005 D6 intervention
 inchangés ; présente, elle entre dans le hash de trajectoire (activée ou non). Activée, elle n'est acceptée que si la
 variante l'autorise (spec §3 : interdite en GCO-S) et, sous C1–C4, si son coefficient atteint 0 (C2) avant la fin
 du budget.
+Section `aux` (tâche auxiliaire « prochain but », `training.auxtask.AuxConfig`, ADR-010, intervention (4)) : même règle
+de hash (absente => hashs inchangés) ; activée, refusée si la variante ne l'autorise pas (spec §3 : interdite en GCO-S)
+et si la SIL est aussi activée (ADR-010 D11). λ constant par défaut (ADR-010 D6) ; calendrier optionnel
+`anneal_start_timesteps` / `anneal_end_timesteps`, qui doit alors finir avant la fin du budget (lecture littérale de
+C2).
 """
 
 from __future__ import annotations
@@ -33,6 +38,7 @@ from pathlib import Path
 from typing import Any, Union, get_args, get_origin, get_type_hints
 
 from rewards import RewardConfig, RewardVariant, rules_for
+from training.auxtask import AuxConfig
 from training.checkpoint import hash_config
 from training.guards import GuardConfig
 from training.ppo import PPOConfig
@@ -211,6 +217,7 @@ class RunConfig:
     smoke: SmokeSection | None = None
     pool: PoolSection | None = None  # None : self-play contre la version courante seule (avant ADR-005)
     sil: SILConfig | None = None  # None : pas de self-imitation (hashs d'avant la SIL)
+    aux: AuxConfig | None = None  # None : pas de tâche auxiliaire (hashs d'avant ADR-010)
 
     def __post_init__(self) -> None:
         if not _NAME_RE.match(self.name):
@@ -235,6 +242,18 @@ class RunConfig:
                 raise ValueError(
                     f"sil.anneal_end_timesteps={end} >= budget {self.budget.total_timesteps} : "
                     "C2 exige un coefficient nul avant la phase finale du run"
+                )
+        if self.aux is not None and self.aux.enabled:
+            rules = rules_for(RewardVariant(self.reward.variant))
+            if not rules.auxiliary_tasks:
+                raise ValueError(f"variante {self.reward.variant} : tâche auxiliaire interdite (spec §3)")
+            if self.sil is not None and self.sil.enabled:
+                raise ValueError("sil et aux activées ensemble : refusé (ADR-010 D11, deux résultats isolés d'abord)")
+            aux_end = self.aux.anneal_end_timesteps
+            if aux_end is not None and aux_end >= self.budget.total_timesteps:
+                raise ValueError(
+                    f"aux.anneal_end_timesteps={aux_end} >= budget {self.budget.total_timesteps} : un calendrier de λ "
+                    "doit finir avant la fin du run (sinon : omettre le calendrier, λ constant, ADR-010 D6)"
                 )
         if not rules_for(RewardVariant(self.reward.variant)).generic_initial_states:
             st = self.initial_states
@@ -295,6 +314,8 @@ class RunConfig:
             del out["pool"]  # hashs inchangés pour les configs d'avant le pool (checkpoints existants repris)
         if out["sil"] is None:
             del out["sil"]  # idem pour les configs d'avant la SIL
+        if out["aux"] is None:
+            del out["aux"]  # idem pour les configs d'avant la tâche auxiliaire (ADR-010 D8-2)
         return out
 
     def trajectory_dict(self) -> dict[str, Any]:

@@ -18,9 +18,9 @@ Ce que le lanceur ajoute à `scripts/train.py` :
 - refus d'un arbre git sale (mesure non attribuable à un commit) et de GCO-S sans `--std-s1-observed` (ADR-005 :
   GCO-S seulement si au moins une seed GCO-std a S1-léger).
 
-Interventions (ADR-006 D5, ADR-007, ADR-008, ADR-009) : `--variant int_gamma998`, `int_slow_anneal` ou `int_sil`
-(self-imitation, bloc `sil`) lance la config `configs/<variante>.yaml` (GCO-std, une seule modification par rapport à
-`run_4a_std.yaml`) sous le nom de run
+Interventions (ADR-006 D5, ADR-007, ADR-008, ADR-009, ADR-010) : `--variant int_gamma998`, `int_slow_anneal`, `int_sil`
+(self-imitation, bloc `sil`) ou `int_aux` (tâche auxiliaire « prochain but », bloc `aux`) lance la config
+`configs/<variante>.yaml` (GCO-std, une seule modification par rapport à `run_4a_std.yaml`) sous le nom de run
 `<variante>_s<seed>`, avec les mêmes garanties (sessions enfants, reprise après perte du GPU, refus après STOP, arbre
 propre). Évaluation par défaut : `run_s1v2_eval.yaml` (protocole d'ADR-006). Pas de garde-fou GCO-S : des GCO-std.
 
@@ -72,6 +72,7 @@ INTERVENTIONS = {
     "int_gamma998": "int_gamma998.yaml",
     "int_slow_anneal": "int_slow_anneal.yaml",
     "int_sil": "int_sil.yaml",  # ADR-009 (proposé) : self-imitation, bloc `sil` seul ajouté
+    "int_aux": "int_aux.yaml",  # ADR-010 (proposé) : tâche auxiliaire « prochain but », bloc `aux` seul ajouté
 }
 # Témoins de diagnostic HORS SPEC (ADR-011) : récompense dense-diag, une seule modification par rapport à std s0 ;
 # diag_dense_lr3 (ADR-012 D1, D2) : une seule modification par rapport à diag_dense (calendrier de LR ×3).
@@ -352,8 +353,9 @@ def main(argv: list[str] | None = None) -> int:
         "--variant",
         choices=sorted(VARIANTS) + sorted(INTERVENTIONS) + sorted(DIAGNOSTICS),
         required=True,
-        help="std = GCO-std, s = GCO-S ; int_gamma998 (ADR-007), int_slow_anneal (ADR-008), int_sil (ADR-009) : "
-        "interventions GCO-std ; diag_dense (ADR-011) : témoin à récompense dense, HORS SPEC, jamais promu ; "
+        help="std = GCO-std, s = GCO-S ; int_gamma998 (ADR-007), int_slow_anneal (ADR-008), int_sil (ADR-009), "
+        "int_aux (ADR-010) : interventions GCO-std ; "
+        "diag_dense (ADR-011) : témoin à récompense dense, HORS SPEC, jamais promu ; "
         "diag_dense_lr3 (ADR-012) : le même témoin, LR ×3",
     )
     ap.add_argument("--seed", type=int, nargs="+", required=True, help="0, 1 ou 2 (ADR-005 D3) ; plusieurs : enchaînés")

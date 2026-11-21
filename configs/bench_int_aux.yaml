@@ -1,0 +1,94 @@
+# Bancs D5 de l'ADR-010 (tâche auxiliaire, proposé) : config la plus proche possible du run int_aux_s0. Copie de
+# configs/int_aux.yaml ; SEULS écarts, vérifiés par tests/unit/test_auxtask.py : `name` et `checkpoint.keep` (section
+# opérationnelle, hors hash de trajectoire : aucune rotation pendant le banc, rien n'est supprimé dans checkpoints/ ; le
+# run garde keep: 2, ADR-005 D2). Même logique que bench_int_sil.yaml vs int_sil.yaml. Pour les bancs suivants de la
+# règle D5, copier ce fichier et ne changer que `aux.coef` (0,1 -> 0,0316 -> 0,01, ou 0,316 -> 1).
+# Lancer (machine libre, arbre propre, jamais en parallèle d'un run ; smoke_aux vert sur le même commit) :
+#   vendor/venv-xpu/Scripts/python scripts/bench_run.py --config configs/bench_int_aux.yaml
+#     --eval-config configs/run_s1v2_eval.yaml --name-prefix bench_int_aux --minutes 30 --prefill-pool 100 --sample-s 1
+#   python scripts/aux_bench_summary.py runs/bench_int_aux_<horodatage> [autres bancs...]   # grad_share, λ, débit, RAM
+#   python scripts/aux_f16_parity.py --ckpt <checkpoint du banc> --out runs/int_aux_d8/f16_<banc>.json   # parité D8-5
+# Disque : un checkpoint toutes les 250 itérations, plus l'itération 0 et le final, sans rotation ; chacun porte l'état
+# auxiliaire (≈ 0,3 Go, estimé d'après les octets des tableaux) et le pool (0,23 Go à 100 instantanés, ADR-001 M6).
+name: bench_int_aux
+seed: 0
+device: xpu             # learner sur l'Arc (vendor/venv-xpu, ADR-001 M3–M4) ; sim RocketGPU en CPU
+
+env:
+  n_envs: 4096          # ADR-001 M4, ADR-005
+  n_cars: 2             # 1v1
+  tick_skip: 8
+
+reward:
+  variant: GCO-std      # docs/GCO_SPEC.md §3 ; aucune récompense ajoutée
+  no_touch_timeout_s: 20.0
+  max_episode_s: 120.0
+
+initial_states:         # ADR-005 D4 : 0,2 -> 0,8 linéaire sur 0,5B appris, puis 0,8
+  p_kick_start: 0.2
+  p_kick_end: 0.8
+  anneal_timesteps: 500000000
+
+ppo:                    # identique à configs/smoke.yaml (docs/01_papers.md §2) ; total_iterations dérivé du budget
+  gamma: 0.995
+  gae_lambda: 0.95
+  clip: 0.2
+  lr_start: 2.0e-4
+  lr_end: 5.0e-5
+  ent_coef_start: 0.01
+  ent_coef_end: 0.002
+  max_grad_norm: 0.5
+  epochs: 2
+  minibatch_size: 25000
+  target_batch_size: 57344   # = 4096 x 2 x 7 (sans effet : collection.steps_per_batch fait foi)
+
+collection:
+  steps_per_batch: 7    # 57 344 collectés par lot, 51 611 appris avec le pool (RunConfig.batch_learned_steps ; l'ADR-005 D3 arrondit à 51 610)
+  overlap: true
+
+pool:                   # ADR-005 D5
+  past_fraction: 0.2
+  snapshot_every: 50
+  max_size: 100
+  quality_lr: 0.01
+
+budget:
+  total_timesteps: 1000000000   # 1B appris (ADR-005 D3) : 19 376 itérations (RunConfig.total_iterations)
+
+checkpoint:
+  # Toutes les 250 itérations (≈ 12,9M appris, ≈ 4 min au plateau de M8) : coût mesuré 1,0 % du temps (ADR-001 M8),
+  # rejeu d'au plus ≈ 4 min après une restauration K4, bien sous la règle des 20 min (.claude/rules/training.md).
+  every_iterations: 250
+  keep: 1000            # banc : aucune rotation (le run garde keep: 2, ADR-005 D2)
+  include_sim_state: true
+
+kill:                   # ADR-005 D6 : K2 (entropie, alerte à 50 %), K3 (EV après S1), K4 (KL, NaN), K5 (restaurations)
+  kl_threshold: 0.05
+  kl_patience: 5
+  entropy_floor_frac: 0.10
+  entropy_alert_frac: 0.50
+  n_actions: 90
+  entropy_patience: 1
+  ev_floor: 0.0
+  ev_patience: 50
+  max_restores: 3
+  max_consecutive_restores: 2
+
+logging:
+  every_iterations: 1
+  fsync: false
+
+aux:                    # ADR-010 (Lucy-SKG arXiv 2305.15801 §4.2 ; UNREAL arXiv 1611.05397 §3.2, annexe B) ; src/training/auxtask.py
+  enabled: true         # C3 : false = PPO seul, bit à bit
+  coef: 0.1             # D5 : λ_aux provisoire ; fixé par les bancs D5 (scripts/aux_bench_summary.py), consigné dans l'ADR avant le GO
+  horizon_steps: 150    # D2 : 10 s à 15 Hz (règle RAM d'ADR-009 D7) ; repli H = 100 si le banc mesure < 1,5 Go disponible
+  batch_size: 8192      # D3 : 4 096 (y ≠ 0) + 4 096 (y = 0) par minibatch PPO
+  capacity_per_class: 125000   # D3 : deux compartiments FIFO
+  store_float16: true   # D3 : sous réserve de la parité D8-5 (sinon float32 et H = 75)
+  share_alert: 0.5      # D6 (C4) : alerte si grad_share > 0,5 pendant 50 itérations
+  share_alert_patience: 50
+  ram_min_available_mb: 1000.0   # KS1 : STOP si RAM disponible < 1 Go pendant > 10 min
+  ram_low_max_s: 600.0
+  # λ constant sur tout le run (D6). Lecture littérale de C2 (repli de D6, par amendement) : ajouter
+  #   anneal_start_timesteps: 500000000   # λ plein jusqu'à 0,5B appris ...
+  #   anneal_end_timesteps: 900000000     # ... linéaire jusqu'à 0 à 0,9B, puis 0 (fenêtre et rejeu libérés)

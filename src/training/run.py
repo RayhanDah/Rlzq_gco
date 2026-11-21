@@ -29,7 +29,10 @@ Garanties :
   `train/collected_timesteps` donne le collecté ;
 - GCO strict : aucune récompense ajoutée, aucun signal d'exploration. L'état S1 vient d'un fournisseur injecté
   (`s1_provider`, défaut : jamais atteint, donc garde d'entropie active et règle « EV < 0 après S1 » non armée) ; son
-  calcul (matchs d'évaluation) n'est pas fait ici.
+  calcul (matchs d'évaluation) n'est pas fait ici ;
+- tâche auxiliaire (section `aux`, ADR-010) : sa tête est créée avant l'optimiseur (générateur propre, θ₀ inchangé) et
+  ajoutée à ses paramètres ; journal `aux/*` et RAM (`aux/ram_*`) à chaque itération, alerte C4 sur `grad_share` et
+  STOP KS1 par `aux_guard`, compteurs dans `extra["aux_guard"]`. Section absente ou désactivée : rien de tout cela.
 """
 
 from __future__ import annotations
@@ -62,6 +65,7 @@ from rewards import RewardFunction, RewardVariant, rules_for
 if TYPE_CHECKING:
     from training.evalhook import EvalHook
 import training.logging as training_logging
+from training.auxtask import AuxGuardState, aux_guard, make_aux_head
 from training.checkpoint import (
     HORS_SPEC_LABEL,
     CheckpointIdentity,
@@ -436,7 +440,11 @@ def run(
     actor = PolicyNet(env.obs_dim, env.n_actions, **p_kw).to(device)
     policy.to(device)  # avant l'optimiseur : il doit tenir les paramètres définitifs
     value.to(device)
-    optimizer = (optimizer_factory or _default_optimizer)([*policy.parameters(), *value.parameters()], cfg.ppo, device)
+    aux_on = cfg.aux is not None and cfg.aux.enabled
+    # ADR-010 D3 : tête auxiliaire tenue par le MÊME optimiseur ; générateur propre (θ₀ et flux globaux inchangés)
+    aux_head = make_aux_head(policy, cfg.seed) if aux_on else None
+    opt_params = [*policy.parameters(), *value.parameters(), *(aux_head.parameters() if aux_head is not None else ())]
+    optimizer = (optimizer_factory or _default_optimizer)(opt_params, cfg.ppo, device)
     sil_on = cfg.sil is not None and cfg.sil.enabled
     sil_optimizer = None  # ADR-009 D3 : Adam distinct pour les pas SIL (mode separate), même fabrique que PPO
     if sil_on and cfg.sil is not None and cfg.sil.mode == "separate":
@@ -444,10 +452,20 @@ def run(
             [*policy.parameters(), *value.parameters()], cfg.ppo, device
         )
     learner = Learner(
-        policy, value, cfg.ppo, device, optimizer=optimizer, seed=cfg.seed, sil=cfg.sil, sil_optimizer=sil_optimizer
+        policy,
+        value,
+        cfg.ppo,
+        device,
+        optimizer=optimizer,
+        seed=cfg.seed,
+        sil=cfg.sil,
+        sil_optimizer=sil_optimizer,
+        aux=cfg.aux,
+        aux_head=aux_head,
     )
     probe = memory_probe or memory_mb
     sil_guard_state = SILGuardState()
+    aux_guard_state = AuxGuardState()
     tally = _Tally()
     # pool d'adversaires (ADR-005 D5) : None sans section `pool` (self-play contre la version courante seule)
     pool: PastOpponents | None = None
@@ -490,6 +508,8 @@ def run(
         s1_iteration = info.extra.get("s1_iteration")
         if sil_on and "sil_guard" in info.extra:
             sil_guard_state = SILGuardState(**info.extra["sil_guard"])
+        if aux_on and "aux_guard" in info.extra:
+            aux_guard_state = AuxGuardState(**info.extra["aux_guard"])
         saved_schedule = info.extra.get("p_kick_schedule_version")
         if saved_schedule is not None and saved_schedule != P_KICK_SCHEDULE_VERSION:
             raise RunError(
@@ -557,6 +577,8 @@ def run(
             extra["evalhook"] = eval_hook.state_dict()
         if sil_on:
             extra["sil_guard"] = dataclasses.asdict(sil_guard_state)
+        if aux_on:
+            extra["aux_guard"] = dataclasses.asdict(aux_guard_state)
         state = capture(
             trainer,
             identity=identity,
@@ -655,22 +677,40 @@ def run(
             stats = {k: float(v) for k, v in result.stats.as_dict().items()}
             # SIL (C4, ADR-009 D5) : ses scalaires et la RAM passent aussi par la garde des valeurs non finies ;
             # rien de tout cela sans SIL (journal et décisions inchangés)
-            sil_extra: dict[str, float] = {}
+            ram_extra: dict[str, float] = {}
             sil_alert_list: tuple[str, ...] = ()
             sil_stop: tuple[str, str] | None = None
             if sil_on and cfg.sil is not None:
                 stats.update({f"sil/{k}": float(v) for k, v in result.stats.sil.items()})
                 ram_avail, ram_private = probe()
                 if ram_avail is not None:
-                    sil_extra["sil/ram_available_mb"] = float(ram_avail)
+                    ram_extra["sil/ram_available_mb"] = float(ram_avail)
                 if ram_private is not None:
-                    sil_extra["sil/ram_private_mb"] = float(ram_private)
-                stats.update(sil_extra)
+                    ram_extra["sil/ram_private_mb"] = float(ram_private)
+                stats.update(ram_extra)
                 sil_guard_state, sil_alert_list, sil_stop = sil_guard(
                     cfg.sil,
                     sil_guard_state,
                     share=stats["sil/disp_share"],
                     coef=stats["sil/coef"],
+                    ram_available_mb=ram_avail,
+                    iteration_s=it_s,
+                )
+            # tâche auxiliaire (C4, ADR-010 D6, D9, KS1) : même traitement ; rien sans section `aux` activée
+            aux_stop: tuple[str, str] | None = None
+            aux_alert_list: tuple[str, ...] = ()
+            if aux_on and cfg.aux is not None:
+                stats.update({f"aux/{k}": float(v) for k, v in result.stats.aux.items()})
+                ram_avail, ram_private = probe()
+                if ram_avail is not None:
+                    ram_extra["aux/ram_available_mb"] = float(ram_avail)
+                if ram_private is not None:
+                    ram_extra["aux/ram_private_mb"] = float(ram_private)
+                stats.update(ram_extra)
+                aux_guard_state, aux_alert_list, aux_stop = aux_guard(
+                    cfg.aux,
+                    aux_guard_state,
+                    share=stats["aux/grad_share"],
                     ram_available_mb=ram_avail,
                     iteration_s=it_s,
                 )
@@ -688,7 +728,7 @@ def run(
                 scalars["train/collected_timesteps"] = float(collector.agent_steps)
                 if pool is not None:
                     scalars.update(pool.scalars())
-                scalars.update(sil_extra)
+                scalars.update(ram_extra)
                 writer.write(iteration, scalars)
 
             p_ok, g_ok = params_finite(learner.params), grads_finite(learner.params)
@@ -697,12 +737,13 @@ def run(
                 guard_state,
                 GuardObservation(stats=stats, params_finite=p_ok, grads_finite=g_ok, s1_reached=s1_reached),
             )
-            if sil_stop is not None and decision.action is Action.CONTINUE:  # KS1, KS2 (ADR-009)
+            extra_stop = sil_stop if sil_stop is not None else aux_stop  # KS1, KS2 (ADR-009) ; KS1 (ADR-010)
+            if extra_stop is not None and decision.action is Action.CONTINUE:
                 decision = GuardDecision(
-                    Action.STOP, sil_stop[0], sil_stop[1], healthy=decision.healthy, alerts=decision.alerts
+                    Action.STOP, extra_stop[0], extra_stop[1], healthy=decision.healthy, alerts=decision.alerts
                 )
             last_healthy = decision.healthy
-            log_alerts((*decision.alerts, *sil_alert_list))
+            log_alerts((*decision.alerts, *sil_alert_list, *aux_alert_list))
             if nonfinite_keys(stats) or not p_ok or not g_ok:  # compté même si la décision est STOP (max_restores)
                 tally.nan += 1
             if decision.action is Action.STOP:
@@ -732,6 +773,8 @@ def run(
                 tally.goals, tally.episode_ends = float(info.extra["goals"]), float(info.extra["episode_ends"])
                 if sil_on and "sil_guard" in info.extra:  # compteurs SIL de la trajectoire retenue (revue, m2)
                     sil_guard_state = SILGuardState(**info.extra["sil_guard"])
+                if aux_on and "aux_guard" in info.extra:  # idem pour la tâche auxiliaire
+                    aux_guard_state = AuxGuardState(**info.extra["aux_guard"])
                 if eval_hook is not None and "evalhook" in info.extra:
                     eval_hook.load_state_dict(info.extra["evalhook"])  # évaluations écartées avec la trajectoire
                     eval_hook.note_checkpoint(iteration, True)
@@ -745,6 +788,8 @@ def run(
                 learner.generator.manual_seed(seed)
                 if learner.sil is not None:
                     learner.sil.reseed(seed)  # tirage SIL : même règle que les autres flux
+                if learner.aux is not None:
+                    learner.aux.reseed(seed)  # tirage du rejeu auxiliaire : idem
                 if pool is not None:
                     pool.reseed(seed + POOL_SEED_OFFSET)
                 _append_jsonl(

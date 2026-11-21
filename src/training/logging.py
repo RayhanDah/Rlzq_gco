@@ -193,10 +193,12 @@ def iteration_scalars(
     n_cars: int = 2,
     learner: Learner | None = None,
 ) -> dict[str, float]:
-    """Scalaires d'une itération : stats PPO (`ppo/*`), journal SIL (`sil/*`, si activée), compteurs, débit,
-    `p_kick`, staleness, buts et longueur d'épisode (si `batch`), normes de gradient par réseau (si `learner`)."""
+    """Scalaires d'une itération : stats PPO (`ppo/*`), journaux SIL (`sil/*`) et auxiliaire (`aux/*`) s'ils sont
+    activés, compteurs, débit, `p_kick`, staleness, buts et longueur d'épisode (si `batch`), normes de gradient par
+    réseau (si `learner`)."""
     out: dict[str, float] = {f"ppo/{k}": float(v) for k, v in result.stats.as_dict().items()}
     out.update({f"sil/{k}": float(v) for k, v in result.stats.sil.items()})  # C4 ; vide sans self-imitation
+    out.update({f"aux/{k}": float(v) for k, v in result.stats.aux.items()})  # C4 ; vide sans tâche auxiliaire
     out["train/agent_steps"] = float(result.agent_steps)
     out["train/policy_version"] = float(result.policy_version)
     out["train/learned_batch_version"] = float(result.learned_batch_version)

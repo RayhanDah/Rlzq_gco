@@ -5,7 +5,9 @@ Leviers mesurés repris du prototype (`scripts/bench_learner.py`, ADR-001 M3/M4)
 seule fois par itération, apprentissage du lot k dans un thread pendant la collecte du lot k+1 avec une copie acteur
 de π (staleness 1). Aucune récompense ni signal d'exploration n'est ajouté ici (GCO strict). Seule aide optionnelle :
 la self-imitation (`training.sil`, ADR-005 D6 intervention (3)), désactivée par défaut ; désactivée, `Learner.update`
-exécute exactement les mêmes opérations qu'avant son introduction (test de régression bit à bit).
+exécute exactement les mêmes opérations qu'avant son introduction (test de régression bit à bit). Idem pour la tâche
+auxiliaire « prochain but » (`training.auxtask`, intervention (4), ADR-010) : une perte de représentation sur le tronc
+de π, jamais dans la récompense, les retours ni les avantages.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ import torch
 
 from models.policy import PolicyNet, log_prob_entropy
 from models.value import ValueNet
+from training.auxtask import AuxConfig, AuxHead, AuxTask, make_aux_head
 from training.gae import bootstrap_values, gae
 from training.rollout import Collector, RolloutBatch
 from training.sil import SelfImitation, SILConfig
@@ -124,10 +127,12 @@ class PPOStats:
     policy_version: int  # version de π après cette mise à jour
     sil: Mapping[str, float] = field(default_factory=dict)
     """Journal C4 de la self-imitation (`SILStats.as_dict`), vide si elle est désactivée ; hors de `as_dict`."""
+    aux: Mapping[str, float] = field(default_factory=dict)
+    """Journal C4 de la tâche auxiliaire (`AuxStats.as_dict`), vide si elle est désactivée ; hors de `as_dict`."""
 
     def as_dict(self) -> dict[str, float | int]:
-        """Statistiques PPO (sans `sil`, journalisé à part sous `sil/*`)."""
-        return {f.name: getattr(self, f.name) for f in fields(self) if f.name != "sil"}
+        """Statistiques PPO (sans `sil` ni `aux`, journalisés à part sous `sil/*` et `aux/*`)."""
+        return {f.name: getattr(self, f.name) for f in fields(self) if f.name not in ("sil", "aux")}
 
 
 class OptimizerLike(Protocol):
@@ -151,6 +156,16 @@ def resolve_device(name: str = "auto") -> torch.device:
     return torch.device("cpu")
 
 
+def _optimizer_params(optimizer: Any) -> list[Any] | None:
+    """Paramètres tenus par l'optimiseur (`torch.optim` : `param_groups[i]["params"]` ; Adam manuel des tests :
+    `params`), None si illisibles."""
+    groups = getattr(optimizer, "param_groups", None)
+    if groups and all("params" in g for g in groups):
+        return [p for g in groups for p in g["params"]]
+    params = getattr(optimizer, "params", None)
+    return list(params) if params is not None else None
+
+
 def make_optimizer(params: Iterable[torch.nn.Parameter], cfg: PPOConfig, device: torch.device) -> torch.optim.Adam:
     """Adam (β 0,9/0,999, ε 1e-5), `fused=True` si le device le permet (+19 % mesuré sur XPU, ADR-001 M4)."""
     fused = device.type in FUSED_ADAM_DEVICES
@@ -170,6 +185,11 @@ class Learner:
     mise à jour est celle du PPO seul. Activée : chaque lot entre dans le suivi des épisodes avant la mise à jour, puis
     un lot SIL s'ajoute à chaque minibatch PPO, même optimiseur (mode `joint`, ADR-009 D3 amendé, défaut), ou des pas
     SIL suivent les epochs PPO avec `sil_optimizer` (mode `separate`, Adam distinct par défaut).
+
+    `aux` : tâche auxiliaire « prochain but » (`training.auxtask`, ADR-010) si fournie et `enabled` ; sinon (défaut)
+    aucun objet ni paramètre de plus. Activée : la tête (`aux_head`, sinon créée par `make_aux_head`, générateur propre)
+    s'ajoute à `params` (même Adam, même clip global) ; un `optimizer` fourni doit déjà la tenir. Incompatible avec la
+    SIL activée (ADR-010 D11 : combinaison seulement après deux résultats isolés).
     """
 
     def __init__(
@@ -182,11 +202,19 @@ class Learner:
         seed: int = 0,
         sil: SILConfig | None = None,
         sil_optimizer: Any = None,
+        aux: AuxConfig | None = None,
+        aux_head: AuxHead | None = None,
     ) -> None:
         self.cfg, self.device = cfg, device
         self.policy = policy.to(device)
         self.value = value.to(device)
         self.params = [*self.policy.parameters(), *self.value.parameters()]
+        aux_on = aux is not None and aux.enabled
+        if aux_on and sil is not None and sil.enabled:
+            raise ValueError("SIL et tâche auxiliaire activées ensemble : refusé (ADR-010 D11)")
+        if aux_on:
+            aux_head = (aux_head if aux_head is not None else make_aux_head(self.policy, seed)).to(device)
+            self.params += list(aux_head.parameters())
         self.optimizer: OptimizerLike = optimizer if optimizer is not None else make_optimizer(self.params, cfg, device)
         self.generator = torch.Generator()
         self.generator.manual_seed(seed)
@@ -198,6 +226,12 @@ class Learner:
                 sil_optimizer = make_optimizer(self.params, cfg, device)  # Adam distinct (ADR-009 D3)
             opt = sil_optimizer if sil.mode == "separate" else None
             self.sil = SelfImitation(sil, cfg.gamma, policy.obs_dim, policy.n_actions, seed, opt)
+        self.aux: AuxTask | None = None
+        if aux is not None and aux_on and aux_head is not None:
+            held = _optimizer_params(self.optimizer)
+            if held is not None and not {id(p) for p in aux_head.parameters()} <= {id(p) for p in held}:
+                raise ValueError("tâche auxiliaire : l'optimiseur fourni ne tient pas les paramètres de la tête (D3)")
+            self.aux = AuxTask(aux, self.policy, aux_head, seed)
 
     def state_dict(self) -> dict[str, Any]:
         """État complet du learner pour la reprise (T5) : poids π et V, optimiseur, générateur des permutations,
@@ -212,13 +246,21 @@ class Learner:
         }
         if self.sil is not None:
             state["sil"] = self.sil.state_dict()
+        if self.aux is not None:
+            state["aux"] = self.aux.state_dict()
         return state
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
         if (self.sil is not None) != ("sil" in state):
             raise ValueError("état SIL présent XOR learner avec SIL : checkpoint et configuration incohérents")
+        if (self.aux is not None) != ("aux" in state):
+            raise ValueError(
+                "état auxiliaire présent XOR learner avec tâche auxiliaire : checkpoint et configuration incohérents"
+            )
         if self.sil is not None:
             self.sil.load_state_dict(state["sil"])
+        if self.aux is not None:
+            self.aux.load_state_dict(state["aux"])
         self.policy.load_state_dict(state["policy"])
         self.value.load_state_dict(state["value"])
         self._stateful_optimizer().load_state_dict(state["optimizer"])
@@ -294,6 +336,20 @@ class Learner:
                 policy_params=self.policy_params,
                 ppo_optimizer=self.optimizer,
             )
+        aux_it = None
+        if self.aux is not None:  # désactivée : aucune opération de plus (bit à bit identique au PPO seul)
+            aux_it = self.aux.begin(
+                batch.obs,
+                batch.rew,
+                batch.term,
+                batch.trunc,
+                batch.learn_mask,
+                iteration=self.version,
+                learned_per_iteration=n_samples,
+                device=dev,
+                n_ppo_steps=cfg.epochs * n_mb,
+                optimizer=self.optimizer,
+            )
 
         def advantages() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
             with torch.no_grad():
@@ -337,10 +393,14 @@ class Learner:
                 if sil_it is not None:  # journal C4 ; mode joint : gradient de c_sil·L_sil ajouté avant le clip
                     sil_it.note_ppo_grad()
                     sil_it.joint_step(self.policy, self.value)
+                if aux_it is not None:  # gradient de λ·L_aux (tronc et tête) ajouté avant le clip global (ADR-010 D3)
+                    aux_it.joint_step()
                 grad_norm = torch.nn.utils.clip_grad_norm_(self.params, cfg.max_grad_norm)
                 self.optimizer.step()
                 if sil_it is not None:  # mode joint : moments fantômes, part de déplacement (ADR-009 D5)
                     sil_it.after_ppo_step(grad_norm, cfg.max_grad_norm)
+                if aux_it is not None:  # moment fantôme, part de déplacement sur le tronc (ADR-010 D5)
+                    aux_it.after_step(grad_norm, cfg.max_grad_norm)
                 with torch.no_grad():
                     kl = ((ratio - 1.0) - logratio).mean()
                     clip_frac = ((ratio - 1.0).abs() > cfg.clip).float().mean()
@@ -372,6 +432,7 @@ class Learner:
             staleness=staleness,
             policy_version=self.version,
             sil={} if sil_it is None else sil_it.stats().as_dict(),
+            aux={} if aux_it is None else aux_it.stats().as_dict(),
         )
 
 
