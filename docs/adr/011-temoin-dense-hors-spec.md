@@ -128,7 +128,7 @@ touche, 6db79a4). Trajectoire descriptive à chaque 0,1B avec 2 048 épisodes.
 - Commande, session 1 (sur GO de l'utilisateur) : `vendor/venv-xpu/Scripts/python scripts/run_4a.py --variant diag_dense
   --seed 0 --max-hours 3`.
 - **Verdict D3 (2026-11-21) : AMBIGU.** Commande D3 (`scripts/eval.py --a <instantané> --b random --episodes 20000 --n-envs 256
-  --seed 0 --sprt-elo 100 --sprt-max-decisive 1200`), commit 6ae65d6, `.venv` CPU, laptop Core Ultra 5 125H, `git_dirty` faux.
+  --seed 0 --sprt-elo 100 --sprt-max-decisive 1200`), commits 8fdf740 (0,5B) et 6ae65d6 (1B), code identique, `.venv` CPU, laptop Core Ultra 5 125H, `git_dirty` faux.
   - 0,5B (it. 9 688) : A touche **23,0 %** [Wilson 95 % 22,4 ; 23,6], aucune touche 72,9 %, 593 V / 19 101 N / 306 D (4,5 % de
     décisives), SPRT H1 ; pas de PASS à 0,5B, donc session 2 jusqu'à 1B (D4)
     (`runs/diag_dense_offline_eval/dense_s0_final20k_it09688.json`).

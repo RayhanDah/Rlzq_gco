@@ -236,13 +236,27 @@ Le témoin dense (ADR-011), s'il est accepté, passe avant les deux.
   - disp_share, 10 dernières min (358 itérations, c_sil 0,1, buffer plein à 250 000 après 405 s) : médiane **0,12**
     (p10 0,092, p90 0,167) ; grad_share médiane 0,054 ; frac_pos médiane 1 ; part générique du buffer 0,92. Règle D5 : **c_sil = 0,1
     retenu**.
-  - Débit appris mural **31,2k/s** (fenêtre 30,8k/s) contre 55,1k au banc M8 sans SIL : **KS4 en alerte** (< 40k). Fil learner
+  - Débit appris mural **31,2k/s** (fenêtre 30,8k/s) contre 55,1k au banc M8 sans SIL (ADR-001 M8, `production/state.md` R2) : **KS4 en alerte** (< 40k). Fil learner
     occupé 96,9 % du temps : la boucle est limitée par l'apprentissage. 1B ≈ 8,9 h (extrapolé).
   - RAM disponible minimale **154 Mo**, à l'écriture du checkpoint de l'itération 250 (771 Mo sur disque, chute transitoire
     médiane 2,86 Go, max 3,04 Go, contre ≈ 0,55 Go estimé) ; hors checkpoints 2,9 à 4,6 Go disponibles ; KS1 non déclenché
-    (0 s sous 1 Go hors pics de quelques secondes). Règle D7 (minimum < 1,5 Go) : **fenêtre ramenée à 150 pas** dans
+    (`longest_below_1gb_s` = 0 s, artefact de l'échantillonnage à 1 s : 3 échantillons isolés sous 1 Go, 162 à 789 Mo, aux
+    écritures de checkpoint ; le minimum de 154 Mo vient de la sonde de checkpoint, 161,7 Mo au minimum des échantillons à 1 s). Règle D7 (minimum < 1,5 Go) : **fenêtre ramenée à 150 pas** dans
     `configs/int_sil.yaml` (et banc, smoke, tests).
   - Parité float16 **PASS** : lot réel du banc (51 611 obs) |Δlog π| max 1,1e-3, |ΔV| max 1,8e-4
     (`runs/int_sil_d7/f16_bench_int_sil_20261121T074345Z.json`) ; instantané std s0 1B |Δlog π| max 3,6e-3, |ΔV| max 8,4e-4
     (`runs/int_sil_d7/f16_std_s0_it19376.json`).
-- Banc 2 (fenêtre 150) : à consigner ci-dessous avant le lancement.
+- Banc 2, fenêtre 150, même commande, commit aedf0ca, arbre propre, 2026-11-21 08:19–08:50 UTC
+  (`runs/bench_int_sil_20261121T081944Z/`), après smoke SIL **PASS** sur aedf0ca (`runs/smoke_sil_aedf0ca/`, contrôle PASS) :
+  - disp_share, 10 dernières min (377 itérations, c_sil 0,1, buffer plein après 523 s) : médiane **0,103** (p10 0,079, p90 0,158) ;
+    grad_share médiane 0,058 ; part générique du buffer 0,93. Règle D5 : **c_sil = 0,1 retenu** (consigné avant le GO).
+  - Débit appris mural **32,6k/s** (fenêtre 32,4k/s) : **KS4 en alerte**, au rapport (K6 à 25k non déclenché) ; 1B ≈ 8,5 h
+    (extrapolé).
+  - RAM disponible minimale **2 354 Mo** (> 1,5 Go), checkpoint 528 Mo sur disque, chute transitoire médiane 1,62 Go (max 1,83 Go),
+    KS1 non déclenché. Le gain sur le minimum (+2,2 Go) dépasse la seule réduction de l'anneau (≈ 0,25 Go, estimé) : la
+    disponibilité de base du laptop varie aussi d'un banc à l'autre (8,4 Go contre 7,7 Go à l'itération 0) ; pas d'attribution
+    causale.
+  - Parité float16 **PASS** sur le lot réel du banc 2 : |Δlog π| max 6,5e-4, |ΔV| max 1,5e-4
+    (`runs/int_sil_d7/f16_bench_int_sil_20261121T081944Z.json`).
+- **Préalables D7 remplis** : run lancé le 2026-11-21 sur la décision de l'utilisateur (« SIL quoi qu'il arrive ») :
+  `vendor/venv-xpu/Scripts/python scripts/run_4a.py --variant int_sil --seed 0 --max-hours 0`.
