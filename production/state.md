@@ -46,7 +46,7 @@ Mis à jour : 2026-11-21 (Phase 4a : témoin dense fini, AMBIGU ; run SIL `int_s
 - **R11** : 3 comptes Kaggle, chacun opéré par son titulaire (décision du 2026-11-10).
 - **R13** : écarts RocketGPU / RocketSim mesurés (T3), sans effet avec la table de 90 actions ; écart sim/jeu non
   mesuré avant la Phase 5.
-- **R14** : pertes du GPU XPU (`UR_RESULT_ERROR_DEVICE_LOST`), 6 en ≈ 33,7 h de runs (dont 1 sur GCO-S s0, 1 sur le témoin dense), cause non établie (pilote Arc
+- **R14** : pertes du GPU XPU (`UR_RESULT_ERROR_DEVICE_LOST`), 7 en ≈ 44 h de runs (dont 1 sur GCO-S s0, 1 sur le témoin dense, 0 sur la SIL, 1 sur la phase A d'ADR-012 à l'it. 1 148), cause non établie (pilote Arc
   32.0.101.8860). Reprise automatique (`scripts/run_4a.py`) ; pas de garde contre un processus figé.
 
 ## Expériences en cours
@@ -57,6 +57,8 @@ Mis à jour : 2026-11-21 (Phase 4a : témoin dense fini, AMBIGU ; run SIL `int_s
   **NEUTRE** (1B : décisives 4,33 % [4,06 ; 4,63] < 6,28 %, SPRT H1 ; 1re paire H1 à 0,3B). Descriptif : pic à 0,7B
   (8,8 % de décisives, touche 41,7 %) puis retour à 3,7 % / 21,7 % à 1B, pendant l'annealing de c_sil ; persistance D4
   déclenchée (« gain dépendant de la SIL »). Rapport `docs/reports/int_sil_s0.md` ; avis research-director : SIL v1 non promue,
-  ordre proposé (à valider) : analyse post hoc, ADR-012, ADR-007, ADR-010, variante SIL éventuelle (nouvel ADR, C2).
+  ordre **validé par l'utilisateur (2026-11-21)** : analyse post hoc, ADR-012, ADR-007, ADR-010, variante SIL éventuelle
+  (nouvel ADR, C2). Mandat du même jour : « je te laisse gérer le projet et les runs » ⇒ ADR-007 lancé après la phase A si
+  celle-ci n'est pas SUCCÈS (sinon phase B d'abord, sur GO, ADR-012 D8).
 - Témoin dense terminé : `runs/diag_dense_s0/`, éval hors ligne `runs/diag_dense_offline_eval/` (1 perte du GPU reprise).
 - Résultats 4a : `runs/run_4a_std_s{0,1,2}/`, `runs/run_4a_s_s0/`, évaluation hors ligne `runs/run_4a_offline_eval/`.
