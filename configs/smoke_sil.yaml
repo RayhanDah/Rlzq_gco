@@ -1,0 +1,100 @@
+# Smoke test du chemin SIL (ADR-009 D7 : « smoke test vert sur le commit du run ») : copie de configs/smoke.yaml
+# (18 itérations, 1 032 192 timesteps, arrêt puis reprise à l'itération 9, checkpoint toutes les 3 itérations) plus le
+# bloc `sil` de configs/int_sil.yaml. SEULS écarts à smoke.yaml : `name` et le bloc `sil` ; SEULS écarts du bloc à
+# int_sil.yaml, mis à l'échelle du budget de 1M (tests/unit/test_sil_bench_tools.py) :
+# - anneal_start_timesteps 500 000 et anneal_end_timesteps 900 000 (mêmes fractions 0,5 et 0,9 du budget que D4 ;
+#   C2 exige anneal_end < budget) : c_sil = 0,1 aux itérations 0 à 8, annealing de 9 à 15 (la reprise à l'itération 9
+#   repart donc avec SIL active : buffer, priorités, anneau et moments fantômes rechargés), libération à 16 ;
+# - batch_size 256 au lieu de 4 096 : aucun pas SIL tant que le buffer a moins de `batch_size` transitions (D3) et
+#   le smoke ne joue que 126 pas par agent ; 256 = deux ou trois buts de quelques secondes, de quoi déclencher des
+#   pas SIL dès les premières itérations (estimé, non mesuré ; vérifié après coup par scripts/sil_bench_summary.py
+#   --smoke). capacity et horizon_steps inchangés : état SIL de checkpoint à la taille réelle (anneau ≈ 0,54 Go à
+#   8 192 agents sans pool).
+# Lancer : vendor/venv-xpu/Scripts/python scripts/train.py configs/smoke_sil.yaml --smoke
+#            --out-dir runs/smoke_sil_<commit> --checkpoint-dir checkpoints/smoke_sil_<commit>
+#          python scripts/sil_bench_summary.py --smoke runs/smoke_sil_<commit>   # pas SIL, perte, buffer à la reprise
+name: smoke_sil
+seed: 0
+device: auto            # cuda, sinon xpu, sinon cpu (training.ppo.resolve_device)
+
+env:
+  n_envs: 4096          # ADR-001 M4
+  n_cars: 2             # 1v1 : 2 agents par arène
+  tick_skip: 8
+
+reward:
+  variant: GCO-std      # GCO-S | GCO-std | GCO-ext | scorer-only (docs/GCO_SPEC.md §3) ; aucune récompense ajoutée
+  no_touch_timeout_s: 20.0   # spec §2.2
+  max_episode_s: 120.0
+
+initial_states:         # spec §2.3 : p_kick 0,2 au départ, annealing linéaire vers >= 0,8 (GCO-std seulement)
+  p_kick_start: 0.2
+  p_kick_end: 0.8
+  anneal_timesteps: 1000000
+
+ppo:                    # sources : docs/01_papers.md §2 (total_iterations est dérivé du budget)
+  gamma: 0.995
+  gae_lambda: 0.95
+  clip: 0.2
+  lr_start: 2.0e-4
+  lr_end: 5.0e-5
+  ent_coef_start: 0.01
+  ent_coef_end: 0.002
+  max_grad_norm: 0.5
+  epochs: 2
+  minibatch_size: 25000
+  target_batch_size: 57344   # = 4096 arènes x 2 agents x 7 steps (sans effet : `collection.steps_per_batch` fait foi)
+
+collection:
+  steps_per_batch: 7    # ADR-001 M4 : 57 344 timesteps agents par lot
+  overlap: true         # apprentissage du lot k pendant la collecte du lot k+1 (staleness 1)
+
+budget:
+  total_timesteps: 1000000   # arrondi au lot supérieur : 18 itérations = 1 032 192 timesteps
+
+checkpoint:
+  every_iterations: 3   # assez fréquent pour exercer sauvegarde et rotation (keep 2) pendant le smoke test
+  keep: 2
+  include_sim_state: true    # reprise exacte (état du simulateur inclus)
+
+kill:                   # gardes (docs/PLAN.md, kill criteria préliminaires) ; décisions appliquées à chaque itération
+  kl_threshold: 0.05
+  kl_patience: 5        # KL approx > 0,05 pendant 5 itérations -> restauration du dernier checkpoint sain
+  entropy_floor_frac: 0.10   # entropie < 10 % de ln(90) avant S1 -> arrêt
+  n_actions: 90
+  entropy_patience: 1
+  ev_floor: 0.0         # explained variance < 0 pendant 50 itérations après S1 -> arrêt
+  ev_patience: 50
+  max_restores: 3       # restaurations CUMULÉES sur tout le run (une itération saine ne remet pas à zéro) -> arrêt
+  max_consecutive_restores: 2   # restaurations sans itération saine entre deux -> arrêt (même divergence rejouée)
+
+logging:
+  every_iterations: 1
+  fsync: false
+
+smoke:                  # exigences de `scripts/train.py --smoke`
+  resume_at_fraction: 0.5    # arrêt puis reprise depuis le checkpoint final à ~50 % du budget
+  require_resume: true
+  max_nan: 0
+
+sil:                    # bloc de configs/int_sil.yaml (ADR-009 D1–D5) ; écarts mis à l'échelle : voir l'en-tête
+  enabled: true
+  coef: 0.1
+  anneal_start_timesteps: 500000      # int_sil : 500 000 000 (0,5 du budget)
+  anneal_end_timesteps: 900000        # int_sil : 900 000 000 (0,9 du budget)
+  value_coef: 0.01
+  mode: joint
+  batch_size: 256       # int_sil : 4 096 (voir l'en-tête)
+  capacity: 250000
+  horizon_steps: 300
+  priority_alpha: 0.6
+  priority_eps: 1.0e-3
+  is_beta: 0.1
+  keep_conceded: false
+  store_float16: true
+  share_alert: 0.5
+  share_alert_patience: 50
+  share_stop: 0.8
+  share_stop_patience: 500
+  ram_min_available_mb: 1000.0
+  ram_low_max_s: 600.0
