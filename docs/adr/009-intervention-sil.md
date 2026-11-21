@@ -1,7 +1,8 @@
 # ADR-009 — Intervention (3) : self-imitation learning (SIL) sur nos buts (GCO-std, graine 0, 1B)
 
-- Statut : **proposé** (validation utilisateur requise avant tout lancement ; D9 propose un changement d'ordre des
-  interventions qui amende ADR-005 D6, **sans toucher ADR-006**)
+- Statut : **accepté** (validation utilisateur le 2026-11-21 : points 1 à 4 ci-dessous, et « SIL quoi qu'il arrive » :
+  le run SIL suit le témoin dense quel que soit son verdict D3, ADR-011 ; D9 amende ADR-005 D6, **sans toucher ADR-006**).
+  GO de lancement donné le même jour, sous réserve des préalables de D7 (smoke, banc, calibrage de c_sil consignés ici)
 - Date : 2026-11-18 ; révisé le 2026-11-19 (constat de revue M1 : mode joint, indicateur C4 en part de déplacement)
 - Décideurs : research-director (proposition) ; rl-algo-lead (implémentation, `configs/int_sil.yaml`, `--variant int_sil`,
   désactivée par défaut) ; utilisateur (validation, lancement)
@@ -215,7 +216,7 @@ Le témoin dense (ADR-011), s'il est accepté, passe avant les deux.
   KS1 au banc ; `frac_pos` < 1 % durablement (critique déjà optimiste, buffer inutile) ; publication des codes Terminal /
   Pulsar 2.5 (spec §8).
 
-## Points à valider par l'utilisateur
+## Points validés par l'utilisateur (2026-11-21)
 1. Réglages D1–D4 : buts gagnants seulement, tronqués exclus, fenêtre 300 pas, buffer 250 000, c_sil 0,1, β 0,01, priorités 0,6
    et correction 0,1, **mode joint** (lot SIL de 4 096 par minibatch PPO, même Adam), annealing 0,5B → 0,9B puis 0 ; c_sil
    calibré au banc (règle D5).
