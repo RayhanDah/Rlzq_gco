@@ -52,5 +52,6 @@ Mis à jour : 2026-11-19 (Phase 4a : GCO-std ×3 et GCO-S s0 faits, témoin dens
 - **Témoin dense `diag_dense_s0`** (HORS SPEC, ADR-011), commit e04871e : session 1 lancée par l'utilisateur le 2026-11-20
   à 21:19, `--max-hours 3` ; arrêtée à l'itération 9 264 (0,478B, mesuré), donc **avant 0,5B** (estimation ADR fausse).
   Éval en cours de run à 0,4B (it. 7 751, 3 072 épisodes) : A touche 17,7 %, aucune touche 77,8 %, SPRT H1 ; entropie 4,29,
-  KL 4e-4 (std s0 : 4,45 et 1,4e-4). Verdict D3 pas encore mesurable ; session 2 à lancer (même commande).
+  KL 4e-4 (std s0 : 4,45 et 1,4e-4). Verdict D3 pas encore mesurable. Session 2 décidée par l'utilisateur (2026-11-21) : même commande avec
+  `--max-hours 6` ; arrêt attendu au budget de 1B après ≈ 3,3 h (estimé, non mesuré).
 - Résultats 4a : `runs/run_4a_std_s{0,1,2}/`, `runs/run_4a_s_s0/`, évaluation hors ligne `runs/run_4a_offline_eval/`.
