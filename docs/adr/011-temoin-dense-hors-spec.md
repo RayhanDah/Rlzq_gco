@@ -127,3 +127,23 @@ touche, 6db79a4). Trajectoire descriptive à chaque 0,1B avec 2 048 épisodes.
   `load_checkpoint_policy(..., purpose="training_opponent" | "export")` ; la garde n'est pas automatique (revue, mineur).
 - Commande, session 1 (sur GO de l'utilisateur) : `vendor/venv-xpu/Scripts/python scripts/run_4a.py --variant diag_dense
   --seed 0 --max-hours 3`.
+- **Verdict D3 (2026-11-21) : AMBIGU.** Commande D3 (`scripts/eval.py --a <instantané> --b random --episodes 20000 --n-envs 256
+  --seed 0 --sprt-elo 100 --sprt-max-decisive 1200`), commit 6ae65d6, `.venv` CPU, laptop Core Ultra 5 125H, `git_dirty` faux.
+  - 0,5B (it. 9 688) : A touche **23,0 %** [Wilson 95 % 22,4 ; 23,6], aucune touche 72,9 %, 593 V / 19 101 N / 306 D (4,5 % de
+    décisives), SPRT H1 ; pas de PASS à 0,5B, donc session 2 jusqu'à 1B (D4)
+    (`runs/diag_dense_offline_eval/dense_s0_final20k_it09688.json`).
+  - 1B (it. 19 376) : A touche **50,44 %** [**49,75** ; 51,13], aucune touche 46,97 %, 1 948 V / 17 775 N / 277 D (11,1 % de
+    décisives, 9,7 % de victoires par épisode), Elo décisif +339 [+317 ; +362], SPRT H1 après 116 épisodes
+    (`…/dense_s0_final20k_it19376.json`). Repère std s0 à 1B (§4 bis de 4a) : 13,9 %, 81,0 % sans touche, Elo +203.
+  - Application mécanique : PASS non atteint (borne basse 49,75 % < 50 %, bien que l'estimation ponctuelle dépasse 50 %) ;
+    FAIL exclu (borne haute 51,13 % ≫ 25 %). Le seuil n'est pas relu après coup.
+  - Lecture : obs, actions, simulateur et PPO apprennent le contact quand le signal existe (×3,6 la touche de std s0 à 1B) ; une
+    panne franche du pipeline (P) est écartée, mais l'apprentissage est lent (23 % à 0,5B, 1B pour atteindre ≈ 50 %).
+    Diagnostics (`runs/diag_dense_s0/metrics.jsonl`, valeurs d'itération) : KL 3·10⁻⁴ à 1,4·10⁻³ et clip frac ≤ 0,9 %, soit un clip
+    jamais actif ; entropie 4,45 (0,1B) → 4,28 (0,5B) → 3,59 (1B, 80 % de ln 90), contre 4,33 pour std s0 à 1B. L'entropie baisse
+    surtout en seconde moitié, quand LR et ent_coef décroissent ensemble ; les journaux ne séparent pas les deux causes.
+  - Suite (D3, ligne AMBIGU) : **ADR-012** (proposé), audit d'un levier (LR ×3), **après** le run SIL (« quoi qu'il arrive »,
+    décision de l'utilisateur du 2026-11-21, ADR-009). Run « repris » : au moins une perte du GPU en session 2 (it. 10 689,
+    `runs/diag_dense_s0/segments.jsonl` l. 1), reprise automatique.
+  - Trajectoire descriptive (2 048 épisodes, graine 0, même commande, `…/dense_s0_traj2048_it*.json`) : A touche 7,2 % (0,1B),
+    10,8, 12,8, 18,1, 23,9, 28,8, 27,7, 39,4, 41,1, 50,5 % (1B) ; SPRT H1 à partir de 0,4B. Progression sans plateau à 1B.

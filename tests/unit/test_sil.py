@@ -537,14 +537,15 @@ def test_sil_refusee_en_gco_s_et_sans_annealing_avant_la_fin() -> None:
 
 def test_memoire_aux_dimensions_du_run_int_sil_mesuree_en_octets() -> None:
     """Octets des tableaux alloués aux dimensions de `configs/int_sil.yaml` : 4 096 arènes × 2 voitures, pool 20 %
-    (7 373 agents appris), obs 109, fenêtre 300, buffer 250 000, float16 (np.zeros : pages non touchées)."""
+    (7 373 agents appris), obs 109, fenêtre 150 (règle RAM du banc D7, 2026-11-21), buffer 250 000, float16
+    (np.zeros : pages non touchées)."""
     cfg = RunConfig.from_yaml(ROOT / "configs" / "int_sil.yaml")
     assert cfg.sil is not None
     n_learn = cfg.batch_learned_steps // cfg.collection.steps_per_batch
     tracker = EpisodeTracker(n_learn, 109, cfg.sil.horizon_steps, cfg.sil.obs_dtype)
     buf = ReplayBuffer(cfg.sil.capacity, 109, cfg.sil.obs_dtype)
     assert n_learn == 7_373
-    assert tracker.nbytes == 7_373 * 300 * (109 * 2 + 2) + 7_373 * 8 == 486_676_984
+    assert tracker.nbytes == 7_373 * 150 * (109 * 2 + 2) + 7_373 * 8 == 243_367_984  # fenêtre 150 (règle RAM de D7)
     assert buf.nbytes == 250_000 * (109 * 2 + 2 + 4 + 4 + 4 + 1) == 58_250_000  # obs, act, R, prio, itér., origine
     assert tracker.nbytes + buf.nbytes < 0.6e9  # ADR-009 : ≈ 0,6 Go estimé
     del tracker, buf

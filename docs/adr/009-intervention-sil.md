@@ -223,3 +223,26 @@ Le témoin dense (ADR-011), s'il est accepté, passe avant les deux.
 2. Journal C4 (**disp_share**, part de déplacement de π), alerte 0,5 sur 50 itérations, KS1 à KS4 ; RAM obligatoire.
 3. Critère de succès = ADR-006 D6, comparaison hors ligne à std s0.
 4. Ordre D9 : (témoin dense si accepté) → SIL si prête → (1) ou (2) selon ADR-006 D5 → (4) tâche auxiliaire (ADR-010).
+
+## Préalables D7 mesurés (2026-11-21)
+- Outillage : `configs/bench_int_sil.yaml`, `configs/smoke_sil.yaml`, `scripts/sil_f16_parity.py`, `scripts/sil_bench_summary.py`
+  (commit 6ae65d6, revue `code-reviewer` APPROVE, 4 mineurs).
+- Smoke SIL **PASS** sur 6ae65d6 (XPU, laptop Core Ultra 5 125H) : `scripts/train.py configs/smoke_sil.yaml --smoke`
+  (`runs/smoke_sil_6ae65d6/`), contrôle `scripts/sil_bench_summary.py --smoke` PASS (pas SIL, perte non nulle, buffer conservé
+  à la reprise, libération en fin d'annealing).
+- Banc 1, 30 min, fenêtre 300 : `scripts/bench_run.py --config configs/bench_int_sil.yaml --eval-config configs/run_s1v2_eval.yaml
+  --name-prefix bench_int_sil --minutes 30 --prefill-pool 100 --sample-s 1`, commit 6ae65d6, arbre propre, 2026-11-21 07:43–08:14 UTC
+  (`runs/bench_int_sil_20261121T074345Z/`, résumé `sil_summary.json`) :
+  - disp_share, 10 dernières min (358 itérations, c_sil 0,1, buffer plein à 250 000 après 405 s) : médiane **0,12**
+    (p10 0,092, p90 0,167) ; grad_share médiane 0,054 ; frac_pos médiane 1 ; part générique du buffer 0,92. Règle D5 : **c_sil = 0,1
+    retenu**.
+  - Débit appris mural **31,2k/s** (fenêtre 30,8k/s) contre 55,1k au banc M8 sans SIL : **KS4 en alerte** (< 40k). Fil learner
+    occupé 96,9 % du temps : la boucle est limitée par l'apprentissage. 1B ≈ 8,9 h (extrapolé).
+  - RAM disponible minimale **154 Mo**, à l'écriture du checkpoint de l'itération 250 (771 Mo sur disque, chute transitoire
+    médiane 2,86 Go, max 3,04 Go, contre ≈ 0,55 Go estimé) ; hors checkpoints 2,9 à 4,6 Go disponibles ; KS1 non déclenché
+    (0 s sous 1 Go hors pics de quelques secondes). Règle D7 (minimum < 1,5 Go) : **fenêtre ramenée à 150 pas** dans
+    `configs/int_sil.yaml` (et banc, smoke, tests).
+  - Parité float16 **PASS** : lot réel du banc (51 611 obs) |Δlog π| max 1,1e-3, |ΔV| max 1,8e-4
+    (`runs/int_sil_d7/f16_bench_int_sil_20261121T074345Z.json`) ; instantané std s0 1B |Δlog π| max 3,6e-3, |ΔV| max 8,4e-4
+    (`runs/int_sil_d7/f16_std_s0_it19376.json`).
+- Banc 2 (fenêtre 150) : à consigner ci-dessous avant le lancement.

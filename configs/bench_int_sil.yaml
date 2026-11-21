@@ -7,7 +7,7 @@
 #     --eval-config configs/run_s1v2_eval.yaml --name-prefix bench_int_sil --minutes 30 --prefill-pool 100 --sample-s 1
 #   python scripts/sil_bench_summary.py runs/bench_int_sil_<horodatage>     # disp_share, débit, RAM, décision D5
 # Disque : un checkpoint toutes les 250 itérations, plus l'itération 0 et le final, sans rotation ; chacun porte
-# l'état SIL (anneau 0,49 Go + buffer 0,06 Go, tests/unit/test_sil.py) et le pool (0,23 Go à 100 instantanés,
+# l'état SIL (anneau 0,49 Go à 300 pas, ≈ 0,25 Go à 150, estimé ; buffer 0,06 Go ; tests/unit/test_sil.py) et le pool (0,23 Go à 100 instantanés,
 # ADR-001 M6) : ≈ 0,8 Go par checkpoint (estimé, non mesuré).
 name: bench_int_sil
 seed: 0
@@ -86,7 +86,7 @@ sil:                    # ADR-009 (Oh et al. 2018, annexe A, tableaux 3–4) ; s
   mode: joint           # D3 : lot SIL ajouté à chacun des minibatchs PPO, même Adam, clip global de PPO
   batch_size: 4096      # D3 : lot SIL par minibatch PPO
   capacity: 250000      # D3 : transitions, FIFO
-  horizon_steps: 300    # D1 : 20 s avant le but
+  horizon_steps: 150    # D1, D7 : 10 s avant le but (règle RAM du banc D7 du 2026-11-21 : minimum < 1,5 Go)
   priority_alpha: 0.6   # D2
   priority_eps: 1.0e-3  # D2
   is_beta: 0.1          # D2

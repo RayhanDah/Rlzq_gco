@@ -109,7 +109,7 @@ def test_smoke_sil_exerce_plateau_reprise_annealing_et_liberation() -> None:
     assert 0.0 < coefs[half] < 0.1  # la 2e partie repart avec SIL active (état SIL rechargé et utilisé)
     assert all(c > 0.0 for c in coefs[:16]) and coefs[16:] == [0.0, 0.0]  # libération à la mise à jour 16
     assert cfg.sil.anneal_end_timesteps < cfg.budget.total_timesteps  # C2 (sinon RunConfig refuse)
-    assert cfg.sil.capacity >= cfg.sil.batch_size and cfg.sil.horizon_steps == 300
+    assert cfg.sil.capacity >= cfg.sil.batch_size and cfg.sil.horizon_steps == 150
 
 
 # ------------------------------------------------------------------------------------------------ parité float16

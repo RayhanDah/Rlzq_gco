@@ -32,7 +32,7 @@ EXPECTED_DIFF: dict[str, dict[tuple[str, ...], tuple[Any, Any]]] = {
             "mode": "joint",
             "batch_size": 4096,
             "capacity": 250_000,
-            "horizon_steps": 300,
+            "horizon_steps": 150,  # règle RAM de D7 (banc du 2026-11-21)
             "priority_alpha": 0.6,
             "priority_eps": 1e-3,
             "is_beta": 0.1,

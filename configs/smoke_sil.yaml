@@ -8,7 +8,7 @@
 # - batch_size 256 au lieu de 4 096 : aucun pas SIL tant que le buffer a moins de `batch_size` transitions (D3) et
 #   le smoke ne joue que 126 pas par agent ; 256 = deux ou trois buts de quelques secondes, de quoi déclencher des
 #   pas SIL dès les premières itérations (estimé, non mesuré ; vérifié après coup par scripts/sil_bench_summary.py
-#   --smoke). capacity et horizon_steps inchangés : état SIL de checkpoint à la taille réelle (anneau ≈ 0,54 Go à
+#   --smoke). capacity et horizon_steps inchangés : état SIL de checkpoint à la taille réelle (anneau ≈ 0,27 Go à
 #   8 192 agents sans pool).
 # Lancer : vendor/venv-xpu/Scripts/python scripts/train.py configs/smoke_sil.yaml --smoke
 #            --out-dir runs/smoke_sil_<commit> --checkpoint-dir checkpoints/smoke_sil_<commit>
@@ -86,7 +86,7 @@ sil:                    # bloc de configs/int_sil.yaml (ADR-009 D1–D5) ; écar
   mode: joint
   batch_size: 256       # int_sil : 4 096 (voir l'en-tête)
   capacity: 250000
-  horizon_steps: 300
+  horizon_steps: 150
   priority_alpha: 0.6
   priority_eps: 1.0e-3
   is_beta: 0.1

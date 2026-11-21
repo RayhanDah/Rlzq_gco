@@ -2,7 +2,7 @@
 # utilisateur requise). GCO-std, graine 0, 1B appris. Copie de configs/run_4a_std.yaml ; SEULE différence hors `name` et
 # commentaires : le bloc `sil` (test tests/unit/test_run_4a_interventions.py). Lancer avec scripts/run_4a.py --variant
 # int_sil (run int_sil_s<seed>, éval par défaut configs/run_s1v2_eval.yaml). `seed` et `name` sont remplacés par le
-# lanceur. Mémoire SIL (tests/unit/test_sil.py) : anneau 0,49 Go + buffer 0,06 Go ; RAM réelle à mesurer au banc.
+# lanceur. Mémoire SIL (tests/unit/test_sil.py) : anneau 0,49 Go à 300 pas (≈ 0,25 Go à 150, estimé, non mesuré) + buffer 0,06 Go ; RAM mesurée au banc D7 (ADR-009).
 name: int_sil
 seed: 0
 device: xpu             # learner sur l'Arc (vendor/venv-xpu, ADR-001 M3–M4) ; sim RocketGPU en CPU
@@ -80,7 +80,7 @@ sil:                    # ADR-009 amendé le 2026-11-19 (Oh et al. 2018, annexe 
   mode: joint           # D3 : lot SIL ajouté à chacun des minibatchs PPO, même Adam, clip global de PPO
   batch_size: 4096      # D3 : lot SIL par minibatch PPO
   capacity: 250000      # D3 : transitions, FIFO
-  horizon_steps: 300    # D1 : 20 s avant le but
+  horizon_steps: 150    # D1, D7 : 10 s avant le but (règle RAM du banc D7 du 2026-11-21 : minimum < 1,5 Go)
   priority_alpha: 0.6   # D2
   priority_eps: 1.0e-3  # D2
   is_beta: 0.1          # D2
