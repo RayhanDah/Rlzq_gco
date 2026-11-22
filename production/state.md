@@ -1,6 +1,6 @@
 # État du projet RL-GCO
 
-Mis à jour : 2026-11-21 (Phase 4a : témoin dense fini, AMBIGU ; run SIL `int_sil_s0` lancé ; G3 non franchissable).
+Mis à jour : 2026-11-22 (Phase 4a : SIL NEUTRE ; phase A d'ADR-012 en cours ; ADR-007 ensuite ; G3 non franchissable).
 
 ## Où on en est
 - **Phases 0 à 3 terminées.** G1 validé le 2026-11-10 (`docs/GCO_SPEC.md` §10), G2 le 2026-11-11 (§12,
@@ -28,7 +28,7 @@ Mis à jour : 2026-11-21 (Phase 4a : témoin dense fini, AMBIGU ; run SIL `int_s
    reste le smoke sur le commit du run, puis `run_4a.py --variant diag_dense_lr3 --seed 0 --max-hours 0 --max-iterations 9688`.
 3. **ADR-009 SIL accepté** (utilisateur, 2026-11-21, « SIL quoi qu'il arrive »). Préalables D7 faits : smoke PASS (aedf0ca),
    2 bancs, parité float16 PASS, c_sil 0,1 retenu, fenêtre 150 pas (règle RAM). Débit 32,6k/s (KS4 en alerte).
-4. Ordre : SIL (en cours), puis ADR-012 phase A (≈ 3,3 h, estimé) et phase B si SUCCÈS et GO, puis ADR-007 (à valider), puis tâche auxiliaire (ADR-010, esquisse). Ensuite seeds 1
+4. Ordre (validé le 2026-11-21) : ADR-012 phase A (en cours) et phase B si SUCCÈS et GO, puis ADR-007 (accepté par délégation), puis ADR-010 (proposé, code fusionné 70c64ed, bancs λ à faire). Ensuite seeds 1
    et 2, puis préparation de G3.
 5. Contraste P0 générique **mesuré** (ADR-005 : 0,15 but/min par camp, 7 à 8,5 × le kickoff). Hors chemin critique : sonde TPU (`rayhanda/rlgco-probe-tpu`) ;
    relais Kaggle (`scripts/kaggle_run.py`) jamais exécuté, à valider sur un dataset jetable.
@@ -53,9 +53,11 @@ Mis à jour : 2026-11-21 (Phase 4a : témoin dense fini, AMBIGU ; run SIL `int_s
 - **Phase A d'ADR-012 `diag_dense_lr3_s0`** (HORS SPEC, graine 0, LR ×3, arrêt à l'itération 9 688 = 0,5B) : lancée le
   2026-11-21 18 h 34 sur 042b335 (smoke `runs/smoke_dense_lr3_042b335` PASS), `run_4a.py --variant diag_dense_lr3 --seed 0
   --max-hours 0 --max-iterations 9688` ; ≈ 3,1 h (estimé). θ₀ identique au témoin (SHA-256 7fab4c74…cb8a, mesuré).
-  1 perte du GPU (it. 1 148) reprise. **En pause** : arrêté le 2026-11-21 ≈ 21 h 15 à la demande de l'utilisateur (machine
-  requise ≈ 1 h 30), processus tués à l'it. ≈ 5 935 ; reprise depuis `ckpt_000023_it00005750.pt` par la même commande. L'instantané
-  d'éval de l'it. 5 813 sera réécrit à la reprise (le plus récent fait foi).
+  1 perte du GPU (it. 1 148) reprise. Pause demandée par l'utilisateur le 2026-11-21 ≈ 21 h 15 (processus tués à l'it. ≈ 5 935) ;
+  **reprise le 2026-11-22 03 h 27** depuis `ckpt_000023_it00005750.pt` sur 70c64ed (code ADR-010 fusionné, sans effet hors `aux`,
+  revue), smoke `runs/smoke_dense_lr3_70c64edb` PASS. L'instantané de l'it. 5 813 est réécrit (le plus récent fait foi).
+  Ensuite, automatiquement (script `night_chain.py` du scratchpad) : évals D3 + post hoc SIL, verdict D3 mécanique, puis si
+  non SUCCÈS smoke et lancement d'ADR-007 `int_gamma998_s0` (≈ 5,5 h, estimé).
 - **Run SIL `int_sil_s0` terminé** (2026-11-21 18 h 26, 8,1 h, 1 segment, 0 restauration, aucun KS) : critère ADR-006 D6
   **NEUTRE** (1B : décisives 4,33 % [4,06 ; 4,63] < 6,28 %, SPRT H1 ; 1re paire H1 à 0,3B). Descriptif : pic à 0,7B
   (8,8 % de décisives, touche 41,7 %) puis retour à 3,7 % / 21,7 % à 1B, pendant l'annealing de c_sil ; persistance D4
