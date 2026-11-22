@@ -434,3 +434,108 @@ def test_batch_env_refuse_une_autre_forme() -> None:
     state["n_envs"] = 5
     with pytest.raises(ValueError, match="env sauvegardé"):
         a.load_state_dict(state)
+
+
+# ------------------------------------------------------------------ écriture en flux (format inchangé, pic mémoire)
+
+
+def _old_pack(state: dict[str, Any], meta: dict[str, Any]) -> bytes:
+    """Référence : l'ancien chemin d'écriture (tout en mémoire), reconstitué."""
+    import json
+
+    buf = io.BytesIO()
+    torch.save(ck.encode(state), buf)
+    meta_b = json.dumps(meta, sort_keys=True).encode("utf-8")
+    body = struct.pack(">I", len(meta_b)) + meta_b + buf.getvalue()
+    return ck.MAGIC + hashlib.sha256(body).digest() + body
+
+
+def test_ecriture_en_flux_octets_identiques_a_l_ancien_format(tmp_path: Path) -> None:
+    st = _state(3)
+    mgr = CheckpointManager(tmp_path)
+    path = mgr.save(st)
+    meta = ck.read_meta(path)
+    assert path.read_bytes() == _old_pack(st, meta)
+
+
+def test_lecture_d_un_fichier_ecrit_par_l_ancien_code(tmp_path: Path) -> None:
+    st = _state(5)
+    meta = {"format_version": 1, "iteration": 5, "index": 0, "healthy": True, "created_unix": 1.0}
+    f = tmp_path / "ckpt_000000_it00000005.pt"
+    f.write_bytes(_old_pack(st, meta))
+    mgr = CheckpointManager(tmp_path)
+    assert mgr.load(f)["iteration"] == 5
+    assert mgr._verified(mgr.checkpoints()[0])
+
+
+def test_octet_altere_refuse_au_chargement_et_par_verified(tmp_path: Path) -> None:
+    mgr = CheckpointManager(tmp_path)
+    p = mgr.save(_state(1))
+    ref = mgr.checkpoints()[0]
+    assert mgr._verified(ref)
+    raw = bytearray(p.read_bytes())
+    raw[len(raw) // 2] ^= 0x01
+    p.write_bytes(bytes(raw))
+    assert not mgr._verified(ref)
+    with pytest.raises(CheckpointCorruptError, match="somme de contrôle"):
+        CheckpointManager.load(p)
+
+
+@pytest.mark.parametrize("cut", [0, 5, 20, 41, -1])
+def test_fichier_tronque_refuse(tmp_path: Path, cut: int) -> None:
+    mgr = CheckpointManager(tmp_path)
+    p = mgr.save(_state(1))
+    raw = p.read_bytes()
+    p.write_bytes(raw[:cut] if cut >= 0 else raw[:-1])
+    assert not mgr._verified(mgr.checkpoints()[0])
+    with pytest.raises(CheckpointCorruptError):
+        CheckpointManager.load(p)
+
+
+def test_magie_invalide_refusee_par_verified(tmp_path: Path) -> None:
+    mgr = CheckpointManager(tmp_path)
+    p = mgr.save(_state(1))
+    raw = bytearray(p.read_bytes())
+    raw[0] ^= 0xFF
+    p.write_bytes(bytes(raw))
+    assert not mgr._verified(mgr.checkpoints()[0])
+
+
+def test_exception_pendant_torch_save_supprime_le_part_et_garde_l_ancien(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mgr = CheckpointManager(tmp_path)
+    good = mgr.save(_state(1))
+    before = good.read_bytes()
+
+    def boom(obj: Any, f: Any, *a: Any, **k: Any) -> None:
+        f.write(b"debut de charge")  # le .part existe déjà et contient des octets
+        raise RuntimeError("torch.save a échoué")
+
+    monkeypatch.setattr(ck.torch, "save", boom)
+    with pytest.raises(RuntimeError):
+        mgr.save(_state(2))
+    monkeypatch.undo()
+    assert sorted(p.name for p in tmp_path.iterdir()) == [good.name]
+    assert good.read_bytes() == before
+
+
+def test_save_ne_materialise_pas_le_fichier_en_memoire(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Régression (pic mémoire 4,8x -> 0,8x) : ni `BytesIO.getvalue`, ni `read_bytes` du fichier entier."""
+
+    class Spy(io.BytesIO):
+        def getvalue(self) -> bytes:
+            raise AssertionError("save ne doit pas matérialiser le fichier (getvalue)")
+
+    import types
+
+    monkeypatch.setattr(ck, "io", types.SimpleNamespace(BytesIO=Spy))  # visible du seul module checkpoint
+
+    def no_read_bytes(self: Path) -> bytes:
+        raise AssertionError("la vérification ne doit pas lire le fichier entier")
+
+    monkeypatch.setattr(Path, "read_bytes", no_read_bytes)
+    mgr = CheckpointManager(tmp_path, keep=1)
+    mgr.save(_state(1))
+    mgr.save(_state(2))  # rotation : _verified en flux
+    assert [r.iteration for r in mgr.checkpoints()] == [2]

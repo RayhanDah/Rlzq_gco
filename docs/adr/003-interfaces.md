@@ -151,6 +151,13 @@ RocketGPU n'est pas vérifiée : T5 la teste ; sinon l'exactitude est définie �
 Le bot doit recalculer à l'identique : `BatchState` (E = 1) depuis le paquet RLBot, `build_obs` (même fonction),
 `perm` des pads par position, action précédente = ligne réellement envoyée, table §4, action tenue 8 ticks. Il refuse
 un checkpoint dont les versions ou `ACTION_TABLE_SHA256` diffèrent des siennes.
+Note (2026-11-22, écriture en flux) : format de fichier inchangé (`MAGIC | sha256(corps) | corps`, octets identiques
+à l'ancien `_pack`, testés). `CheckpointManager.save` écrit le `.part` en flux (digest calculé à la volée, posé par
+`seek`), `_verified` hache par blocs de 1 Mo. Pic mémoire sur un état synthétique de 0,49 Go : 4,8x -> 0,81x la
+taille du fichier (mlops-lead, 2026-11-22, CPU, torch 2.15.0+cpu, psutil 7.2.2, script jetable non versionné : indicatif,
+non reproductible). Mesure de référence : chute de RAM par checkpoint du banc `bench_int_aux` qui suit ce commit
+(`aux_summary.json`, `ram.checkpoints`), à comparer aux 1 663 Mo de chute médiane avant ce changement (`runs/bench_int_aux_l0p1_20261122T103801Z`).
+La règle d'aliasing d'`encode` (`.clone()` des ndarray) est inchangée.
 
 ### 8. Arborescence et propriété (un writer par ensemble)
 

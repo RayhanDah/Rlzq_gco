@@ -28,7 +28,7 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import IO, Any, Protocol, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -334,11 +334,37 @@ def _replace_with_retry(src: Path, dst: Path) -> None:
             time.sleep(0.05 * (attempt + 1))
 
 
-def _atomic_write(path: Path, data: bytes) -> None:
+class _HashWriter:
+    """Fichier-like pour `torch.save` : écrit dans `f` et met à jour le sha256 au fil de l'eau."""
+
+    def __init__(self, f: Any, digest: Any) -> None:
+        self._f = f
+        self._digest = digest
+
+    def write(self, b: Any) -> int:
+        self._digest.update(b)
+        return int(self._f.write(b))
+
+    def flush(self) -> None:
+        self._f.flush()
+
+
+def _write_streamed(path: Path, state: Mapping[str, Any], meta: Mapping[str, Any]) -> None:
+    """Écrit `path` de façon atomique, en flux : MAGIC + 32 octets nuls, corps (hash à la volée), `seek` pour poser
+    le digest, flush + fsync, `os.replace`. Octets identiques à `MAGIC | sha256(corps) | corps`. Pic mémoire : la charge
+    encodée (copies ndarray) et non plus corps + copie + concaténation (mesuré 4,8x -> 0,81x la taille du fichier)."""
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.part")
     try:
         with open(tmp, "wb") as f:
-            f.write(data)
+            f.write(MAGIC + b"\x00" * 32)
+            digest = hashlib.sha256()
+            meta_b = json.dumps(meta, sort_keys=True).encode("utf-8")
+            head = struct.pack(">I", len(meta_b)) + meta_b
+            f.write(head)
+            digest.update(head)
+            torch.save(encode(state), cast("IO[bytes]", _HashWriter(f, digest)))
+            f.seek(len(MAGIC))
+            f.write(digest.digest())
             f.flush()
             os.fsync(f.fileno())
         _replace_with_retry(tmp, path)
@@ -349,12 +375,26 @@ def _atomic_write(path: Path, data: bytes) -> None:
         raise
 
 
-def _pack(state: Mapping[str, Any], meta: Mapping[str, Any]) -> bytes:
-    buf = io.BytesIO()
-    torch.save(encode(state), buf)
-    meta_b = json.dumps(meta, sort_keys=True).encode("utf-8")
-    body = struct.pack(">I", len(meta_b)) + meta_b + buf.getvalue()
-    return MAGIC + hashlib.sha256(body).digest() + body
+def _verify_file(path: Path) -> None:
+    """Magie, longueur minimale et somme de contrôle, par blocs de 1 Mo (jamais le fichier entier en mémoire)."""
+    with open(path, "rb") as f:
+        head = f.read(len(MAGIC) + 32)
+        if len(head) < len(MAGIC) + 32 or head[: len(MAGIC)] != MAGIC:
+            raise CheckpointCorruptError("en-tête de checkpoint absent ou fichier tronqué")
+        digest = hashlib.sha256()
+        size = 0
+        n_raw = b""
+        while chunk := f.read(1 << 20):
+            if len(n_raw) < 4:
+                n_raw = (n_raw + chunk)[:4]
+            size += len(chunk)
+            digest.update(chunk)
+    if size < 4:
+        raise CheckpointCorruptError("en-tête de checkpoint absent ou fichier tronqué")
+    if digest.digest() != head[len(MAGIC) :]:
+        raise CheckpointCorruptError("somme de contrôle invalide (fichier altéré ou incomplet)")
+    if 4 + struct.unpack(">I", n_raw)[0] > size:
+        raise CheckpointCorruptError("longueur de métadonnées incohérente")
 
 
 def _read_header(data: bytes) -> tuple[dict[str, Any], bytes]:
@@ -426,17 +466,16 @@ class CheckpointManager:
             "train_config_hash": state.get("train_config_hash"),
             "reward_config_hash": state["identity"]["reward_config_hash"],
         }
-        data = _pack(state, meta)
         path = self.directory / f"ckpt_{index:06d}_it{iteration:08d}.pt"
         if path.exists():
             raise CheckpointError(f"{path.name} existe déjà : jamais écrasé")
-        _atomic_write(path, data)
+        _write_streamed(path, state, meta)
         self._rotate()
         return path
 
     def _verified(self, ref: CheckpointRef) -> bool:
         try:
-            _read_header(ref.path.read_bytes())
+            _verify_file(ref.path)
         except (CheckpointCorruptError, OSError):
             return False
         return True
