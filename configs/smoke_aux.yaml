@@ -1,10 +1,12 @@
 # Smoke test du chemin de la tâche auxiliaire (ADR-010 D8 : « smoke test vert sur le commit du run ») : copie de
 # configs/smoke.yaml plus le bloc `aux` de configs/int_aux.yaml, À L'IDENTIQUE. SEULS écarts à smoke.yaml : `name`, le
 # bloc `aux` et `budget.total_timesteps` (tests/unit/test_auxtask.py) :
-# - 48 itérations (2 752 512 timesteps) au lieu de 18 : un pas ne sort avec y = 0 qu'après H = 150 pas sans fin
-#   d'épisode ; 18 itérations = 126 pas par agent, compartiment y = 0 vide, aucun lot (smoke 690a828). Reprise à 24 :
-#   168 pas par agent, lots possibles dès l'itération 22 (test), donc avant ET après la reprise ;
-# - pourquoi pas un H court : la fenêtre (268 Mo, mesuré en 690a828) et les lots ne seraient plus à la taille du run.
+# - 48 itérations (2 752 512 timesteps) au lieu de 18 : un pas ne sort avec y = 0 qu'après H pas sans fin d'épisode ;
+#   à H = 150, 18 itérations = 126 pas par agent, compartiment y = 0 vide, aucun lot (smoke 690a828). Depuis le repli
+#   H = 100 de D2 (banc du 2026-11-22), reprise à 24 : 168 pas par agent, lots possibles dès l'itération 15 (test), donc
+#   avant ET après la reprise ; budget de 48 conservé (1er lot possible 9 itérations avant la reprise) ;
+# - pourquoi pas un H court : la fenêtre (178,7 Mo à H = 100, calcul ; 268 Mo mesuré à H = 150 en 690a828) et les lots
+#   ne seraient plus à la taille du run.
 #   batch_size revient à 8 192 : y ≠ 0 n'était pas limitant (22 122 transitions à l'itération 18, mesuré en 690a828).
 #   Durée : ≈ 2,3 min (estimé, non mesuré, d'après 690a828 : 1,2 s par itération et ≈ 4 s par checkpoint).
 # Lancer : vendor/venv-xpu/Scripts/python scripts/train.py configs/smoke_aux.yaml --smoke
@@ -77,7 +79,7 @@ smoke:                  # exigences de `scripts/train.py --smoke`
 aux:                    # bloc de configs/int_aux.yaml (ADR-010 D1–D6), sans écart
   enabled: true
   coef: 0.1
-  horizon_steps: 150
+  horizon_steps: 100
   batch_size: 8192
   capacity_per_class: 125000
   store_float16: true

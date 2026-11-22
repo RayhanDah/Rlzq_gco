@@ -2,8 +2,9 @@
 # PROPOSÉ, validation utilisateur requise). GCO-std, graine 0, 1B appris. Copie de configs/run_4a_std.yaml ; SEULE
 # différence hors `name` et commentaires : le bloc `aux` (tests/unit/test_run_4a_interventions.py). Lancer avec
 # scripts/run_4a.py --variant int_aux (run int_aux_s<seed>, éval par défaut configs/run_s1v2_eval.yaml). `seed` et `name`
-# sont remplacés par le lanceur. Mémoire auxiliaire (tests/unit/test_auxtask.py, octets des tableaux) : fenêtre 241,2 Mo
-# + rejeu 55,8 Mo = 297 Mo à 7 373 agents appris ; RAM à mesurer au banc D5 (configs/bench_int_aux.yaml).
+# sont remplacés par le lanceur. Mémoire auxiliaire (tests/unit/test_auxtask.py, octets des tableaux) : fenêtre 160,8 Mo
+# + rejeu 55,8 Mo = 216,5 Mo à 7 373 agents appris et H = 100 (297 Mo à H = 150) ; RAM à remesurer au banc D5 à H = 100
+# (configs/bench_int_aux.yaml ; banc à H = 150 du 2026-11-22 : minimum disponible 807 Mo, repli D2).
 name: int_aux
 seed: 0
 device: xpu             # learner sur l'Arc (vendor/venv-xpu, ADR-001 M3–M4) ; sim RocketGPU en CPU
@@ -75,10 +76,11 @@ logging:
 aux:                    # ADR-010 (Lucy-SKG arXiv 2305.15801 §4.2 ; UNREAL arXiv 1611.05397 §3.2, annexe B) ; src/training/auxtask.py
   enabled: true         # C3 : false = PPO seul, bit à bit
   coef: 0.1             # D5 : λ_aux provisoire ; fixé par les bancs D5 (scripts/aux_bench_summary.py), consigné dans l'ADR avant le GO
-  horizon_steps: 150    # D2 : 10 s à 15 Hz (règle RAM d'ADR-009 D7) ; repli H = 100 si le banc mesure < 1,5 Go disponible
+  horizon_steps: 100    # D2 : repli H = 100 appliqué (banc D5 du 2026-11-22 à H = 150 : minimum 807 Mo < 1,5 Go) ;
+                        # 6,7 s à 15 Hz ; nouveau banc à H = 100 ; encore < 1,5 Go : pas de GO
   batch_size: 8192      # D3 : 4 096 (y ≠ 0) + 4 096 (y = 0) par minibatch PPO
   capacity_per_class: 125000   # D3 : deux compartiments FIFO
-  store_float16: true   # D3 : sous réserve de la parité D8-5 (sinon float32 et H = 75)
+  store_float16: true   # D3 : sous réserve de la parité D8-5 (sinon float32 à même budget d'octets : H = 50)
   share_alert: 0.5      # D6 (C4) : alerte si grad_share > 0,5 pendant 50 itérations
   share_alert_patience: 50
   ram_min_available_mb: 1000.0   # KS1 : STOP si RAM disponible < 1 Go pendant > 10 min

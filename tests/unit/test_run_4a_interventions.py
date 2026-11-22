@@ -60,7 +60,7 @@ EXPECTED_DIFF: dict[str, dict[tuple[str, ...], tuple[Any, Any]]] = {
         for k, v in {
             "enabled": True,
             "coef": 0.1,  # provisoire : fixé par les bancs D5 avant le GO
-            "horizon_steps": 150,  # D2
+            "horizon_steps": 100,  # D2, repli H = 100 (banc D5 du 2026-11-22 : minimum 807 Mo < 1,5 Go)
             "batch_size": 8192,  # D3
             "capacity_per_class": 125_000,  # D3
             "store_float16": True,

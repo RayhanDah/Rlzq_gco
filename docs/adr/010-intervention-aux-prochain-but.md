@@ -92,7 +92,8 @@ et les calculs ci-dessous (Python, exacts aux arrondis ; **non mesurés** sauf m
   uniformément dans chaque compartiment (rééquilibrage 50 / 50, UNREAL §3.2–3.3). Pas de lot tant que le compartiment y ≠ 0 a moins
   de 4 096 transitions (journalisé). Un FIFO unique de 250 000 serait renouvelé en ≈ 5 itérations par la classe 0 (≈ 25k pas
   étiquetés 0 par itération, estimé) et évincerait les rares ± ; le compartiment ± couvre ≈ 30 à 120 itérations (estimé).
-- Obs float16 si la parité D8-5 passe ; sinon float32 avec H = 75 (même budget d'octets).
+- Obs float16 si la parité D8-5 passe ; sinon float32 avec H/2 (même budget d'octets : H = 75 à H = 150, **H = 50 depuis le
+  repli D2 du 2026-11-22**).
 
 ### D4. Garde-fous de calcul (pour tenir le coût de D7)
 - Aucune synchronisation hôte par minibatch : indices des 6 lots tirés en début d'itération (générateur CPU propre), une copie
@@ -155,7 +156,7 @@ de Windows, même suivi d'une extension, d'après la documentation Microsoft « 
 4. Étiquettes sur épisodes synthétiques : but au pas T ⇒ ±1 sur [T − H + 1, T] selon le signe de r(i), csc compris ; épisode plus
    long que H ⇒ 0 hors fenêtre ; troncature ⇒ les H derniers pas masqués ; camp gelé exclu ; épisode plus court que H.
 5. Parité float16 : |Δ log softmax(tête)| max ≤ 10⁻² (seuil de π, ADR-009 D7-5) sur lot synthétique, puis au banc sur un lot réel ;
-   sinon float32 et H = 75 (D3).
+   sinon float32 et H/2 (D3 ; H = 50 depuis le repli D2 du 2026-11-22).
 6. Rejeu : tirage 4 096 + 4 096, FIFO par compartiment, pas de lot sous 4 096 transitions ±.
 7. Reprise exacte en CPU avec l'état auxiliaire (fenêtre, rejeu, tête, état Adam de la tête, générateur) dans le checkpoint
    (`.claude/rules/training.md`) ; θ₀ de π identique à std s0 (méthode de `tests/unit/test_run_4a_interventions.py:414`).
@@ -178,6 +179,32 @@ les configs existantes inchangés, recalculés avec l'ancien et le nouveau `src/
 - `configs/smoke_aux.yaml` : bloc `aux` identique à `int_aux` ; budget de 48 itérations au lieu de 18 (reprise à 24, soit 168 pas
   par agent > H = 150 : sans cela le compartiment y = 0 reste vide et aucun lot n'est tiré, smoke 690a828 du 2026-11-22). Écarts
   à `smoke.yaml` testés (`tests/unit/test_auxtask.py`). L'ancien écart `batch_size` 1 024 reposait sur une estimation fausse.
+
+**État des préalables (2026-11-22) : banc D5 à λ = 0,1, H = 150, et repli D2.** Mesure : `scripts/bench_run.py --config
+configs/bench_int_aux.yaml --eval-config configs/run_s1v2_eval.yaml --name-prefix bench_int_aux_l0p1 --minutes 30 --prefill-pool
+100 --sample-s 1`, commit a81559f (arbre propre), graine 0, Core Ultra 5 125H, XPU, secteur, 2026-11-22 10:38 → 11:08 UTC ;
+données `runs/bench_int_aux_l0p1_20261122T103801Z/`, résumés `aux_summary.json` et `bench_summary.json`
+(`scripts/aux_bench_summary.py`).
+- D5 : fenêtre concluante (511 itérations, rejeu plein) ; grad_share médiane **0,478** (p10 0,405, p90 0,564) ⇒ **λ = 0,1 retenu** ;
+  disp_share médiane 0,454. Débit appris mural **43,7k/s** (KS4 non déclenché) ; fil learner occupé **0,96**.
+- RAM : disponible minimum **807 Mo** (échantillons à 1 s, pendant le checkpoint de l'itération 750), chute maximale **2 088 Mo**
+  pendant un checkpoint (médiane 1 663 Mo sur 8 checkpoints : 7 de 523 Mo, 189 Mo à l'itération 0) ; KS1 non déclenché ;
+  RSS max 8 110 Mo, privée max 8 976 Mo.
+- **Décision mécanique D2** (`scripts/aux_bench_summary.py:211-220`, sortie `ram_rule` : « H = 100 ») : minimum < 1,5 Go ⇒
+  **H = 100** dans `configs/int_aux.yaml`, `configs/bench_int_aux.yaml` et `configs/smoke_aux.yaml` (blocs `aux` identiques,
+  tests). H = 100 = 6,7 s à 15 Hz, γ¹⁰⁰ = 0,61 ; fenêtre 160,8 Mo, état auxiliaire 216,5 Mo (octets, test). Repli float32 de D3
+  (« même budget d'octets ») : H = 50 en float32 (et non plus 75), à confirmer par l'utilisateur si la parité D8-5 échoue.
+- Restent, dans l'ordre : smoke `configs/smoke_aux.yaml` vert sur le commit (1er lot possible à l'itération 15, reprise à 24,
+  test) ; **nouveau banc λ = 0,1 à H = 100** (même commande) ; parité f16 sur un checkpoint de ce banc (`scripts/aux_f16_parity.py`).
+  **Si ce banc mesure encore un minimum < 1,5 Go : PAS DE GO (D2).**
+- Gain attendu de H = 100 (**estimé, non mesuré**) : −80,4 Mo résidents (fenêtre) et checkpoint 523 → ≈ 442 Mo ; la chute au
+  checkpoint vaut 3,3 à 3,9 fois sa taille en médiane (4,2 au max) sur les bancs SIL et aux (copies de sérialisation de `_pack`,
+  `src/training/checkpoint.py:352-357` : clone d'`encode`, `BytesIO`, deux concaténations), soit ≈ −0,25 à −0,32 Go ; total
+  ≈ +0,32 à +0,40 Go, minimum attendu ≈ 1,1 à 1,2 Go, **sous 1,5 Go** : H = 100 ne suffit vraisemblablement pas. Ce qui domine
+  (lecture hors ligne de `bench_samples.jsonl`, interprétation) : la mémoire privée du processus hors checkpoint (médiane 6,36 Go)
+  est celle du banc SIL 2 (6,29 Go, état 302 Mo) et de M8 sans aux (6,09 Go) ; les pics de RSS et de mémoire privée tombent dans
+  les checkpoints ; l'écart de disponible avec le banc SIL 2 (médiane 2,67 contre 4,16 Go hors checkpoint) vient surtout de la
+  mémoire utilisée hors du processus (total − disponible − privée : 6,30 contre 5,29 Go), cause non identifiée.
 
 ### D9. Journal C4 (`metrics.jsonl`, chaque itération ; `aux/*`)
 `coef`, `loss`, `batch_present` (minibatchs avec lot), `recall_pos`, `recall_neg`, `recall_zero`, `precision_pos`, `precision_neg`,

@@ -187,7 +187,7 @@ def test_bench_et_smoke_aux_ne_different_que_des_champs_annonces() -> None:
     }
     a, b = RunConfig.from_yaml(CONFIGS / "int_aux.yaml"), RunConfig.from_yaml(CONFIGS / "bench_int_aux.yaml")
     assert dataclasses.replace(b, name=a.name).trajectory_hash() == a.trajectory_hash()
-    # smoke_aux = smoke + bloc aux d'int_aux à l'identique ; seul le budget change (H = 150 pas à dépasser avant la
+    # smoke_aux = smoke + bloc aux d'int_aux à l'identique ; seul le budget change (H = 100 pas à dépasser avant la
     # reprise, voir l'en-tête et le test suivant)
     smoke, smoke_aux = _raw("smoke.yaml"), _raw("smoke_aux.yaml")
     d = _diff(smoke, smoke_aux)
@@ -222,7 +222,9 @@ def test_smoke_aux_remplit_le_compartiment_zero_avant_et_apres_la_reprise() -> N
     # but) et des mises à jour après la reprise ; seul le compartiment y = 0 est borné ici (y ≠ 0 : mesuré, smoke)
     assert first is not None and first <= resume - 1, (first, resume, resume * t_len, cfg.aux.horizon_steps)
     assert zero_after[resume - 1] > 0 and total > resume
-    assert (first, resume, total) == (22, 24, 48)  # valeurs citées dans l'en-tête de configs/smoke_aux.yaml
+    # H = 100 (repli D2, banc du 2026-11-22) : 1re sortie y = 0 au pas 101, dans l'itération 15 (pas 99 à 105) ;
+    # budget de 48 conservé (reprise à 24 : 168 pas par agent, 1er lot possible 9 itérations avant la reprise)
+    assert (first, resume, total) == (15, 24, 48)  # valeurs citées dans l'en-tête de configs/smoke_aux.yaml
 
 
 def test_lanceur_variante_int_aux(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -827,17 +829,20 @@ def test_run_stop_ks1_et_alerte_c4_journalisees(tmp_path: Path) -> None:
 
 
 def test_memoire_aux_dimensions_du_run_int_aux_mesuree_en_octets() -> None:
-    """Octets des tableaux aux dimensions de `configs/int_aux.yaml` : 7 373 agents appris, obs 109, H = 150, float16,
-    2 × 125 000 transitions (obs 218, étiquette 1, itération 4 octets) : 241,2 + 55,8 = 297 Mo (ADR-010, Mesures)."""
+    """Octets des tableaux aux dimensions de `configs/int_aux.yaml` : 7 373 agents appris, obs 109, H = 100 (repli de
+    D2, banc du 2026-11-22), float16, 2 × 125 000 transitions (obs 218, étiquette 1, itération 4 octets) :
+    160,8 + 55,8 = 216,5 Mo (241,2 + 55,8 = 297 Mo à H = 150, ADR-010 Mesures)."""
     cfg = RunConfig.from_yaml(CONFIGS / "int_aux.yaml")
     assert cfg.aux is not None
     n_learn = cfg.batch_learned_steps // cfg.collection.steps_per_batch
     window = GoalWindow(n_learn, 109, cfg.aux.horizon_steps, cfg.aux.obs_dtype)
     replay = [ClassReplay(cfg.aux.capacity_per_class, 109, cfg.aux.obs_dtype) for _ in range(2)]
     assert n_learn == 7_373
-    assert window.nbytes == 7_373 * 150 * 218 + 7_373 * 8 == 241_156_084
+    assert window.nbytes == 7_373 * 100 * 218 + 7_373 * 8 == 160_790_384
     assert sum(r.nbytes for r in replay) == 250_000 * 223 == 55_750_000
-    assert window.nbytes + sum(r.nbytes for r in replay) == expected_nbytes(n_learn, 109, cfg.aux) == 296_906_084
+    assert window.nbytes + sum(r.nbytes for r in replay) == expected_nbytes(n_learn, 109, cfg.aux) == 216_540_384
+    # repli float32 de D3 (« même budget d'octets ») : H = 50 en float32 = fenêtre de H = 100 en float16
+    assert GoalWindow(n_learn, 109, 50, np.float32).nbytes == window.nbytes
     assert expected_nbytes(n_learn, 109, cfg.aux) <= 301_617_984  # état SIL du banc 2 (243 367 984 + 58 250 000)
     del window, replay
 

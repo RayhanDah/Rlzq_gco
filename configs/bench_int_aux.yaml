@@ -9,7 +9,8 @@
 #   python scripts/aux_bench_summary.py runs/bench_int_aux_<horodatage> [autres bancs...]   # grad_share, λ, débit, RAM
 #   python scripts/aux_f16_parity.py --ckpt <checkpoint du banc> --out runs/int_aux_d8/f16_<banc>.json   # parité D8-5
 # Disque : un checkpoint toutes les 250 itérations, plus l'itération 0 et le final, sans rotation ; chacun porte l'état
-# auxiliaire (≈ 0,3 Go, estimé d'après les octets des tableaux) et le pool (0,23 Go à 100 instantanés, ADR-001 M6).
+# auxiliaire (≈ 0,22 Go à H = 100, estimé d'après les octets des tableaux ; 0,3 Go à H = 150) et le pool (0,23 Go à
+# 100 instantanés, ADR-001 M6).
 name: bench_int_aux
 seed: 0
 device: xpu             # learner sur l'Arc (vendor/venv-xpu, ADR-001 M3–M4) ; sim RocketGPU en CPU
@@ -81,10 +82,11 @@ logging:
 aux:                    # ADR-010 (Lucy-SKG arXiv 2305.15801 §4.2 ; UNREAL arXiv 1611.05397 §3.2, annexe B) ; src/training/auxtask.py
   enabled: true         # C3 : false = PPO seul, bit à bit
   coef: 0.1             # D5 : λ_aux provisoire ; fixé par les bancs D5 (scripts/aux_bench_summary.py), consigné dans l'ADR avant le GO
-  horizon_steps: 150    # D2 : 10 s à 15 Hz (règle RAM d'ADR-009 D7) ; repli H = 100 si le banc mesure < 1,5 Go disponible
+  horizon_steps: 100    # D2 : repli H = 100 appliqué (banc D5 du 2026-11-22 à H = 150 : minimum 807 Mo < 1,5 Go) ;
+                        # 6,7 s à 15 Hz ; nouveau banc à H = 100 ; encore < 1,5 Go : pas de GO
   batch_size: 8192      # D3 : 4 096 (y ≠ 0) + 4 096 (y = 0) par minibatch PPO
   capacity_per_class: 125000   # D3 : deux compartiments FIFO
-  store_float16: true   # D3 : sous réserve de la parité D8-5 (sinon float32 et H = 75)
+  store_float16: true   # D3 : sous réserve de la parité D8-5 (sinon float32 à même budget d'octets : H = 50)
   share_alert: 0.5      # D6 (C4) : alerte si grad_share > 0,5 pendant 50 itérations
   share_alert_patience: 50
   ram_min_available_mb: 1000.0   # KS1 : STOP si RAM disponible < 1 Go pendant > 10 min
