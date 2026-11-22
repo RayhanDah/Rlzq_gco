@@ -40,3 +40,12 @@ __pycache__/
 .claude/worktrees/
 CLAUDE.local.md
 production/run_log.jsonl
+
+# Outillage Claude Code et mémoire projet : local uniquement
+/.claude/
+/CLAUDE.md
+/production/
+/docs/STUDIO.md
+/docs/adr/000-studio-structure.md
+/docs/research/claude_code_configs.md
+/tests/hooks/
