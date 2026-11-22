@@ -1,6 +1,6 @@
 # État du projet RL-GCO
 
-Mis à jour : 2026-11-22 (Phase 4a : SIL NEUTRE ; phase A d'ADR-012 en cours ; ADR-007 ensuite ; G3 non franchissable).
+Mis à jour : 2026-11-22 (Phase 4a : SIL NEUTRE ; ADR-012 phase A NEUTRE, audit clos ; ADR-007 en cours ; G3 non franchissable).
 
 ## Où on en est
 - **Phases 0 à 3 terminées.** G1 validé le 2026-11-10 (`docs/GCO_SPEC.md` §10), G2 le 2026-11-11 (§12,
@@ -24,11 +24,11 @@ Mis à jour : 2026-11-22 (Phase 4a : SIL NEUTRE ; phase A d'ADR-012 en cours ; A
    Règle D5 : S ≥ std, intervention désignée (2) γ 0,998 (ADR-007, proposé).
 2. **Témoin dense fini (ADR-011)** : verdict D3 **AMBIGU** à 1B (A touche 50,4 % [49,75 ; 51,13], 20 000 épisodes, SPRT H1 ;
    0,5B : 23,0 %). Le pipeline apprend le contact quand le signal existe, lentement. Suite D3 : **ADR-012 accepté** (utilisateur,
-   2026-11-21) : audit d'un levier, LR ×3, phase A `diag_dense_lr3_s0` à 0,5B **après** la SIL ; P1 fait (×3 confirmé), P2 fait et revu (APPROVE, 7722c59) ;
-   reste le smoke sur le commit du run, puis `run_4a.py --variant diag_dense_lr3 --seed 0 --max-hours 0 --max-iterations 9688`.
+   2026-11-21) : audit d'un levier, LR ×3. **Phase A faite, verdict D3 NEUTRE** (2026-11-22, `docs/reports/diag_dense_lr3_s0.md`) :
+   touche 29,1 % [28,5 ; 29,7] à 0,5B contre 23,0 %, gain ×1,26 < ×2 ; KL ∝ LR² réfutée (rapport 1,4 à 2,1). Audit clos, LR inchangée, pas de phase B.
 3. **ADR-009 SIL accepté** (utilisateur, 2026-11-21, « SIL quoi qu'il arrive »). Préalables D7 faits : smoke PASS (aedf0ca),
    2 bancs, parité float16 PASS, c_sil 0,1 retenu, fenêtre 150 pas (règle RAM). Débit 32,6k/s (KS4 en alerte).
-4. Ordre (validé le 2026-11-21) : ADR-012 phase A (en cours) et phase B si SUCCÈS et GO, puis ADR-007 (accepté par délégation), puis ADR-010 (proposé, code fusionné 70c64ed, bancs λ à faire). Ensuite seeds 1
+4. Ordre (validé le 2026-11-21) : ADR-012 phase A (faite, NEUTRE), ADR-007 (accepté par délégation, **en cours**), puis ADR-010 (proposé, code fusionné 70c64ed, bancs λ à faire). Ensuite seeds 1
    et 2, puis préparation de G3.
 5. Contraste P0 générique **mesuré** (ADR-005 : 0,15 but/min par camp, 7 à 8,5 × le kickoff). Hors chemin critique : sonde TPU (`rayhanda/rlgco-probe-tpu`) ;
    relais Kaggle (`scripts/kaggle_run.py`) jamais exécuté, à valider sur un dataset jetable.
@@ -50,18 +50,15 @@ Mis à jour : 2026-11-22 (Phase 4a : SIL NEUTRE ; phase A d'ADR-012 en cours ; A
   32.0.101.8860). Reprise automatique (`scripts/run_4a.py`) ; pas de garde contre un processus figé.
 
 ## Expériences en cours
-- **Phase A d'ADR-012 `diag_dense_lr3_s0`** (HORS SPEC, graine 0, LR ×3, arrêt à l'itération 9 688 = 0,5B) : lancée le
-  2026-11-21 18 h 34 sur 042b335 (smoke `runs/smoke_dense_lr3_042b335` PASS), `run_4a.py --variant diag_dense_lr3 --seed 0
-  --max-hours 0 --max-iterations 9688` ; ≈ 3,1 h (estimé). θ₀ identique au témoin (SHA-256 7fab4c74…cb8a, mesuré).
-  1 perte du GPU (it. 1 148) reprise. Pause demandée par l'utilisateur le 2026-11-21 ≈ 21 h 15 (processus tués à l'it. ≈ 5 935) ;
-  **reprise le 2026-11-22 03 h 27** depuis `ckpt_000023_it00005750.pt` sur 70c64ed (code ADR-010 fusionné, sans effet hors `aux`,
-  revue), smoke `runs/smoke_dense_lr3_70c64edb` PASS. L'instantané de l'it. 5 813 est réécrit (le plus récent fait foi).
-  Ensuite, automatiquement (script `night_chain.py` du scratchpad) : évals D3 + post hoc SIL, verdict D3 mécanique, puis si
-  non SUCCÈS smoke et lancement d'ADR-007 `int_gamma998_s0` (≈ 5,5 h, estimé).
+- **ADR-007 `int_gamma998_s0`** (GCO-std, γ 0,998, graine 0, 1B) : lancé le 2026-11-22 05 h 05 sur 86aa57a par l'enchaînement de
+  nuit (smoke `runs/smoke_86aa57a` PASS), `run_4a.py --variant int_gamma998 --seed 0 --max-hours 0` ; ≈ 5,5 h (estimé). θ₀ identique
+  à std s0 (SHA-256 7fab4c74…cb8a, mesuré). Ensuite : évals hors ligne ADR-007 D4 (`runs/int_gamma998_offline_eval/`), verdict D6.
+- Phase A d'ADR-012 terminée (2026-11-22 04 h 46, it. 9 688, 3 segments dont 1 perte du GPU et 1 pause) : NEUTRE, voir ci-dessus.
 - **Run SIL `int_sil_s0` terminé** (2026-11-21 18 h 26, 8,1 h, 1 segment, 0 restauration, aucun KS) : critère ADR-006 D6
   **NEUTRE** (1B : décisives 4,33 % [4,06 ; 4,63] < 6,28 %, SPRT H1 ; 1re paire H1 à 0,3B). Descriptif : pic à 0,7B
   (8,8 % de décisives, touche 41,7 %) puis retour à 3,7 % / 21,7 % à 1B, pendant l'annealing de c_sil ; persistance D4
-  déclenchée (« gain dépendant de la SIL »). Rapport `docs/reports/int_sil_s0.md` ; avis research-director : SIL v1 non promue,
+  déclenchée (« gain dépendant de la SIL »). Rapport `docs/reports/int_sil_s0.md` (§7 bis, post hoc 2026-11-22 : 0,8B bat 1,0B en tête-à-tête, Élo +135, lecture « oubli » ;
+  bosse confirmée avec `--seed 1`) ; avis research-director : SIL v1 non promue,
   ordre **validé par l'utilisateur (2026-11-21)** : analyse post hoc, ADR-012, ADR-007, ADR-010, variante SIL éventuelle
   (nouvel ADR, C2). Mandat du même jour : « je te laisse gérer le projet et les runs » ⇒ ADR-007 lancé après la phase A si
   celle-ci n'est pas SUCCÈS (sinon phase B d'abord, sur GO, ADR-012 D8).

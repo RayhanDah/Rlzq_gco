@@ -186,6 +186,24 @@ itération, pas en % ici) : non utilisées.
   H1 est (0,3B ; 0,4B). Les différences d'échantillon et de protocole (3 072 contre 2 048 épisodes, aléatoire contre θ₀ pour les buts)
   interdisent de comparer ces deux mesures. Buts contre θ₀ (e `frozen`, k = 10) : 115 pour, 20 contre sur 1 049,8 min.
 
+## 7 bis. Évaluations post hoc descriptives (2026-11-22, après la phase A d'ADR-012)
+Ces évaluations ont été suggérées en §9 et lancées par `post_phaseA_pipeline.py` (scratchpad) sur le commit 86aa57a, en CPU
+`.venv`, avec `scripts/eval.py --episodes 20000 --n-envs 256 --sprt-elo 100 --sprt-max-decisive 1200`. Les sorties sont dans
+`runs/int_sil_offline_eval/posthoc_*.json`. Elles ne servent jamais de critère.
+
+| Mesure | Décisives [Wilson] | V / D | Élo décisif [IC bootstrap] | Touche A |
+|---|---|---|---|---|
+| Tête-à-tête 0,8B (A) contre 1,0B (B), `--seed 0` | 11,33 % [10,90 ; 11,78] | 1 551 / 715 | **+135 [119 ; 149]**, SPRT H1 | 49,98 % (B : 34,69 %) |
+| 0,8B contre l'aléatoire, `--seed 1` | 8,25 % [7,88 ; 8,64] | 1 493 / 158 | +390 | 41,17 % |
+| 0,9B contre l'aléatoire, `--seed 1` | 6,49 % [6,16 ; 6,84] | 1 159 / 140 | +367 | 34,88 % |
+
+- **Tête-à-tête** : 1,0B perd nettement contre 0,8B. D'après la grille de lecture de §9 (« si 1,0B perd, oubli »), c'est la
+  lecture « oubli » qui est retenue, pas la spécialisation ni la non-transitivité. L'hypothèse reste post hoc, sur une graine.
+- **Graine d'éval 1** : la bosse n'est pas un artefact de l'échantillon `--seed 0`. À 0,8B, 8,25 % contre 8,25 % avec 2 048
+  épisodes `--seed 0` (`s0_b0.8_it15501.json`).
+- **Diagnostic D4 resserré** : à 0,9B, la borne basse passe à 6,16 % avec 20 000 épisodes. Elle dépasse la borne haute à 1,0B
+  (4,63 %) de 1,53 point, au lieu de 0,16 avant. La conclusion « gain dépendant de la SIL » tient, toujours descriptive.
+
 ## 8. Limites
 - **Une graine** (0) ; std a une variance entre graines de ×1,5 à 1B (`docs/reports/run_4a.md` §4 bis, 3,14 / 2,55 / 2,24 %). Le
   bruit de graine ne peut pas être exclu sans autre graine ; une bosse ×2 alignée sur c_sil est difficile à expliquer par le seul bruit
@@ -198,7 +216,7 @@ itération, pas en % ici) : non utilisées.
   à 3 graines (estimé : ≈ 25 h pour 3 graines, non mesuré).
 - RAM : un épisode à 521 Mo pendant la SIL (it. 14 736) et 24 après la libération (min 143 Mo) ; cause non établie, aucune action
   du run (KS1 non déclenché, durée max 108 s).
-- Le tête-à-tête entre instantanés n'a pas été mesuré (§9) ; la lecture « SIL porteuse » reste une hypothèse. Lecture concurrente
+- Le tête-à-tête entre instantanés a été mesuré après coup (§7 bis : 0,8B bat 1,0B) ; la lecture « SIL porteuse » reste une hypothèse. Lecture concurrente
   (research-director) : la SIL peut agir comme un pas effectif plus grand (disp_share ≈ 0,1 à 0,2) ; la phase A d'ADR-012 (LR ×3)
   y répondra, hors de ce rapport.
 

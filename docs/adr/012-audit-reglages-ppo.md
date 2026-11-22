@@ -1,7 +1,7 @@
 # ADR-012 — Audit des réglages PPO, un levier : taux d'apprentissage ×3 (témoin dense d'abord, GCO-std ensuite si succès)
 
 - Statut : **accepté** (validation de l'utilisateur le 2026-11-21, les 5 points en fin d'ADR ; suite prévue par ADR-011 D3
-  pour le verdict AMBIGU)
+  pour le verdict AMBIGU). **Phase A faite : verdict D3 NEUTRE (2026-11-22), audit clos, pas de phase B.**
 - Date : 2026-11-21
 - Décideurs : research-director (proposition) ; experiment-analyst (P1) ; rl-algo-lead (config, variante du lanceur, tests) ;
   eval-lead (évals hors ligne) ; code-reviewer ; utilisateur (validation, lancement)
@@ -191,6 +191,15 @@ KL de D3 (lue après le run, sans code). Pas d'arrêt anticipé pour succès. Un
   le résultat ne dit rien d'une LR constante ni d'un ent_coef différent ; reprises XPU non bit à bit.
 - Révision si : P1 contredit M1 (KL moyen de tranche ≥ 2,2·10⁻³, d'où le repli ×2) ; KL de la Phase A > 0,02 dès 0,1B ;
   publication d'un jalon public (pas jusqu'à la 1re touche) pour la recette RLGym.
+
+## Résultat de la phase A (2026-11-22)
+- Run `diag_dense_lr3_s0`, rapport `docs/reports/diag_dense_lr3_s0.md`. Éval D2 de l'instantané de l'itération 9 688 (commit
+  86aa57a, `.venv` CPU) : « A touche » **29,10 % [28,48 ; 29,74]** (20 000 épisodes, SPRT H1). Témoin au même point : 23,04 %
+  [22,46 ; 23,62]. KL moyenne de tranche maximale 2,10·10⁻³ ; aucun STOP.
+- **Verdict D3 : NEUTRE**, appliqué par script (`runs/diag_dense_lr3_offline_eval/verdict_d3.json`). Gain ×1,26 sur la touche,
+  sous le ×2 requis. Suite validée (point 5) : LR inchangée, audit clos, pas de phase B, retour à l'ordre ADR-009 D9 (ADR-007
+  lancé le 2026-11-22).
+- Diagnostic : le rapport des KL ×3 / base mesuré est de 1,4 à 2,1, et non ≈ 9. L'hypothèse KL ∝ LR² est réfutée pour ce run.
 
 ## Points validés par l'utilisateur (2026-11-21, « Je valide l'ADR-012 »)
 1. Levier unique : LR ×3 (6e-4 → 1,5e-4, même forme), repli ×2 selon P1 ; ent_coef, epochs et clip écartés pour cet audit.
