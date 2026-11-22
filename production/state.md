@@ -35,7 +35,7 @@ Mis à jour : 2026-11-22 (Phase 4a : SIL, ADR-012 phase A et ADR-007 NEUTRES ; A
    remonter une variante SIL avant ADR-010. La variante ne change que le fondu de c_sil, qui reste à 0,1 jusqu'à 0,8B puis tombe à 0
    à 0,9B (conforme C2, config seulement, ≈ 8,5 h estimé). **ADR-013 proposé** (`docs/adr/013-sil-fondu-tardif.md`), à valider ;
    risques C4 et KS2 (RAM non plus exposée qu'en v1).
-6. Contraste P0 générique **mesuré** (ADR-005 : 0,15 but/min par camp, 7 à 8,5 × le kickoff). Hors chemin critique : sonde TPU (`rayhanda/rlgco-probe-tpu`) ;
+6. Contraste P0 générique **mesuré** (ADR-005 : 0,15 but/min par camp, 7 à 8,5 × le kickoff). Hors chemin critique : sonde TPU (`<pseudo>/rlgco-probe-tpu`) ;
    relais Kaggle (`scripts/kaggle_run.py`) jamais exécuté, à valider sur un dataset jetable.
 
 ## Risques ouverts

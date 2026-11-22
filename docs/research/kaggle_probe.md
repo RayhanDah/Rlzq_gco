@@ -4,8 +4,8 @@ Sonde : `scripts/kaggle_probe.py` + `kaggle/probe/probe_kernel.py`, kernels priv
 avec son accord explicite le 2026-11-11. Sorties rapatriées dans `kaggle_out/` (non versionné). Synthèse et décisions :
 `docs/adr/001-infra.md` (M2).
 
-## T4 ×2 — `rayhanda/rlgco-probe-t4`, version 1
-- Commande : `python scripts/kaggle_probe.py --user rayhanda --acc t4 --push` (commit **a74ac7f**). Parties par défaut
+## T4 ×2 — `<pseudo>/rlgco-probe-t4`, version 1
+- Commande : `python scripts/kaggle_probe.py --user <pseudo> --acc t4 --push` (commit **a74ac7f**). Parties par défaut
   avec GPU : `rg_cuda, rocketsim, rg_cpu`. Démarrage 2026-11-11 11:00:35 UTC, durée 305 s, statut COMPLETE.
 - Le kernel TPU a été poussé pendant que celui-ci tournait : accepté et mis en file (QUEUED). La concurrence effective
   GPU + TPU n'est pas encore observée.
@@ -47,7 +47,7 @@ Le rapport tiers (« 4 cœurs, 29 Go », `docs/research/kaggle.md` §2) est conf
   3. renoncer au GPU T4 pour la simulation : RocketGPU CPU sur les 4 vCPU, et le GPU pour le learner.
 
 ## T4 ×2 — version 2 : RocketGPU CUDA avec CUDA 12.9
-- Commande : `python scripts/kaggle_probe.py --user rayhanda --acc t4 --parts rg_cuda12 --push` (commit **b4b0481**).
+- Commande : `python scripts/kaggle_probe.py --user <pseudo> --acc t4 --parts rg_cuda12 --push` (commit **b4b0481**).
   Démarrage 2026-11-11 11:26:51 UTC, durée 116 s.
 - `install_cuda12` (apt, dépôt NVIDIA ubuntu2404, `cuda-nvcc-12-9 cuda-cudart-dev-12-9 cuda-cccl-12-9`) : réussi en
   19,7 s. CMake identifie « NVIDIA 12.9.86 » et compile avec `/usr/local/cuda-12.9/bin/nvcc`.
@@ -59,8 +59,8 @@ Le rapport tiers (« 4 cœurs, 29 Go », `docs/research/kaggle.md` §2) est conf
   (LLVM 7) rejette ce code alors que celui des GPU récents (RTX 5090 de l'auteur) l'accepte. Test possible sans quota
   GPU : compiler pour sm_75, sm_86, sm_89 et sm_120 dans une session Kaggle CPU.
 
-## Session CPU — compilation de l'objet CUDA par architecture (`rayhanda/rlgco-probe-cpu`, version 1)
-- Commande : `python scripts/kaggle_probe.py --user rayhanda --acc cpu --parts cuda_archs --push` (commit **c8f865c**).
+## Session CPU — compilation de l'objet CUDA par architecture (`<pseudo>/rlgco-probe-cpu`, version 1)
+- Commande : `python scripts/kaggle_probe.py --user <pseudo> --acc cpu --parts cuda_archs --push` (commit **c8f865c**).
   Session sans accélérateur (4 vCPU, pas de nvcc dans l'image CPU), démarrage 2026-11-11 11:59:11 UTC, durée 684 s.
 - CUDA 12.9 installé par apt (24,8 s). Cible Ninja seule : `CMakeFiles/rocketgpu.dir/src/rocketgpu_cuda.cu.o`, avec
   `-DCMAKE_CUDA_ARCHITECTURES=<arch>` et le reste des options du projet inchangé.
@@ -81,5 +81,5 @@ Le rapport tiers (« 4 cœurs, 29 Go », `docs/research/kaggle.md` §2) est conf
 - **Conséquence** : aucun GPU accessible au projet (Kaggle T4, Colab T4, L4 ou A100) ne peut exécuter la version CUDA
   actuelle de RocketGPU. Sur ces plateformes, RocketGPU tourne en CPU.
 
-## TPU v5e-8 — `rayhanda/rlgco-probe-tpu`, version 1
+## TPU v5e-8 — `<pseudo>/rlgco-probe-tpu`, version 1
 Poussé le 2026-11-11 (commit a74ac7f), en file d'attente (QUEUED) au moment de la rédaction. Résultats à venir.

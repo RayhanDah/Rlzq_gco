@@ -7,7 +7,7 @@ en conclusion ; la décision revient au `tech-director`.
 
 | Élément | Valeur |
 |---|---|
-| Commande exacte | `ROCKETGPU_PY_DIR=C:/Users/Rayha/Desktop/RL-GCO/vendor/build/rocketgpu-cpu-pgo/python ROCKETGPU_COLLISION_MESH_DIR=C:/Users/Rayha/Desktop/RL-GCO/vendor/collision_meshes .venv/Scripts/python tests/integration/test_physics_parity.py --report` (aussi `--report --cold`, `--lag`, `--series <scénario>`) ; tests : `.venv/Scripts/python -m pytest -q tests/integration/test_physics_parity.py` |
+| Commande exacte | `ROCKETGPU_PY_DIR=vendor/build/rocketgpu-cpu-pgo/python ROCKETGPU_COLLISION_MESH_DIR=vendor/collision_meshes .venv/Scripts/python tests/integration/test_physics_parity.py --report` (aussi `--report --cold`, `--lag`, `--series <scénario>`) ; tests : `.venv/Scripts/python -m pytest -q tests/integration/test_physics_parity.py` |
 | Graine | `SEED = 20261111` (contrôles aléatoires, `np.random.default_rng`), tick-skip 8 |
 | Commit | `f4f1a45` (`git rev-parse --short HEAD` au moment de la mesure) ; le fichier de test est ajouté par le commit suivant de la branche `worktree-agent-a53417f496a707eeb` |
 | Matériel | laptop Zenbook 14, Core Ultra 5 125H, 16 Go (CPU seul) |

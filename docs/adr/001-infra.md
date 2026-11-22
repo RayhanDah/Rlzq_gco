@@ -167,7 +167,7 @@ Python 3.13.
   le laptop) tant que le build CUDA n'est pas réparé. Le GPU T4 reste utilisable pour le learner (torch cu130).
 
 ### M2c — Sonde Kaggle TPU v5e-8 (en file)
-`python scripts/kaggle_probe.py --user rayhanda --acc tpu --push`, commit a74ac7f, poussée le 2026-11-11 vers 11:05 UTC
+`python scripts/kaggle_probe.py --user <pseudo> --acc tpu --push`, commit a74ac7f, poussée le 2026-11-11 vers 11:05 UTC
 pendant que la sonde T4 tournait : acceptée, statut QUEUED, toujours en file à la rédaction. Elle relèvera les cœurs de
 l'hôte TPU (la spec GCP annonce 224 vCPU, sans preuve que Kaggle les expose) et les débits RocketSim et RocketGPU CPU.
 Aucun chiffre TPU n'entre dans la décision ci-dessous ; seule l'affectation du TPU en dépend.
