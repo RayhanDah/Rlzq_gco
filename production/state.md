@@ -59,7 +59,8 @@ Mis à jour : 2026-11-22 (Phase 4a : SIL, ADR-012 phase A et ADR-007 NEUTRES ; A
   (1B : 3,24 % [3,01 ; 3,50] contre 3,14 % pour std s0 ; 1re paire H1 à 0,5B). γ 0,995 conservé. Rapport `docs/reports/int_gamma998_s0.md`.
 - **Préalables GPU d'ADR-010** (7910742, après l'écriture des checkpoints en flux, revue APPROVE) : smokes PASS. Banc λ = 0,1 à H = 100 :
   λ = 0,1 retenu (grad_share 0,497), RAM min 2 261 Mo (D2 OK, contre 807 Mo avant), 44,0k/s. **Parité f16 FAIL**
-  (0,0137 > 0,01) : D3 littérale ⇒ float32 et H = 50 ; option float32 à H = 100 à trancher par l'utilisateur (banc RAM en cours).
+  (0,0137 > 0,01) : D3 littérale ⇒ float32 et H = 50 ; option float32 à H = 100 mesurée (RAM min 1 884 Mo, D2 OK), à trancher
+  par l'utilisateur.
 - Phase A d'ADR-012 terminée (2026-11-22 04 h 46, it. 9 688, 3 segments dont 1 perte du GPU et 1 pause) : NEUTRE, voir ci-dessus.
 - **Run SIL `int_sil_s0` terminé** (2026-11-21 18 h 26, 8,1 h, 1 segment, 0 restauration, aucun KS) : critère ADR-006 D6
   **NEUTRE** (1B : décisives 4,33 % [4,06 ; 4,63] < 6,28 %, SPRT H1 ; 1re paire H1 à 0,3B). Descriptif : pic à 0,7B

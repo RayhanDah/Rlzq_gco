@@ -218,6 +218,12 @@ données `runs/bench_int_aux_l0p1_20261122T103801Z/`, résumés `aux_summary.jso
   max |Δ log softmax(tête)| = **0,0137** > 0,01 ; moyenne des maxima par ligne 0,0012 ; aucune obs non finie.
   - La règle D3 littérale impose float32 avec H/2 = 50 (3,3 s).
   - Alternative, à trancher par l'utilisateur (amendement) : float32 à H = 100. La RAM est mesurée par un banc dédié (ci-dessous).
+- Banc RAM float32, H = 100 (`runs/bench_int_aux_f32_h100_20261122T120430Z`, commit 50d90b5, arbre propre, même commande ;
+  config = `bench_int_aux.yaml` avec `store_float16: false` seul changé, copie hors dépôt) :
+  - RAM disponible min **1 884 Mo** ≥ 1,5 Go (D2 OK, marge 384 Mo) ; chute max au checkpoint 2 486 Mo ;
+  - grad_share médiane 0,474 ⇒ λ = 0,1 ; débit appris 44,6k/s.
+  - L'option float32 à H = 100 tient donc en RAM sur ce banc. Si elle est retenue, `store_float16: false` dans les trois configs
+    (un amendement, validé par l'utilisateur).
 
 ### D9. Journal C4 (`metrics.jsonl`, chaque itération ; `aux/*`)
 `coef`, `loss`, `batch_present` (minibatchs avec lot), `recall_pos`, `recall_neg`, `recall_zero`, `precision_pos`, `precision_neg`,
