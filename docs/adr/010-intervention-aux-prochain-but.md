@@ -206,6 +206,19 @@ données `runs/bench_int_aux_l0p1_20261122T103801Z/`, résumés `aux_summary.jso
   les checkpoints ; l'écart de disponible avec le banc SIL 2 (médiane 2,67 contre 4,16 Go hors checkpoint) vient surtout de la
   mémoire utilisée hors du processus (total − disponible − privée : 6,30 contre 5,29 Go), cause non identifiée.
 
+**Préalables à H = 100 (2026-11-22, commit 7910742, arbre propre, après l'écriture des checkpoints en flux d'ADR-003 §7).**
+- Smoke : `configs/smoke.yaml --smoke` PASS (`runs/smoke_7910742`) ; `configs/smoke_aux.yaml --smoke` PASS et
+  `aux_bench_summary.py --smoke` PASS (`runs/smoke_aux_7910742`).
+- Banc D5 λ = 0,1, H = 100 (`runs/bench_int_aux_l0p1_20261122T113256Z`, même commande) :
+  - grad_share médiane **0,497** (p10 0,411, p90 0,581) ⇒ **λ = 0,1 retenu** (D5, marge de 0,003 sous 0,5) ;
+  - disp_share médiane 0,436 ;
+  - débit appris 44,0k/s (KS4 non déclenché ; 1B ≈ 6,3 h extrapolé) ; fil learner occupé 0,965 ;
+  - **RAM disponible min 2 261 Mo** ≥ 1,5 Go ⇒ **D2 OK** ; chute max au checkpoint 1 314 Mo (2 088 Mo avant l'écriture en flux).
+- **Parité float16 D8-5 : FAIL** (`runs/int_aux_d8/f16_bench_int_aux_l0p1_20261122T113256Z.json`, lot réel de 51 611 obs, CPU) :
+  max |Δ log softmax(tête)| = **0,0137** > 0,01 ; moyenne des maxima par ligne 0,0012 ; aucune obs non finie.
+  - La règle D3 littérale impose float32 avec H/2 = 50 (3,3 s).
+  - Alternative, à trancher par l'utilisateur (amendement) : float32 à H = 100. La RAM est mesurée par un banc dédié (ci-dessous).
+
 ### D9. Journal C4 (`metrics.jsonl`, chaque itération ; `aux/*`)
 `coef`, `loss`, `batch_present` (minibatchs avec lot), `recall_pos`, `recall_neg`, `recall_zero`, `precision_pos`, `precision_neg`,
 `precision_zero` (sur le lot rééquilibré : le rappel ne dépend pas du rééquilibrage, la précision si), `frac_pos`, `frac_neg`,
