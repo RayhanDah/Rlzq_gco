@@ -33,7 +33,8 @@ Mis à jour : 2026-11-22 (Phase 4a : SIL NEUTRE ; ADR-012 phase A NEUTRE, audit 
 5. **Décision utilisateur attendue (avis research-director, 2026-11-22)** : l'exception du rapport SIL §9 est armée, mais faiblement.
    Le tête-à-tête montre que 0,8B bat 1,0B et la LR ×3 est NEUTRE. Recommandation : laisser finir ADR-007, puis, s'il sort NEUTRE,
    remonter une variante SIL avant ADR-010. La variante ne change que le fondu de c_sil, qui reste à 0,1 jusqu'à 0,8B puis tombe à 0
-   à 0,9B (conforme C2, config seulement, ≈ 8,5 h estimé). Elle demande un nouvel ADR et la validation de l'utilisateur.
+   à 0,9B (conforme C2, config seulement, ≈ 8,5 h estimé). **ADR-013 proposé** (`docs/adr/013-sil-fondu-tardif.md`), à valider ;
+   risques C4 et KS2 (RAM non plus exposée qu'en v1).
 6. Contraste P0 générique **mesuré** (ADR-005 : 0,15 but/min par camp, 7 à 8,5 × le kickoff). Hors chemin critique : sonde TPU (`rayhanda/rlgco-probe-tpu`) ;
    relais Kaggle (`scripts/kaggle_run.py`) jamais exécuté, à valider sur un dataset jetable.
 

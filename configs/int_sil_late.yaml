@@ -1,0 +1,95 @@
+# Variante SIL à fondu tardif (docs/adr/013-sil-fondu-tardif.md, PROPOSÉ, validation utilisateur requise) de
+# l'intervention (3) de GCO_SPEC.md §8 (self-imitation, ADR-009). GCO-std, graine 0, 1B appris. Copie de
+# configs/int_sil.yaml ; SEULES différences hors commentaires : `name` et `sil.anneal_start_timesteps` (0,8B au lieu de
+# 0,5B ; fin du fondu inchangée à 0,9B ; test tests/unit/test_run_4a_interventions.py). Lancer avec scripts/run_4a.py
+# --variant int_sil_late (run int_sil_late_s<seed>, éval par défaut configs/run_s1v2_eval.yaml). `seed` et `name` sont
+# remplacés par le lanceur. Mémoire SIL (tests/unit/test_sil.py) : anneau 0,49 Go à 300 pas (≈ 0,25 Go à 150, estimé, non mesuré) + buffer 0,06 Go ; RAM mesurée au banc D7 (ADR-009).
+name: int_sil_late
+seed: 0
+device: xpu             # learner sur l'Arc (vendor/venv-xpu, ADR-001 M3–M4) ; sim RocketGPU en CPU
+
+env:
+  n_envs: 4096          # ADR-001 M4, ADR-005
+  n_cars: 2             # 1v1
+  tick_skip: 8
+
+reward:
+  variant: GCO-std      # docs/GCO_SPEC.md §3 ; aucune récompense ajoutée
+  no_touch_timeout_s: 20.0
+  max_episode_s: 120.0
+
+initial_states:         # ADR-005 D4 : 0,2 -> 0,8 linéaire sur 0,5B appris, puis 0,8
+  p_kick_start: 0.2
+  p_kick_end: 0.8
+  anneal_timesteps: 500000000
+
+ppo:                    # identique à configs/smoke.yaml (docs/01_papers.md §2) ; total_iterations dérivé du budget
+  gamma: 0.995
+  gae_lambda: 0.95
+  clip: 0.2
+  lr_start: 2.0e-4
+  lr_end: 5.0e-5
+  ent_coef_start: 0.01
+  ent_coef_end: 0.002
+  max_grad_norm: 0.5
+  epochs: 2
+  minibatch_size: 25000
+  target_batch_size: 57344   # = 4096 x 2 x 7 (sans effet : collection.steps_per_batch fait foi)
+
+collection:
+  steps_per_batch: 7    # 57 344 collectés par lot, 51 611 appris avec le pool (RunConfig.batch_learned_steps ; l'ADR-005 D3 arrondit à 51 610)
+  overlap: true
+
+pool:                   # ADR-005 D5
+  past_fraction: 0.2
+  snapshot_every: 50
+  max_size: 100
+  quality_lr: 0.01
+
+budget:
+  total_timesteps: 1000000000   # 1B appris (ADR-005 D3) : 19 376 itérations (RunConfig.total_iterations)
+
+checkpoint:
+  # Toutes les 250 itérations (≈ 12,9M appris, ≈ 4 min au plateau de M8) : coût mesuré 1,0 % du temps (ADR-001 M8),
+  # rejeu d'au plus ≈ 4 min après une restauration K4, bien sous la règle des 20 min (.claude/rules/training.md).
+  every_iterations: 250
+  keep: 2               # ADR-005 D2 : rotation des checkpoints de reprise ; les instantanés d'évaluation sont à part
+  include_sim_state: true
+
+kill:                   # ADR-005 D6 : K2 (entropie, alerte à 50 %), K3 (EV après S1), K4 (KL, NaN), K5 (restaurations)
+  kl_threshold: 0.05
+  kl_patience: 5
+  entropy_floor_frac: 0.10
+  entropy_alert_frac: 0.50
+  n_actions: 90
+  entropy_patience: 1
+  ev_floor: 0.0
+  ev_patience: 50
+  max_restores: 3
+  max_consecutive_restores: 2
+
+logging:
+  every_iterations: 1
+  fsync: false
+
+sil:                    # ADR-009 amendé le 2026-11-19 (Oh et al. 2018, annexe A, tableaux 3–4) ; src/training/sil.py
+  enabled: true         # C3 : false = PPO seul, bit à bit
+  coef: 0.1             # D2 : c_sil au plateau (tableau 4) ; provisoire, calibré au banc (D5)
+  anneal_start_timesteps: 800000000   # ADR-013 (C2) : 0,1 jusqu'à 0,8B appris (int_sil : 0,5B, ADR-009 D4) ...
+  anneal_end_timesteps: 900000000     # ... linéaire jusqu'à 0 à 0,9B, puis 0 (buffer libéré)
+  value_coef: 0.01      # D2 : β (tableau 3)
+  mode: joint           # D3 : lot SIL ajouté à chacun des minibatchs PPO, même Adam, clip global de PPO
+  batch_size: 4096      # D3 : lot SIL par minibatch PPO
+  capacity: 250000      # D3 : transitions, FIFO
+  horizon_steps: 150    # D1, D7 : 10 s avant le but (règle RAM du banc D7 du 2026-11-21 : minimum < 1,5 Go)
+  priority_alpha: 0.6   # D2
+  priority_eps: 1.0e-3  # D2
+  is_beta: 0.1          # D2
+  keep_conceded: false  # D1 : buts gagnés (+1) seulement
+  store_float16: true   # D1 : parité float16 testée (D7-5)
+  share_alert: 0.5      # D5 : alerte C4 si disp_share > 0,5 pendant 50 itérations
+  share_alert_patience: 50
+  share_stop: 0.8       # KS2 : STOP si disp_share > 0,8 pendant 500 itérations avec c_sil > 0
+  share_stop_patience: 500
+  ram_min_available_mb: 1000.0   # KS1 : STOP si RAM disponible < 1 Go pendant > 10 min
+  ram_low_max_s: 600.0

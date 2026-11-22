@@ -18,11 +18,13 @@ Ce que le lanceur ajoute à `scripts/train.py` :
 - refus d'un arbre git sale (mesure non attribuable à un commit) et de GCO-S sans `--std-s1-observed` (ADR-005 :
   GCO-S seulement si au moins une seed GCO-std a S1-léger).
 
-Interventions (ADR-006 D5, ADR-007, ADR-008, ADR-009, ADR-010) : `--variant int_gamma998`, `int_slow_anneal`, `int_sil`
-(self-imitation, bloc `sil`) ou `int_aux` (tâche auxiliaire « prochain but », bloc `aux`) lance la config
-`configs/<variante>.yaml` (GCO-std, une seule modification par rapport à `run_4a_std.yaml`) sous le nom de run
-`<variante>_s<seed>`, avec les mêmes garanties (sessions enfants, reprise après perte du GPU, refus après STOP, arbre
-propre). Évaluation par défaut : `run_s1v2_eval.yaml` (protocole d'ADR-006). Pas de garde-fou GCO-S : des GCO-std.
+Interventions (ADR-006 D5, ADR-007, ADR-008, ADR-009, ADR-010, ADR-013) : `--variant int_gamma998`, `int_slow_anneal`,
+`int_sil` (self-imitation, bloc `sil`), `int_sil_late` ou `int_aux` (tâche auxiliaire « prochain but », bloc `aux`)
+lance la config `configs/<variante>.yaml` (GCO-std, une seule modification par rapport à `run_4a_std.yaml` ; pour
+`int_sil_late`, une seule par rapport à `int_sil.yaml` : fondu de c_sil de 0,8B à 0,9B au lieu de 0,5B à 0,9B) sous le
+nom de run `<variante>_s<seed>`, avec les mêmes garanties (sessions enfants, reprise après perte du GPU, refus après
+STOP, arbre propre). Évaluation par défaut : `run_s1v2_eval.yaml` (protocole d'ADR-006). Pas de garde-fou GCO-S : des
+GCO-std.
 
 Témoin HORS SPEC (ADR-011) : `--variant diag_dense` lance `configs/diag_dense.yaml`
 (récompense `dense-diag`, seul levier
@@ -72,6 +74,7 @@ INTERVENTIONS = {
     "int_gamma998": "int_gamma998.yaml",
     "int_slow_anneal": "int_slow_anneal.yaml",
     "int_sil": "int_sil.yaml",  # ADR-009 (proposé) : self-imitation, bloc `sil` seul ajouté
+    "int_sil_late": "int_sil_late.yaml",  # ADR-013 (proposé) : int_sil, fondu de c_sil commencé à 0,8B au lieu de 0,5B
     "int_aux": "int_aux.yaml",  # ADR-010 (proposé) : tâche auxiliaire « prochain but », bloc `aux` seul ajouté
 }
 # Témoins de diagnostic HORS SPEC (ADR-011) : récompense dense-diag, une seule modification par rapport à std s0 ;
@@ -354,7 +357,7 @@ def main(argv: list[str] | None = None) -> int:
         choices=sorted(VARIANTS) + sorted(INTERVENTIONS) + sorted(DIAGNOSTICS),
         required=True,
         help="std = GCO-std, s = GCO-S ; int_gamma998 (ADR-007), int_slow_anneal (ADR-008), int_sil (ADR-009), "
-        "int_aux (ADR-010) : interventions GCO-std ; "
+        "int_sil_late (ADR-013), int_aux (ADR-010) : interventions GCO-std ; "
         "diag_dense (ADR-011) : témoin à récompense dense, HORS SPEC, jamais promu ; "
         "diag_dense_lr3 (ADR-012) : le même témoin, LR ×3",
     )

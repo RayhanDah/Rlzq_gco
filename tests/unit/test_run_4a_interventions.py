@@ -487,3 +487,151 @@ def test_diag_dense_lr3_theta0_identique_au_temoin_et_instantane_au_plafond(tmp_
     at_3 = {v: _weights_sha256(next(snaps[v].glob("ckpt_*_it00000003.pt"))) for v in snaps}
     assert theta0["diag_dense"] == theta0["diag_dense_lr3"]  # θ₀ ne dépend pas de la LR (ADR-012 D7 P2)
     assert at_3["diag_dense"] != at_3["diag_dense_lr3"]  # sensibilité du test : la LR agit bien après θ₀
+
+
+# ----------------------------------------------------------------------- SIL à fondu tardif (ADR-013, proposé)
+
+SIL_LATE_DIFF: dict[tuple[str, ...], tuple[Any, Any]] = {
+    ("name",): ("int_sil", "int_sil_late"),
+    ("sil", "anneal_start_timesteps"): (500_000_000, 800_000_000),
+}
+
+
+def test_int_sil_late_ne_differe_de_int_sil_que_par_le_debut_du_fondu() -> None:
+    # Arrange : YAML brut et configs construites (valeurs par défaut et dérivées comprises)
+    base_path, late_path = CONFIGS / "int_sil.yaml", CONFIGS / r4.INTERVENTIONS["int_sil_late"]
+    base_raw = yaml.safe_load(base_path.read_text(encoding="utf-8"))
+    late_raw = yaml.safe_load(late_path.read_text(encoding="utf-8"))
+    base, late = RunConfig.from_yaml(base_path), RunConfig.from_yaml(late_path)
+    std = RunConfig.from_yaml(CONFIGS / "run_4a_std.yaml")
+    # Act
+    raw_diff, cfg_diff = _diff(base_raw, late_raw), _diff(base.to_dict(), late.to_dict())
+    # même calcul que `training.run` (run.py:426)
+    h_std, h_base, h_late = (RewardFunction(c.reward.build()).config_hash for c in (std, base, late))
+    # Assert : hors `name`, la seule clé de l'ADR-013 ; fin du fondu inchangée
+    assert raw_diff == SIL_LATE_DIFF
+    assert cfg_diff == SIL_LATE_DIFF
+    assert late.sil is not None and late.sil.anneal_end_timesteps == 900_000_000
+    # récompense GCO-std inchangée (même hash que int_sil et std), dans la spec (aucune étiquette HORS SPEC)
+    assert late_raw["reward"]["variant"] == "GCO-std" and h_late == h_base == h_std
+    assert _spec_label(late) == {}
+    a, b = base.trajectory_dict(), late.trajectory_dict()
+    assert a.pop("name") != b.pop("name") and a != b  # le fondu fait partie de la trajectoire (hash distinct)
+
+
+def test_int_sil_late_calendrier_de_c_sil() -> None:
+    # Arrange : vrai calendrier (`SILConfig.coef_at`, src/training/sil.py) des configs versionnées
+    late = RunConfig.from_yaml(CONFIGS / "int_sil_late.yaml").sil
+    base = RunConfig.from_yaml(CONFIGS / "int_sil.yaml").sil
+    assert late is not None and base is not None and late.enabled
+    # Act / Assert : 0,1 jusqu'à 0,8B, 0,05 à 0,85B, 0 à 0,9B et après
+    assert [late.coef_at(t) for t in (0, 500_000_000, 799_999_999, 800_000_000)] == [0.1] * 4
+    # tolérance 1e-12 : arrondi flottant de 0,1 × 50e6 / 100e6
+    assert late.coef_at(850_000_000) == pytest.approx(0.05, rel=1e-12, abs=0)
+    assert late.coef_at(899_999_999) == pytest.approx(0.1 / 100_000_000, rel=1e-9, abs=0)
+    assert late.coef_at(900_000_000) == 0.0 and late.coef_at(10**9) == 0.0
+    # par rapport à int_sil : jamais en dessous, strictement au-dessus pendant le fondu d'int_sil
+    for t in range(0, 1_000_000_001, 10_000_000):
+        assert late.coef_at(t) >= base.coef_at(t)
+    assert late.coef_at(700_000_000) == 0.1 > base.coef_at(700_000_000)
+
+
+def test_int_sil_late_nom_config_eval_parseur_et_ligne_enfant(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Arrange
+    captured: list[argparse.Namespace] = []
+
+    def fake_supervise(args: argparse.Namespace, max_hours: float | None) -> int:
+        captured.append(args)
+        return 0
+
+    monkeypatch.setattr(r4, "_supervise_main", fake_supervise)
+    # Act : lancement d'ADR-013 (sans plafond de durée)
+    code = r4.main(["--variant", "int_sil_late", "--seed", "0", "--max-hours", "0", "--allow-dirty"])
+    # Assert
+    assert code == 0
+    assert r4.run_name("int_sil_late", 0) == "int_sil_late_s0"
+    assert r4.config_file("int_sil_late") == "int_sil_late.yaml"
+    assert r4.default_eval_config("int_sil_late") == r4.default_eval_config("int_sil") == "run_s1v2_eval.yaml"
+    assert "int_sil_late" in r4.INTERVENTIONS and "int_sil_late" not in r4.DIAGNOSTICS  # GCO-std, dans la spec
+    (args,) = captured
+    assert (args.variant, args.eval_config) == ("int_sil_late", "run_s1v2_eval.yaml")
+    args.runs_root, args.checkpoints_root = Path("R"), Path("C")
+    cmd = r4.child_command(args, 0, False, None)
+    assert cmd[2:7] == ["--child", "--variant", "int_sil_late", "--seed", "0"]
+    assert cmd[cmd.index("--max-hours") + 1] == "0.0"
+    assert cmd[cmd.index("--eval-config") + 1] == "run_s1v2_eval.yaml"
+    assert "--std-s1-observed" not in cmd and "--max-iterations" not in cmd
+
+
+def test_launch_int_sil_late(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Arrange
+    seen: list[tuple[Any, EvalHookConfig]] = []
+    _capture_launch(monkeypatch, seen)
+    kw: dict[str, Any] = {"max_hours": None, "runs_root": tmp_path / "r", "checkpoints_root": tmp_path / "c"}
+    # Act
+    with pytest.raises(_Stop):
+        r4.launch("int_sil_late", 0, config_dir=CONFIGS, **kw)
+    # Assert : nom du run, graine, SIL active au fondu tardif, éval S1-seed v2
+    ((cfg, hook),) = seen
+    assert (cfg.name, cfg.seed, cfg.reward.variant, hook.protocol) == ("int_sil_late_s0", 0, "GCO-std", "s1_v2")
+    assert cfg.sil is not None and cfg.sil.enabled and cfg.sil.anneal_start_timesteps == 800_000_000
+
+
+def test_int_sil_late_theta0_identique_a_std_s0(tmp_path: Path) -> None:
+    # Arrange : vraie boucle (`launch` -> `training.run`) en CPU, simulateur factice. De chaque config versionnée on
+    # garde le modèle, la graine et le bloc `sil` (fondu aux mêmes fractions du budget réduit, tailles réduites).
+    cdir = tmp_path / "configs"
+    cdir.mkdir()
+    for name in ("run_4a_std.yaml", "int_sil.yaml", "int_sil_late.yaml"):
+        shutil.copy(CONFIGS / name, cdir / name)
+    (cdir / "run_s1v2_eval.yaml").write_text(
+        "protocol: s1_v2\nevery_timesteps: 96\nfrozen_lag_timesteps: 96\nepisodes_random: 4\nepisodes_frozen: 4\n"
+        "n_envs: 2\n",
+        encoding="utf-8",
+    )
+
+    def shrink(cfg: Any) -> Any:
+        tiny = cfg_of(reward={"variant": cfg.reward.variant}, checkpoint={"every_iterations": 100})
+        sil = None
+        if cfg.sil is not None:
+            scale = tiny.budget.total_timesteps / cfg.budget.total_timesteps
+            sil = dataclasses.replace(
+                cfg.sil,
+                anneal_start_timesteps=round(cfg.sil.anneal_start_timesteps * scale),
+                anneal_end_timesteps=round(cfg.sil.anneal_end_timesteps * scale),
+                batch_size=4,
+                capacity=64,
+                horizon_steps=8,
+            )
+        return dataclasses.replace(tiny, name=cfg.name, seed=cfg.seed, model=cfg.model, sil=sil)
+
+    kw: dict[str, Any] = {
+        "max_hours": None,
+        "runs_root": tmp_path / "r",
+        "checkpoints_root": tmp_path / "c",
+        "config_dir": cdir,
+        "config_edit": shrink,
+        "eval_config": "run_s1v2_eval.yaml",
+        "max_iterations": 1,
+        "run_kwargs": {
+            "env_factory": make_factory(),
+            "optimizer_factory": adam_factory,
+            "handle_sigint": False,
+            "memory_probe": lambda: (4096.0, 512.0),
+        },
+        "hook_kwargs": {"sim_factory": lambda n: StatefulFakeSim(n, 2), "build_obs": fake_obs, "obs_dim": 7},
+    }
+    # Act
+    reports = {v: r4.launch(v, 0, **kw) for v in ("std", "int_sil", "int_sil_late")}
+    # Assert : θ₀ (checkpoint 0) identique ; la SIL ne touche pas à l'initialisation (π créée avant la SIL, run.py:438)
+    theta0: dict[str, str] = {}
+    for variant, (code, rep) in reports.items():
+        assert (code, rep["status"], rep["end_iteration"]) == (0, "paused", 1)
+        meta = json.loads((tmp_path / "r" / rep["run"] / "run_meta.json").read_text(encoding="utf-8"))
+        assert "hors_spec" not in meta  # dans la spec
+        theta0[variant] = _weights_sha256(tmp_path / "c" / rep["run"] / "ckpt_000000_it00000000.pt")
+    assert reports["int_sil_late"][1]["run"] == "int_sil_late_s0"
+    assert theta0["int_sil_late"] == theta0["int_sil"] == theta0["std"]
+    # même modèle et même graine que std s0 : aux dimensions réelles, θ₀ = SHA-256 7fab4c74…cb8a (test_auxtask.py:686)
+    std, late = (RunConfig.from_yaml(CONFIGS / n) for n in ("run_4a_std.yaml", "int_sil_late.yaml"))
+    assert late.model == std.model and late.seed == std.seed == 0
