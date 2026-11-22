@@ -1,6 +1,7 @@
 # ADR-007 — Intervention (2) : γ 0,995 → 0,998 (GCO-std, graine 0, 1B)
 
-- Statut : **accepté pour exécution par délégation** : l'utilisateur a validé le 2026-11-21 l'ordre « analyse post hoc SIL →
+- Statut : **fait, verdict D6 NEUTRE** (2026-11-22, `docs/reports/int_gamma998_s0.md` : 3,24 % [3,01 ; 3,50] à 1B, 1re paire
+  H1 à 0,5B ; γ = 0,995 conservé). Accepté pour exécution par délégation : l'utilisateur a validé le 2026-11-21 l'ordre « analyse post hoc SIL →
   ADR-012 → ADR-007 → ADR-010 → variante SIL » et délégué la gestion des runs (« je te laisse gérer le projet et les runs ») ;
   les 3 points en fin d'ADR n'ont pas été relus un par un par l'utilisateur. Condition ADR-006 D5 levée : borne haute du
   Wilson des victoires par épisode de GCO-S s0 4,60 % ≥ 1,60 % (`docs/reports/gcos_s0.md`). Lancement seulement si la
@@ -111,6 +112,12 @@ compatible »).
   4. KL et clip : un critique plus lent à converger peut changer le rythme d'apprentissage ; K4 inchangé (KL > 0,05).
 - Révision si : EV < 0,5 durablement après 0,2B (diagnostic, pas un critère d'arrêt), ou succès ambigu (un seul volet de
   (i)) ; on passerait alors à l'option « montée 0,995 → 0,998 » ou au protocole Five Fig. 6 (nouvel ADR).
+
+## Résultat (2026-11-22)
+Run `int_gamma998_s0` (86aa57a, smoke PASS, θ₀ = std s0), 1 perte du GPU reprise, 0 restauration. Évals D4 (690a828) :
+(i) 649 / 20 000 = 3,24 % [3,01 ; 3,50] < 6,28 %, SPRT H1 ; (ii) 1re paire H1 (0,5B ; 0,6B). **NEUTRE** (script, seuils de D4).
+EV jamais < 0,5 après 0,2B (minimum 0,742) ; perte de valeur ×1,2 à 1,5 celle de std. Suite : ADR-010 ou ADR-013 (décision
+de l'utilisateur).
 
 ## Points soumis à l'utilisateur (couverts par la délégation du 2026-11-21, non relus individuellement)
 1. Application conditionnelle : seulement si GCO-S s0 n'est pas « S < std » (ADR-006 D5).

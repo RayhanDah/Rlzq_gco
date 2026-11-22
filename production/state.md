@@ -1,6 +1,6 @@
 # État du projet RL-GCO
 
-Mis à jour : 2026-11-22 (Phase 4a : SIL NEUTRE ; ADR-012 phase A NEUTRE, audit clos ; ADR-007 en cours ; G3 non franchissable).
+Mis à jour : 2026-11-22 (Phase 4a : SIL, ADR-012 phase A et ADR-007 NEUTRES ; ADR-010 ou ADR-013 ensuite, décision utilisateur ; G3 non franchissable).
 
 ## Où on en est
 - **Phases 0 à 3 terminées.** G1 validé le 2026-11-10 (`docs/GCO_SPEC.md` §10), G2 le 2026-11-11 (§12,
@@ -28,7 +28,7 @@ Mis à jour : 2026-11-22 (Phase 4a : SIL NEUTRE ; ADR-012 phase A NEUTRE, audit 
    touche 29,1 % [28,5 ; 29,7] à 0,5B contre 23,0 %, gain ×1,26 < ×2 ; KL ∝ LR² réfutée (rapport 1,4 à 2,1). Audit clos, LR inchangée, pas de phase B.
 3. **ADR-009 SIL accepté** (utilisateur, 2026-11-21, « SIL quoi qu'il arrive »). Préalables D7 faits : smoke PASS (aedf0ca),
    2 bancs, parité float16 PASS, c_sil 0,1 retenu, fenêtre 150 pas (règle RAM). Débit 32,6k/s (KS4 en alerte).
-4. Ordre (validé le 2026-11-21) : ADR-012 phase A (faite, NEUTRE), ADR-007 (accepté par délégation, **en cours**), puis ADR-010 (proposé, code fusionné 70c64ed, bancs λ à faire). Ensuite seeds 1
+4. Ordre (validé le 2026-11-21) : ADR-012 phase A (faite, NEUTRE), ADR-007 (fait, NEUTRE), puis ADR-010 (proposé, code fusionné 70c64ed, bancs λ à faire). Ensuite seeds 1
    et 2, puis préparation de G3.
 5. **Décision utilisateur attendue (avis research-director, 2026-11-22)** : l'exception du rapport SIL §9 est armée, mais faiblement.
    Le tête-à-tête montre que 0,8B bat 1,0B et la LR ×3 est NEUTRE. Recommandation : laisser finir ADR-007, puis, s'il sort NEUTRE,
@@ -51,13 +51,15 @@ Mis à jour : 2026-11-22 (Phase 4a : SIL NEUTRE ; ADR-012 phase A NEUTRE, audit 
 - **R11** : 3 comptes Kaggle, chacun opéré par son titulaire (décision du 2026-11-10).
 - **R13** : écarts RocketGPU / RocketSim mesurés (T3), sans effet avec la table de 90 actions ; écart sim/jeu non
   mesuré avant la Phase 5.
-- **R14** : pertes du GPU XPU (`UR_RESULT_ERROR_DEVICE_LOST`), 7 en ≈ 44 h de runs (dont 1 sur GCO-S s0, 1 sur le témoin dense, 0 sur la SIL, 1 sur la phase A d'ADR-012 à l'it. 1 148), cause non établie (pilote Arc
+- **R14** : pertes du GPU XPU (`UR_RESULT_ERROR_DEVICE_LOST`), 8 en ≈ 53 h de runs (dont 1 sur GCO-S s0, 1 sur le témoin dense, 0 sur la SIL, 1 sur la phase A d'ADR-012 à l'it. 1 148, 1 sur ADR-007 à l'it. 16 119), cause non établie (pilote Arc
   32.0.101.8860). Reprise automatique (`scripts/run_4a.py`) ; pas de garde contre un processus figé.
 
 ## Expériences en cours
-- **ADR-007 `int_gamma998_s0`** (GCO-std, γ 0,998, graine 0, 1B) : lancé le 2026-11-22 05 h 05 sur 86aa57a par l'enchaînement de
-  nuit (smoke `runs/smoke_86aa57a` PASS), `run_4a.py --variant int_gamma998 --seed 0 --max-hours 0` ; ≈ 5,5 h (estimé). θ₀ identique
-  à std s0 (SHA-256 7fab4c74…cb8a, mesuré). Ensuite : évals hors ligne ADR-007 D4 (`runs/int_gamma998_offline_eval/`), verdict D6.
+- **ADR-007 `int_gamma998_s0` terminé** (2026-11-22 11 h 14, 86aa57a, 1 perte du GPU reprise, 0 restauration) : verdict D6 **NEUTRE**
+  (1B : 3,24 % [3,01 ; 3,50] contre 3,14 % pour std s0 ; 1re paire H1 à 0,5B). γ 0,995 conservé. Rapport `docs/reports/int_gamma998_s0.md`.
+- **Préalables GPU d'ADR-010** : smoke `runs/smoke_aux_690a828` PASS pour l'entraînement, mais la vérification du chemin aux
+  échoue : aucun lot, car le compartiment y = 0 reste vide (126 pas par agent < H = 150). Défaut de conception du smoke, en
+  correction ; bancs λ pas encore lancés.
 - Phase A d'ADR-012 terminée (2026-11-22 04 h 46, it. 9 688, 3 segments dont 1 perte du GPU et 1 pause) : NEUTRE, voir ci-dessus.
 - **Run SIL `int_sil_s0` terminé** (2026-11-21 18 h 26, 8,1 h, 1 segment, 0 restauration, aucun KS) : critère ADR-006 D6
   **NEUTRE** (1B : décisives 4,33 % [4,06 ; 4,63] < 6,28 %, SPRT H1 ; 1re paire H1 à 0,3B). Descriptif : pic à 0,7B
