@@ -175,8 +175,9 @@ les configs existantes inchangés, recalculés avec l'ancien et le nouveau `src/
 - Calendrier optionnel `aux.anneal_start_timesteps` / `aux.anneal_end_timesteps` (absent ⇒ λ constant, D6) : permet la lecture
   prudente de C2 par la seule config si l'utilisateur la choisit ; fin < budget exigée ; fenêtre et rejeu libérés en fin de calendrier.
 - SIL et aux actives ensemble : refusé (config et learner), conformément à D11.
-- `configs/smoke_aux.yaml` : `batch_size` 1 024 au lieu de 8 192 (le smoke ne remplirait pas un lot de 8 192 ; estimé), seul écart
-  testé avec `int_aux`.
+- `configs/smoke_aux.yaml` : bloc `aux` identique à `int_aux` ; budget de 48 itérations au lieu de 18 (reprise à 24, soit 168 pas
+  par agent > H = 150 : sans cela le compartiment y = 0 reste vide et aucun lot n'est tiré, smoke 690a828 du 2026-11-22). Écarts
+  à `smoke.yaml` testés (`tests/unit/test_auxtask.py`). L'ancien écart `batch_size` 1 024 reposait sur une estimation fausse.
 
 ### D9. Journal C4 (`metrics.jsonl`, chaque itération ; `aux/*`)
 `coef`, `loss`, `batch_present` (minibatchs avec lot), `recall_pos`, `recall_neg`, `recall_zero`, `precision_pos`, `precision_neg`,

@@ -1,12 +1,12 @@
 # Smoke test du chemin de la tâche auxiliaire (ADR-010 D8 : « smoke test vert sur le commit du run ») : copie de
-# configs/smoke.yaml (18 itérations, 1 032 192 timesteps, arrêt puis reprise à l'itération 9, checkpoint toutes les 3
-# itérations) plus le bloc `aux` de configs/int_aux.yaml. SEULS écarts à smoke.yaml : `name` et le bloc `aux` ; SEUL écart
-# du bloc à int_aux.yaml (tests/unit/test_auxtask.py) :
-# - batch_size 1024 au lieu de 8 192 : aucun lot tant que le compartiment y ≠ 0 a moins de batch_size / 2 transitions
-#   (D3) et le smoke ne joue que 126 pas par agent ; 512 transitions ± ≈ quelques buts étiquetés sur 150 pas, de quoi
-#   déclencher des lots avant la reprise (estimé, non mesuré ; vérifié après coup par scripts/aux_bench_summary.py
-#   --smoke). horizon_steps et capacity_per_class inchangés : état de checkpoint à la taille réelle (fenêtre ≈ 0,27 Go à
-#   8 192 agents sans pool, estimé d'après la formule de l'ADR-010).
+# configs/smoke.yaml plus le bloc `aux` de configs/int_aux.yaml, À L'IDENTIQUE. SEULS écarts à smoke.yaml : `name`, le
+# bloc `aux` et `budget.total_timesteps` (tests/unit/test_auxtask.py) :
+# - 48 itérations (2 752 512 timesteps) au lieu de 18 : un pas ne sort avec y = 0 qu'après H = 150 pas sans fin
+#   d'épisode ; 18 itérations = 126 pas par agent, compartiment y = 0 vide, aucun lot (smoke 690a828). Reprise à 24 :
+#   168 pas par agent, lots possibles dès l'itération 22 (test), donc avant ET après la reprise ;
+# - pourquoi pas un H court : la fenêtre (268 Mo, mesuré en 690a828) et les lots ne seraient plus à la taille du run.
+#   batch_size revient à 8 192 : y ≠ 0 n'était pas limitant (22 122 transitions à l'itération 18, mesuré en 690a828).
+#   Durée : ≈ 2,3 min (estimé, non mesuré, d'après 690a828 : 1,2 s par itération et ≈ 4 s par checkpoint).
 # Lancer : vendor/venv-xpu/Scripts/python scripts/train.py configs/smoke_aux.yaml --smoke
 #            --out-dir runs/smoke_aux_<commit> --checkpoint-dir checkpoints/smoke_aux_<commit>
 #          python scripts/aux_bench_summary.py --smoke runs/smoke_aux_<commit>   # lots, perte, rejeu à la reprise
@@ -47,7 +47,7 @@ collection:
   overlap: true         # apprentissage du lot k pendant la collecte du lot k+1 (staleness 1)
 
 budget:
-  total_timesteps: 1000000   # arrondi au lot supérieur : 18 itérations = 1 032 192 timesteps
+  total_timesteps: 2752512   # 48 lots exactement (smoke.yaml : 1 000 000, 18 itérations ; voir l'en-tête)
 
 checkpoint:
   every_iterations: 3   # assez fréquent pour exercer sauvegarde et rotation (keep 2) pendant le smoke test
@@ -74,11 +74,11 @@ smoke:                  # exigences de `scripts/train.py --smoke`
   require_resume: true
   max_nan: 0
 
-aux:                    # bloc de configs/int_aux.yaml (ADR-010 D1–D6) ; écart mis à l'échelle : voir l'en-tête
+aux:                    # bloc de configs/int_aux.yaml (ADR-010 D1–D6), sans écart
   enabled: true
   coef: 0.1
   horizon_steps: 150
-  batch_size: 1024      # int_aux : 8 192 (voir l'en-tête)
+  batch_size: 8192
   capacity_per_class: 125000
   store_float16: true
   share_alert: 0.5

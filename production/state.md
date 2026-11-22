@@ -58,8 +58,9 @@ Mis à jour : 2026-11-22 (Phase 4a : SIL, ADR-012 phase A et ADR-007 NEUTRES ; A
 - **ADR-007 `int_gamma998_s0` terminé** (2026-11-22 11 h 14, 86aa57a, 1 perte du GPU reprise, 0 restauration) : verdict D6 **NEUTRE**
   (1B : 3,24 % [3,01 ; 3,50] contre 3,14 % pour std s0 ; 1re paire H1 à 0,5B). γ 0,995 conservé. Rapport `docs/reports/int_gamma998_s0.md`.
 - **Préalables GPU d'ADR-010** : smoke `runs/smoke_aux_690a828` PASS pour l'entraînement, mais la vérification du chemin aux
-  échoue : aucun lot, car le compartiment y = 0 reste vide (126 pas par agent < H = 150). Défaut de conception du smoke, en
-  correction ; bancs λ pas encore lancés.
+  échoue : aucun lot, car le compartiment y = 0 reste vide (126 pas par agent < H = 150). Correctif revu (APPROVE) : smoke de
+  48 itérations avec reprise à 24, bloc aux identique à int_aux ; contrôle `runs/smoke_aux_fixcheck_1` PASS. Ensuite, smoke officiel
+  sur le commit, bancs λ et parité f16 (automatisés).
 - Phase A d'ADR-012 terminée (2026-11-22 04 h 46, it. 9 688, 3 segments dont 1 perte du GPU et 1 pause) : NEUTRE, voir ci-dessus.
 - **Run SIL `int_sil_s0` terminé** (2026-11-21 18 h 26, 8,1 h, 1 segment, 0 restauration, aucun KS) : critère ADR-006 D6
   **NEUTRE** (1B : décisives 4,33 % [4,06 ; 4,63] < 6,28 %, SPRT H1 ; 1re paire H1 à 0,3B). Descriptif : pic à 0,7B

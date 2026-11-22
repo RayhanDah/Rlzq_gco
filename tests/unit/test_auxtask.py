@@ -187,13 +187,42 @@ def test_bench_et_smoke_aux_ne_different_que_des_champs_annonces() -> None:
     }
     a, b = RunConfig.from_yaml(CONFIGS / "int_aux.yaml"), RunConfig.from_yaml(CONFIGS / "bench_int_aux.yaml")
     assert dataclasses.replace(b, name=a.name).trajectory_hash() == a.trajectory_hash()
-    # smoke_aux = smoke + bloc aux ; le bloc = celui d'int_aux hors batch_size (mis à l'échelle, voir l'en-tête)
+    # smoke_aux = smoke + bloc aux d'int_aux à l'identique ; seul le budget change (H = 150 pas à dépasser avant la
+    # reprise, voir l'en-tête et le test suivant)
     smoke, smoke_aux = _raw("smoke.yaml"), _raw("smoke_aux.yaml")
     d = _diff(smoke, smoke_aux)
-    assert d.pop(("name",)) == ("smoke", "smoke_aux") and all(k[0] == "aux" for k in d)
-    assert _diff(_raw("int_aux.yaml")["aux"], smoke_aux["aux"]) == {("batch_size",): (8192, 1024)}
+    assert d.pop(("name",)) == ("smoke", "smoke_aux")
+    assert d.pop(("budget", "total_timesteps")) == (1_000_000, 2_752_512)
+    assert d and all(k[0] == "aux" for k in d)
+    assert smoke_aux["aux"] == _raw("int_aux.yaml")["aux"]
     cfg = RunConfig.from_yaml(CONFIGS / "smoke_aux.yaml")
     assert cfg.aux is not None and cfg.aux.enabled and cfg.smoke is not None
+
+
+def test_smoke_aux_remplit_le_compartiment_zero_avant_et_apres_la_reprise() -> None:
+    # Régression (smoke 690a828 : `aux/replay_zero_size` = 0 sur 18 itérations, aucun lot) : un pas ne sort avec
+    # y = 0 qu'après H pas sans fin d'épisode ; la 1re partie du smoke doit donc ingérer nettement plus de H pas par
+    # agent. Arrange : calendrier réel de `scripts/train.py --smoke` (mise à jour s = s lots ingérés, `Learner.update`)
+    import train as train_script
+
+    cfg = RunConfig.from_yaml(CONFIGS / "smoke_aux.yaml")
+    assert cfg.aux is not None and cfg.smoke is not None
+    resume, total = train_script.smoke_resume_iteration(cfg), cfg.total_iterations
+    t_len = cfg.collection.steps_per_batch
+    n_learn = cfg.batch_learned_steps // t_len  # agents appris par pas de collecte (sans pool : tous)
+    # Act : vraie fenêtre, un agent sans aucune fin d'épisode (borne haute des sorties y = 0 par agent)
+    w, zero_after = GoalWindow(1, 3, cfg.aux.horizon_steps, np.float32), []
+    b, n_zero = steps_arrays(t_len, 1), 0
+    for _ in range(total):
+        for t in range(t_len):
+            n_zero += w.step(b["obs"][t], b["rew"][t], b["term"][t], b["trunc"][t]).n_zero
+        zero_after.append(n_zero * n_learn)  # compartiment y = 0 après l'ingestion de la mise à jour s (index s − 1)
+    first = next((s + 1 for s, z in enumerate(zero_after) if z >= cfg.aux.half), None)
+    # Assert : premier lot possible au moins 2 itérations avant l'arrêt (marge pour les fenêtres remises à zéro par un
+    # but) et des mises à jour après la reprise ; seul le compartiment y = 0 est borné ici (y ≠ 0 : mesuré, smoke)
+    assert first is not None and first <= resume - 1, (first, resume, resume * t_len, cfg.aux.horizon_steps)
+    assert zero_after[resume - 1] > 0 and total > resume
+    assert (first, resume, total) == (22, 24, 48)  # valeurs citées dans l'en-tête de configs/smoke_aux.yaml
 
 
 def test_lanceur_variante_int_aux(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -154,6 +154,13 @@ def smoke_report(cfg: RunConfig, first: RunSummary, second: RunSummary | None, c
     }
 
 
+def smoke_resume_iteration(cfg: RunConfig) -> int:
+    """Itération (1-based) où `--smoke` arrête la 1re partie puis reprend : ⌈resume_at_fraction · total_iterations⌉,
+    au moins 1. La 1re partie fait donc exactement ce nombre de mises à jour (et ingère autant de lots)."""
+    assert cfg.smoke is not None
+    return max(1, math.ceil(cfg.smoke.resume_at_fraction * cfg.total_iterations))
+
+
 def _resolved_device(cfg: RunConfig) -> str:
     from training import resolve_device
 
@@ -302,7 +309,7 @@ def main(argv: list[str] | None = None) -> int:
         if summary_path.exists():
             print(f"{summary_path} existe déjà : jamais écrasé", file=sys.stderr)
             return 1
-        half = max(1, math.ceil(cfg.smoke.resume_at_fraction * cfg.total_iterations))
+        half = smoke_resume_iteration(cfg)
         first = run(cfg, out_dir, max_iterations=half, checkpoint_dir=ck_dir, command=command, **hook_kw)
         print(
             f"[smoke] 1re partie : {first.status} à l'itération {first.end_iteration}/{first.total_iterations}",
