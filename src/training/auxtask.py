@@ -75,7 +75,7 @@ class AuxConfig:
     horizon_steps: int = 150  # D2 : H = 150 pas (10 s à 15 Hz), règle RAM d'ADR-009 D7
     batch_size: int = 8_192  # D3 : 4 096 + 4 096 par minibatch PPO
     capacity_per_class: int = 125_000  # D3 : deux compartiments FIFO
-    store_float16: bool = True  # D3 : sous réserve de la parité D8-5 (sinon float32 et H = 75)
+    store_float16: bool = True  # D3 : défaut float16 ; configs int_aux en float32 à H = 100 (amendement du 2026-11-23)
     share_alert: float = 0.5  # D6 (C4) : alerte si grad_share > 0,5 ...
     share_alert_patience: int = 50  # ... pendant 50 itérations consécutives
     ram_min_available_mb: float = 1_000.0  # KS1 : STOP si RAM disponible < 1 Go ...

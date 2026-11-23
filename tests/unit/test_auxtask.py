@@ -830,20 +830,21 @@ def test_run_stop_ks1_et_alerte_c4_journalisees(tmp_path: Path) -> None:
 
 def test_memoire_aux_dimensions_du_run_int_aux_mesuree_en_octets() -> None:
     """Octets des tableaux aux dimensions de `configs/int_aux.yaml` : 7 373 agents appris, obs 109, H = 100 (repli de
-    D2, banc du 2026-11-22), float16, 2 × 125 000 transitions (obs 218, étiquette 1, itération 4 octets) :
-    160,8 + 55,8 = 216,5 Mo (241,2 + 55,8 = 297 Mo à H = 150, ADR-010 Mesures)."""
+    D2, banc du 2026-11-22), float32 (amendement D3 du 2026-11-23, parité D8-5 en échec), 2 × 125 000 transitions
+    (obs 436, étiquette 1, itération 4 octets) : 321,5 + 110,3 = 431,8 Mo ; 216,5 Mo en float16 (banc du 2026-11-22)."""
     cfg = RunConfig.from_yaml(CONFIGS / "int_aux.yaml")
-    assert cfg.aux is not None
+    assert cfg.aux is not None and not cfg.aux.store_float16
     n_learn = cfg.batch_learned_steps // cfg.collection.steps_per_batch
     window = GoalWindow(n_learn, 109, cfg.aux.horizon_steps, cfg.aux.obs_dtype)
     replay = [ClassReplay(cfg.aux.capacity_per_class, 109, cfg.aux.obs_dtype) for _ in range(2)]
     assert n_learn == 7_373
-    assert window.nbytes == 7_373 * 100 * 218 + 7_373 * 8 == 160_790_384
-    assert sum(r.nbytes for r in replay) == 250_000 * 223 == 55_750_000
-    assert window.nbytes + sum(r.nbytes for r in replay) == expected_nbytes(n_learn, 109, cfg.aux) == 216_540_384
-    # repli float32 de D3 (« même budget d'octets ») : H = 50 en float32 = fenêtre de H = 100 en float16
-    assert GoalWindow(n_learn, 109, 50, np.float32).nbytes == window.nbytes
-    assert expected_nbytes(n_learn, 109, cfg.aux) <= 301_617_984  # état SIL du banc 2 (243 367 984 + 58 250 000)
+    assert window.nbytes == 7_373 * 100 * 436 + 7_373 * 8 == 321_521_784
+    assert sum(r.nbytes for r in replay) == 250_000 * 441 == 110_250_000
+    assert window.nbytes + sum(r.nbytes for r in replay) == expected_nbytes(n_learn, 109, cfg.aux) == 431_771_784
+    # référence float16 à H = 100 (banc D5 λ = 0,1 du 2026-11-22) ; l'option float32 à H = 100 dépasse l'état SIL du
+    # banc 2 (243 367 984 + 58 250 000) : la règle D2 repose sur le banc RAM float32 dédié, plus sur cette comparaison
+    assert expected_nbytes(n_learn, 109, dataclasses.replace(cfg.aux, store_float16=True)) == 216_540_384
+    assert expected_nbytes(n_learn, 109, cfg.aux) > 301_617_984
     del window, replay
 
 

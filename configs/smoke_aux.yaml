@@ -5,7 +5,8 @@
 #   à H = 150, 18 itérations = 126 pas par agent, compartiment y = 0 vide, aucun lot (smoke 690a828). Depuis le repli
 #   H = 100 de D2 (banc du 2026-11-22), reprise à 24 : 168 pas par agent, lots possibles dès l'itération 15 (test), donc
 #   avant ET après la reprise ; budget de 48 conservé (1er lot possible 9 itérations avant la reprise) ;
-# - pourquoi pas un H court : la fenêtre (178,7 Mo à H = 100, calcul ; 268 Mo mesuré à H = 150 en 690a828) et les lots
+# - pourquoi pas un H court : la fenêtre (357,2 Mo à H = 100 en float32 depuis l'amendement D3 du 2026-11-23, 178,7 Mo
+#   en float16, calcul ; 268 Mo mesuré à H = 150 en float16 en 690a828) et les lots
 #   ne seraient plus à la taille du run.
 #   batch_size revient à 8 192 : y ≠ 0 n'était pas limitant (22 122 transitions à l'itération 18, mesuré en 690a828).
 #   Durée : ≈ 2,3 min (estimé, non mesuré, d'après 690a828 : 1,2 s par itération et ≈ 4 s par checkpoint).
@@ -82,7 +83,7 @@ aux:                    # bloc de configs/int_aux.yaml (ADR-010 D1–D6), sans �
   horizon_steps: 100
   batch_size: 8192
   capacity_per_class: 125000
-  store_float16: true
+  store_float16: false
   share_alert: 0.5
   share_alert_patience: 50
   ram_min_available_mb: 1000.0

@@ -1,10 +1,11 @@
 # Intervention (4) de GCO_SPEC.md §8 : tâche auxiliaire « prochain but » (docs/adr/010-intervention-aux-prochain-but.md,
-# PROPOSÉ, validation utilisateur requise). GCO-std, graine 0, 1B appris. Copie de configs/run_4a_std.yaml ; SEULE
-# différence hors `name` et commentaires : le bloc `aux` (tests/unit/test_run_4a_interventions.py). Lancer avec
-# scripts/run_4a.py --variant int_aux (run int_aux_s<seed>, éval par défaut configs/run_s1v2_eval.yaml). `seed` et `name`
-# sont remplacés par le lanceur. Mémoire auxiliaire (tests/unit/test_auxtask.py, octets des tableaux) : fenêtre 160,8 Mo
-# + rejeu 55,8 Mo = 216,5 Mo à 7 373 agents appris et H = 100 (297 Mo à H = 150) ; RAM à remesurer au banc D5 à H = 100
-# (configs/bench_int_aux.yaml ; banc à H = 150 du 2026-11-22 : minimum disponible 807 Mo, repli D2).
+# option float32 à H = 100 acceptée par l'utilisateur le 2026-11-23 ; GO de lancement requis). GCO-std, graine 0, 1B
+# appris. Copie de configs/run_4a_std.yaml ; SEULE différence hors `name` et commentaires : le bloc `aux`
+# (tests/unit/test_run_4a_interventions.py). Lancer avec scripts/run_4a.py --variant int_aux (run int_aux_s<seed>, éval
+# par défaut configs/run_s1v2_eval.yaml). `seed` et `name` sont remplacés par le lanceur. Mémoire auxiliaire
+# (tests/unit/test_auxtask.py, octets des tableaux), float32 : fenêtre 321,5 Mo + rejeu 110,3 Mo = 431,8 Mo à 7 373 agents
+# appris et H = 100 (216,5 Mo en float16). RAM : banc float32 à H = 100 du 2026-11-22, minimum disponible 1 884 Mo
+# (runs/bench_int_aux_f32_h100_20261122T120430Z ; banc à H = 150 : 807 Mo, repli D2).
 name: int_aux
 seed: 0
 device: xpu             # learner sur l'Arc (vendor/venv-xpu, ADR-001 M3–M4) ; sim RocketGPU en CPU
@@ -80,7 +81,8 @@ aux:                    # ADR-010 (Lucy-SKG arXiv 2305.15801 §4.2 ; UNREAL arXi
                         # 6,7 s à 15 Hz ; nouveau banc à H = 100 ; encore < 1,5 Go : pas de GO
   batch_size: 8192      # D3 : 4 096 (y ≠ 0) + 4 096 (y = 0) par minibatch PPO
   capacity_per_class: 125000   # D3 : deux compartiments FIFO
-  store_float16: true   # D3 : sous réserve de la parité D8-5 (sinon float32 à même budget d'octets : H = 50)
+  store_float16: false  # D3 amendé le 2026-11-23 (validé par l'utilisateur) : float32 à H = 100, au lieu de H/2 ;
+                        # parité f16 D8-5 en échec (0,0137 > 0,01), banc RAM float32 H = 100 : min 1 884 Mo
   share_alert: 0.5      # D6 (C4) : alerte si grad_share > 0,5 pendant 50 itérations
   share_alert_patience: 50
   ram_min_available_mb: 1000.0   # KS1 : STOP si RAM disponible < 1 Go pendant > 10 min

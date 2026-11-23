@@ -1,8 +1,11 @@
 # ADR-010 — Intervention (4) : tâche auxiliaire « prochain but » (GCO-std, graine 0, 1B)
 
-- Statut : **proposé** (prêt à implémenter) ; λ_aux est fixé par la mesure de D5 avant le GO. Validation utilisateur requise
-  avant tout lancement (points en fin d'ADR).
-- Date : 2026-11-18 (esquisse) ; révisé le 2026-11-21 (leçons du run SIL, RAM, C2, débit, préalables)
+- Statut : **accepté par l'utilisateur le 2026-11-23 (option float32 à H = 100)**, amendement de D3 et D8-5. Restent
+  **GO de lancement donné le même jour** (choix « ADR-010 float32 H=100 », après le constat que l'ADR était prêt à lancer) :
+  l'ADR est exécuté tel qu'écrit. Les points 1 à 4 de « Points à valider » sont couverts par ce GO, mais n'ont pas été relus un
+  par un. λ_aux = 0,1 fixé par les bancs D5.
+- Date : 2026-11-18 (esquisse) ; révisé le 2026-11-21 (leçons du run SIL, RAM, C2, débit, préalables) ; amendé le
+  2026-11-23 (D3, D8-5 : float32 à H = 100)
 - Décideurs : research-director (proposition) ; rl-algo-lead (implémentation, `configs/int_aux.yaml`, `--variant int_aux`,
   désactivée par défaut) ; utilisateur (validation, lancement)
 
@@ -94,6 +97,10 @@ et les calculs ci-dessous (Python, exacts aux arrondis ; **non mesurés** sauf m
   étiquetés 0 par itération, estimé) et évincerait les rares ± ; le compartiment ± couvre ≈ 30 à 120 itérations (estimé).
 - Obs float16 si la parité D8-5 passe ; sinon float32 avec H/2 (même budget d'octets : H = 75 à H = 150, **H = 50 depuis le
   repli D2 du 2026-11-22**).
+- **Amendement du 2026-11-23 (validé par l'utilisateur)** : la parité D8-5 ayant échoué (0,0137 > 0,01), obs **float32 à
+  H = 100**, au lieu de H/2 = 50 en float32. Le « même budget d'octets » est abandonné : le budget est désormais celui que
+  mesure le banc RAM float32 à H = 100 (minimum disponible 1 884 Mo ≥ 1,5 Go, D2). `store_float16: false` dans les trois
+  configs (tailles et preuves en fin de D8).
 
 ### D4. Garde-fous de calcul (pour tenir le coût de D7)
 - Aucune synchronisation hôte par minibatch : indices des 6 lots tirés en début d'itération (générateur CPU propre), une copie
@@ -156,7 +163,8 @@ de Windows, même suivi d'une extension, d'après la documentation Microsoft « 
 4. Étiquettes sur épisodes synthétiques : but au pas T ⇒ ±1 sur [T − H + 1, T] selon le signe de r(i), csc compris ; épisode plus
    long que H ⇒ 0 hors fenêtre ; troncature ⇒ les H derniers pas masqués ; camp gelé exclu ; épisode plus court que H.
 5. Parité float16 : |Δ log softmax(tête)| max ≤ 10⁻² (seuil de π, ADR-009 D7-5) sur lot synthétique, puis au banc sur un lot réel ;
-   sinon float32 et H/2 (D3 ; H = 50 depuis le repli D2 du 2026-11-22).
+   sinon float32 et H/2 (D3 ; H = 50 depuis le repli D2 du 2026-11-22). **Amendé le 2026-11-23** : échec au lot réel
+   (0,0137) ⇒ float32 à H = 100 (amendement de D3, validé par l'utilisateur).
 6. Rejeu : tirage 4 096 + 4 096, FIFO par compartiment, pas de lot sous 4 096 transitions ±.
 7. Reprise exacte en CPU avec l'état auxiliaire (fenêtre, rejeu, tête, état Adam de la tête, générateur) dans le checkpoint
    (`.claude/rules/training.md`) ; θ₀ de π identique à std s0 (méthode de `tests/unit/test_run_4a_interventions.py:414`).
@@ -225,6 +233,22 @@ données `runs/bench_int_aux_l0p1_20261122T103801Z/`, résumés `aux_summary.jso
   - L'option float32 à H = 100 tient donc en RAM sur ce banc. Si elle est retenue, `store_float16: false` dans les trois configs
     (un amendement, validé par l'utilisateur).
 
+**Amendement D3 / D8-5 (2026-11-23, validé par l'utilisateur) : float32 à H = 100.**
+- `aux.store_float16: false` dans `configs/int_aux.yaml`, `configs/bench_int_aux.yaml` et `configs/smoke_aux.yaml` (blocs `aux`
+  identiques, `tests/unit/test_auxtask.py`, `tests/unit/test_run_4a_interventions.py`) ; défaut `AuxConfig.store_float16`
+  inchangé (`True`), les configs le fixent. Configs SIL inchangées.
+- Tailles en float32 (octets des tableaux, `tests/unit/test_auxtask.py`
+  `test_memoire_aux_dimensions_du_run_int_aux_mesuree_en_octets`, 7 373 agents appris, obs 109) : fenêtre 7 373 × 100 × 436
+  + 7 373 × 8 = **321 521 784** octets ; rejeu 250 000 × 441 (obs 436, étiquette 1, itération 4) = **110 250 000** octets ;
+  état auxiliaire **431 771 784** octets (431,8 Mo), contre 216 540 384 en float16 à H = 100. Il dépasse l'état SIL du banc 2
+  (301 617 984) : l'argument RAM de D2 repose sur le banc float32 dédié ci-dessus, plus sur cette comparaison.
+- Calculs (non mesurés) : fenêtre du smoke (8 192 agents) 357 236 736 octets ; copie hôte → appareil de D4 6 × 8 192 × 436
+  = 21,4 Mo par itération (10,7 Mo en float16).
+- Mesuré au banc float32 (`runs/bench_int_aux_f32_h100_20261122T120430Z/bench_summary.json`) : checkpoint de 657 567 622
+  octets à l'itération 250 (523 Mo au banc float16 à H = 150).
+- Restent avant le GO : smoke `configs/smoke_aux.yaml --smoke` vert sur le commit du run (CLAUDE.md règle 5), les points 1 à 4
+  ci-dessous, puis le GO de lancement.
+
 ### D9. Journal C4 (`metrics.jsonl`, chaque itération ; `aux/*`)
 `coef`, `loss`, `batch_present` (minibatchs avec lot), `recall_pos`, `recall_neg`, `recall_zero`, `precision_pos`, `precision_neg`,
 `precision_zero` (sur le lot rééquilibré : le rappel ne dépend pas du rééquilibrage, la précision si), `frac_pos`, `frac_neg`,
@@ -268,7 +292,8 @@ résultats isolés.
   < 0,05 au λ retenu ; KS1 au banc ; publication des codes Terminal / Pulsar 2.5 (`GCO_SPEC.md` §8).
 
 ## Points à valider par l'utilisateur
-1. Cible à 3 classes à horizon **150 pas** (10 s, au lieu de 200 : règle RAM mesurée), masquée aux troncatures ; tête sur le tronc de
+1. Cible à 3 classes à horizon **150 pas** (10 s, au lieu de 200 : règle RAM mesurée ; **H = 100** depuis le repli D2 du
+   2026-11-22, obs float32 depuis l'amendement du 2026-11-23), masquée aux troncatures ; tête sur le tronc de
    π, hors des poids exportés ; rejeu à deux compartiments de 125 000, lot 8 192 rééquilibré.
 2. λ_aux fixé par les bancs D5 (grad_share médiane ≤ 0,5, descente 0,1 → 0,03 → 0,01), **constant sur 1B**.
 3. Interprétation de C2 (D6) : une perte de représentation qui ne touche ni avantages, ni sortie de π, ni V, est conforme sans

@@ -63,7 +63,7 @@ EXPECTED_DIFF: dict[str, dict[tuple[str, ...], tuple[Any, Any]]] = {
             "horizon_steps": 100,  # D2, repli H = 100 (banc D5 du 2026-11-22 : minimum 807 Mo < 1,5 Go)
             "batch_size": 8192,  # D3
             "capacity_per_class": 125_000,  # D3
-            "store_float16": True,
+            "store_float16": False,  # D3 amendé le 2026-11-23 : float32 à H = 100 (parité D8-5 en échec, 0,0137 > 0,01)
             "share_alert": 0.5,  # D6 (C4)
             "share_alert_patience": 50,
             "ram_min_available_mb": 1000.0,  # KS1

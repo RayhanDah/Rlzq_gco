@@ -1,8 +1,9 @@
-# Bancs D5 de l'ADR-010 (tâche auxiliaire, proposé) : config la plus proche possible du run int_aux_s0. Copie de
-# configs/int_aux.yaml ; SEULS écarts, vérifiés par tests/unit/test_auxtask.py : `name` et `checkpoint.keep` (section
-# opérationnelle, hors hash de trajectoire : aucune rotation pendant le banc, rien n'est supprimé dans checkpoints/ ; le
-# run garde keep: 2, ADR-005 D2). Même logique que bench_int_sil.yaml vs int_sil.yaml. Pour les bancs suivants de la
-# règle D5, copier ce fichier et ne changer que `aux.coef` (0,1 -> 0,0316 -> 0,01, ou 0,316 -> 1).
+# Bancs D5 de l'ADR-010 (tâche auxiliaire ; float32 à H = 100 accepté le 2026-11-23) : config la plus proche possible
+# du run int_aux_s0. Copie de configs/int_aux.yaml ; SEULS écarts, vérifiés par tests/unit/test_auxtask.py : `name` et
+# `checkpoint.keep` (section opérationnelle, hors hash de trajectoire : aucune rotation pendant le banc, rien n'est
+# supprimé dans checkpoints/ ; le run garde keep: 2, ADR-005 D2). Même logique que bench_int_sil.yaml vs int_sil.yaml.
+# Pour les bancs suivants de la règle D5, copier ce fichier et ne changer que `aux.coef` (0,1 -> 0,0316 -> 0,01,
+# ou 0,316 -> 1).
 # Lancer (machine libre, arbre propre, jamais en parallèle d'un run ; smoke_aux vert sur le même commit) :
 #   vendor/venv-xpu/Scripts/python scripts/bench_run.py --config configs/bench_int_aux.yaml
 #     --eval-config configs/run_s1v2_eval.yaml --name-prefix bench_int_aux --minutes 30 --prefill-pool 100 --sample-s 1
@@ -86,7 +87,8 @@ aux:                    # ADR-010 (Lucy-SKG arXiv 2305.15801 §4.2 ; UNREAL arXi
                         # 6,7 s à 15 Hz ; nouveau banc à H = 100 ; encore < 1,5 Go : pas de GO
   batch_size: 8192      # D3 : 4 096 (y ≠ 0) + 4 096 (y = 0) par minibatch PPO
   capacity_per_class: 125000   # D3 : deux compartiments FIFO
-  store_float16: true   # D3 : sous réserve de la parité D8-5 (sinon float32 à même budget d'octets : H = 50)
+  store_float16: false  # D3 amendé le 2026-11-23 (validé par l'utilisateur) : float32 à H = 100, au lieu de H/2 ;
+                        # parité f16 D8-5 en échec (0,0137 > 0,01), banc RAM float32 H = 100 : min 1 884 Mo
   share_alert: 0.5      # D6 (C4) : alerte si grad_share > 0,5 pendant 50 itérations
   share_alert_patience: 50
   ram_min_available_mb: 1000.0   # KS1 : STOP si RAM disponible < 1 Go pendant > 10 min
