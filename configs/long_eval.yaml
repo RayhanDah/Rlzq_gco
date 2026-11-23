@@ -1,0 +1,22 @@
+# Éval du run long (ADR-014) : run_s1v2_eval.yaml, un point tous les 0,5B au lieu de 0,1B.
+# Évaluation en cours de run, protocole S1-seed v2 (ADR-006 D2, D3, D7 I1/I2), `training.evalhook.EvalHookConfig`.
+# Sélection : `scripts/run_4a.py --eval-config run_s1v2_eval.yaml`. `run_4a_eval.yaml` reste inchangé (S1-léger).
+protocol: s1_v2
+every_timesteps: 500000000       # un point tous les 0,5B appris (50 points sur 25B, ADR-014)
+frozen_lag_timesteps: 500000000  # sans effet en v2 (θ₀ fixe) ; multiple de every_timesteps exigé par la validation
+episodes_random: 3072            # D2 : tous les épisodes joués, taille fixe (plafond du SPRT)
+episodes_frozen: 3072            # (b) contre θ₀ fixe
+sprt_elo1: 100.0                 # H0 : 0 Elo contre H1 : +100 Elo
+sprt_alpha: 0.05
+sprt_beta: 0.05
+min_decisive: 20                 # plancher de K7 seulement (le SPRT n'a pas de plancher)
+wilson_alpha: 0.05               # Wilson unilatéral (K7)
+garwood_alpha: 0.05
+garwood_two_sided: true          # D3 : Garwood bilatéral 95 %
+r0_goals_per_min: 0.027          # R0 = 0,027 but/min par camp (ADR-005 P0, ADR-006 Mesures)
+consecutive: 2                   # D2 : s1_reached au 2e point réussi consécutif
+k7_consecutive: 2                # D2 : K7 sur 2 points consécutifs
+n_envs: 256                      # D2 : fixe
+mode: sample
+seed: null                       # D2 : graine d'éval = graine du run
+max_consecutive_errors: 3

@@ -80,6 +80,9 @@ INTERVENTIONS = {
 # Témoins de diagnostic HORS SPEC (ADR-011) : récompense dense-diag, une seule modification par rapport à std s0 ;
 # diag_dense_lr3 (ADR-012 D1, D2) : une seule modification par rapport à diag_dense (calendrier de LR ×3).
 DIAGNOSTICS = {"diag_dense": "diag_dense.yaml", "diag_dense_lr3": "diag_dense_lr3.yaml"}
+# Run long de démo (ADR-014, G3) : GCO-S seul, 25B appris ; nom du run `long_s<seed>`, éval tous les 0,5B.
+LONG_RUNS = {"long": "long_run.yaml"}
+LONG_EVAL_CONFIG = "long_eval.yaml"
 EVAL_CONFIG = "run_4a_eval.yaml"
 INTERVENTION_EVAL_CONFIG = "run_s1v2_eval.yaml"  # ADR-006 D2, D3 : protocole S1-seed v2
 EXIT_OK, EXIT_ERROR, EXIT_KILL, EXIT_DEVICE_LOST = 0, 1, 3, 4
@@ -99,7 +102,13 @@ def config_file(variant: str) -> str:
         return INTERVENTIONS[variant]
     if variant in DIAGNOSTICS:
         return DIAGNOSTICS[variant]
-    raise ValueError(f"variante {variant!r} : {sorted(VARIANTS) + sorted(INTERVENTIONS) + sorted(DIAGNOSTICS)} attendu")
+    if variant in LONG_RUNS:
+        return LONG_RUNS[variant]
+    raise ValueError(f"variante {variant!r} : {_all_variants()} attendu")
+
+
+def _all_variants() -> list[str]:
+    return sorted(VARIANTS) + sorted(INTERVENTIONS) + sorted(DIAGNOSTICS) + sorted(LONG_RUNS)
 
 
 def run_name(variant: str, seed: int) -> str:
@@ -107,11 +116,15 @@ def run_name(variant: str, seed: int) -> str:
     config_file(variant)
     if seed < 0:
         raise ValueError(f"seed={seed} : >= 0 attendu")
-    return f"{variant}_s{seed}" if variant in INTERVENTIONS or variant in DIAGNOSTICS else f"run_4a_{variant}_s{seed}"
+    if variant in INTERVENTIONS or variant in DIAGNOSTICS or variant in LONG_RUNS:
+        return f"{variant}_s{seed}"
+    return f"run_4a_{variant}_s{seed}"
 
 
 def default_eval_config(variant: str) -> str:
     """Config d'évaluation par défaut : S1-léger pour std et s (inchangé), S1-seed v2 pour une intervention."""
+    if variant in LONG_RUNS:
+        return LONG_EVAL_CONFIG
     return INTERVENTION_EVAL_CONFIG if variant in INTERVENTIONS or variant in DIAGNOSTICS else EVAL_CONFIG
 
 
@@ -310,6 +323,8 @@ def launch(
         raise ValueError(f"intervention {variant} : GCO-std attendu (ADR-006 D5), {cfg.reward.variant} trouvé")
     if variant in DIAGNOSTICS and cfg.reward.variant != "dense-diag":
         raise ValueError(f"diagnostic {variant} : dense-diag attendu (ADR-011), {cfg.reward.variant} trouvé")
+    if variant in LONG_RUNS and (cfg.reward.variant != "GCO-S" or cfg.sil is not None or cfg.aux is not None):
+        raise ValueError(f"run long {variant} : GCO-S sans SIL ni tâche auxiliaire attendu (ADR-014)")
     cfg = dataclasses.replace(cfg, name=name, seed=seed)
     if device:
         cfg = dataclasses.replace(cfg, device=device)
@@ -354,12 +369,12 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument(
         "--variant",
-        choices=sorted(VARIANTS) + sorted(INTERVENTIONS) + sorted(DIAGNOSTICS),
+        choices=_all_variants(),
         required=True,
         help="std = GCO-std, s = GCO-S ; int_gamma998 (ADR-007), int_slow_anneal (ADR-008), int_sil (ADR-009), "
         "int_sil_late (ADR-013), int_aux (ADR-010) : interventions GCO-std ; "
         "diag_dense (ADR-011) : témoin à récompense dense, HORS SPEC, jamais promu ; "
-        "diag_dense_lr3 (ADR-012) : le même témoin, LR ×3",
+        "diag_dense_lr3 (ADR-012) : le même témoin, LR ×3 ; long (ADR-014) : run long de démo, GCO-S, 25B",
     )
     ap.add_argument("--seed", type=int, nargs="+", required=True, help="0, 1 ou 2 (ADR-005 D3) ; plusieurs : enchaînés")
     ap.add_argument("--max-hours", type=float, default=7.5, help="durée murale par run (défaut 7,5 h ; 0 = aucune)")
