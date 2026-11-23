@@ -1,6 +1,6 @@
 # ADR-010 — Intervention (4) : tâche auxiliaire « prochain but » (GCO-std, graine 0, 1B)
 
-- Statut : **accepté par l'utilisateur le 2026-11-23 (option float32 à H = 100)**, amendement de D3 et D8-5. Restent
+- Statut : **exécuté, verdict NEUTRE** (2026-11-23, `docs/reports/int_aux_s0.md`) ; accepté par l'utilisateur le 2026-11-23 (option float32 à H = 100), amendement de D3 et D8-5. Restent
   **GO de lancement donné le même jour** (choix « ADR-010 float32 H=100 », après le constat que l'ADR était prêt à lancer) :
   l'ADR est exécuté tel qu'écrit. Les points 1 à 4 de « Points à valider » sont couverts par ce GO, mais n'ont pas été relus un
   par un. λ_aux = 0,1 fixé par les bancs D5.
@@ -280,6 +280,13 @@ vers 23 h ; phase B avant ADR-007 si SUCCÈS et GO, ADR-012 D8) → ADR-007 (γ 
 **ADR-010** → variante SIL éventuelle (nouvel ADR). Le code et les tests D8 peuvent avancer pendant les runs (CPU, < 60 s) ; le smoke
 et les bancs attendent une machine libre, entre la fin d'ADR-007 et le lancement de ce run. Combinaison SIL + aux seulement après deux
 résultats isolés.
+
+## Résultat (2026-11-23)
+Run `int_aux_s0`, commit 0d930e6, 5,59 h, 1 segment, 0 perte du GPU, 0 restauration. Verdict D10 **NEUTRE** : à 1B,
+2,93 % de décisives [2,71 ; 3,17] (20 000 épisodes, SPRT H1) contre 3,14 % pour std s0 ; 1re paire H1 à (0,8B ; 0,9B). La tâche
+est apprise (rappels ± ≥ 0,91, grad_share médiane 0,385) mais l'entropie de π baisse plus que chez std (3,35 contre 4,36 à 1B),
+sans gain sur les buts ni la touche (12,4 %). RAM min 1 896 Mo (KS1 non déclenché). λ_aux non promu ; suite D11 : ADR-013
+(proposé). Détail : `docs/reports/int_aux_s0.md`.
 
 ## Conséquences
 - Plus facile : une tête linéaire, une perte de plus, aucun pas d'optimiseur ajouté ; π exporté inchangé ; infrastructure de la SIL
