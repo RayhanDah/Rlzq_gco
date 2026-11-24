@@ -307,8 +307,10 @@ class Collector:
             state["opponents"] = self.opponents.state_dict()
         return state
 
-    def load_state_dict(self, state: Mapping[str, Any], obs: F32 | None = None) -> None:
-        """`obs` remplace l'observation sauvegardée (env restauré « modulo reset des arènes »)."""
+    def load_state_dict(self, state: Mapping[str, Any], obs: F32 | None = None, reseed: int | None = None) -> None:
+        """`obs` remplace l'observation sauvegardée (env restauré « modulo reset des arènes »). `reseed` : le générateur
+        (sur le device de l'acteur) est ré-amorcé au lieu de recevoir l'état sauvegardé, produit par un autre device
+        (ADR-014 D6 a : formats d'état XPU et CUDA non garantis identiques)."""
         cur = np.array(state["obs"] if obs is None else obs, dtype=np.float32)
         if cur.shape != self._obs.shape:
             raise ValueError(f"obs {cur.shape} ≠ {self._obs.shape}")
@@ -316,7 +318,10 @@ class Collector:
             raise ValueError("état de pool d'adversaires présent XOR collecteur avec pool : incohérent")
         if self.opponents is not None:
             self.opponents.load_state_dict(state["opponents"])
-        self.generator.set_state(state["generator"].cpu())
+        if reseed is None:
+            self.generator.set_state(state["generator"].cpu())
+        else:
+            self.generator.manual_seed(reseed)
         self._obs = cur
         self.agent_steps = int(state["agent_steps"])
         # checkpoints d'avant le pool : tout agent apprenait

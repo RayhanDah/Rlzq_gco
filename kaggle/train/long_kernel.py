@@ -15,10 +15,12 @@ reprise du run long ; seul le rapport est produit.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -55,18 +57,35 @@ def step(
     logs.mkdir(parents=True, exist_ok=True)
     t = time.time()
     with (logs / f"{name}.log").open("w", encoding="utf-8") as f:
+        # groupe de processus à part : au timeout, on arrête TOUT le groupe (superviseur run_4a ET sa session enfant),
+        # d'abord par SIGINT (arrêt propre, checkpoint final), puis par SIGKILL ; on attend la fin avant d'archiver
+        proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=f, stderr=subprocess.STDOUT, start_new_session=True)
         try:
-            code = subprocess.run(
-                cmd, cwd=cwd, env=env, stdout=f, stderr=subprocess.STDOUT, timeout=timeout_s, check=False
-            ).returncode
+            code = proc.wait(timeout=timeout_s)
         except subprocess.TimeoutExpired:
-            code = -9
+            code = stop_group(proc)
     steps = REPORT["steps"]
     assert isinstance(steps, dict)
     steps[name] = {"code": code, "seconds": round(time.time() - t, 1)}
     log(f"{name} : code {code} en {time.time() - t:.0f} s")
     save_report()
     return code == 0
+
+
+def stop_group(proc: subprocess.Popen[bytes]) -> int:
+    """Arrête le groupe de `proc` : SIGINT, 5 min de grâce, puis SIGKILL. Rend -9 (timeout)."""
+    for sig, grace_s in ((signal.SIGINT, 300.0), (signal.SIGKILL, 60.0)):
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, sig)
+        try:
+            proc.wait(timeout=grace_s)
+            break
+        except subprocess.TimeoutExpired:
+            continue
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(proc.pid, signal.SIGKILL)  # descendants restants éventuels
+    log(f"timeout : groupe {proc.pid} arrêté")
+    return -9
 
 
 def sha256_file(path: Path) -> str:
@@ -101,6 +120,7 @@ def restore_bundle() -> dict[str, object]:
     RELAY.mkdir(parents=True, exist_ok=True)
     with tarfile.open(tar) as tf:
         tf.extractall(RELAY, filter="data")  # refuse les chemins absolus et les liens sortants
+    REPORT["start_sha256"] = sha  # comparé par `kaggle_long.py sync` à l'empreinte du pack
     log(f"run restauré depuis {tar} (itération {manifest.get('iteration')})")
     return manifest
 
@@ -113,9 +133,13 @@ def archive_run() -> None:
         REPORT["bundle"] = None
         return
     tmp = WORK / f".{BUNDLE_TAR}.tmp"
+
+    def no_temp(info: tarfile.TarInfo) -> tarfile.TarInfo | None:  # écritures interrompues : jamais archivées
+        return None if info.name.endswith((".tmp", ".part")) or "/." in info.name else info
+
     with tarfile.open(tmp, "w") as tf:
-        tf.add(runs, arcname=f"runs/{run}")
-        tf.add(cks, arcname=f"checkpoints/{run}")
+        tf.add(runs, arcname=f"runs/{run}", filter=no_temp)
+        tf.add(cks, arcname=f"checkpoints/{run}", filter=no_temp)
     os.replace(tmp, WORK / BUNDLE_TAR)
     ckpts = sorted(p.name for p in cks.glob("ckpt_*.pt"))
     REPORT["bundle"] = {"file": BUNDLE_TAR, "sha256": sha256_file(WORK / BUNDLE_TAR), "checkpoints": ckpts}
@@ -228,6 +252,8 @@ def main() -> int:
             "--checkpoints-root",
             str(RELAY / "checkpoints"),
         ]
+        if CONFIG.get("max_iterations"):  # mode essai : reprise réelle, quelques itérations seulement
+            cmd += ["--max-iterations", str(CONFIG["max_iterations"])]
         ok = step("run_4a", cmd, hours * 3600.0 + margin_s / 2, cwd=APP, env=env)
         REPORT["status"] = "paused" if ok else "run_failed"
         return 0
@@ -242,7 +268,8 @@ def main() -> int:
                 archive_run()
             except Exception as e:  # le rapport doit être écrit quoi qu'il arrive
                 REPORT["archive_error"] = repr(e)
-        save_report()
+        with contextlib.suppress(OSError):  # disque plein : le journal du kernel garde la trace
+            save_report()
         shutil.rmtree(RELAY / "smoke_ck", ignore_errors=True)
 
 

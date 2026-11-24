@@ -65,7 +65,11 @@ def _kaggle_output(out: Path, record: dict[str, Any], new_it: int, extra_metrics
     with tarfile.open(out / kl.BUNDLE_TAR, "w") as tf:
         tf.add(rd, arcname=f"runs/{RUN}")
         tf.add(cd, arcname=f"checkpoints/{RUN}")
-    rep = {"status": "paused", "bundle": {"file": kl.BUNDLE_TAR, "sha256": kl.kr.sha256_file(out / kl.BUNDLE_TAR)}}
+    rep = {
+        "status": "paused",
+        "start_sha256": record["sha256"],
+        "bundle": {"file": kl.BUNDLE_TAR, "sha256": kl.kr.sha256_file(out / kl.BUNDLE_TAR)},
+    }
     (out / "relay-out.json").write_text(json.dumps(rep), encoding="utf-8")
     return out
 
@@ -235,7 +239,10 @@ def test_sync_refuse_un_checkpoint_de_meme_nom_et_autre_contenu(packed: Any) -> 
     with tarfile.open(out / kl.BUNDLE_TAR, "w") as tf:
         tf.add(rd, arcname=f"runs/{RUN}")
         tf.add(cd, arcname=f"checkpoints/{RUN}")
-    rep = {"bundle": {"file": kl.BUNDLE_TAR, "sha256": kl.kr.sha256_file(out / kl.BUNDLE_TAR)}}
+    rep = {
+        "start_sha256": record["sha256"],
+        "bundle": {"file": kl.BUNDLE_TAR, "sha256": kl.kr.sha256_file(out / kl.BUNDLE_TAR)},
+    }
     (out / "relay-out.json").write_text(json.dumps(rep), encoding="utf-8")
     before = kl.fingerprint(runs_root / RUN, ck_root / RUN)
     # Act / Assert
@@ -250,3 +257,28 @@ def test_sync_refuse_une_sortie_sans_archive(packed: Any) -> None:
     (out / "relay-out.json").write_text(json.dumps({"status": "error", "error": "build", "bundle": None}), "utf-8")
     with pytest.raises(kl.LongRelayError, match="aucune archive"):
         kl.sync(out, runs_root, ck_root, record, apply=True, stamp="T", echo=lambda _: None)
+
+
+def test_sync_refuse_une_sortie_d_un_autre_pack(packed: Any) -> None:
+    # Arrange : sortie valide, mais partie d'un autre bundle (ancienne session)
+    runs_root, ck_root, record, build = packed
+    out = _kaggle_output(kl.kr.fresh_dir(build / "out" / "x"), record, 300)
+    rep = json.loads((out / "relay-out.json").read_text(encoding="utf-8"))
+    rep["start_sha256"] = "0" * 64
+    (out / "relay-out.json").write_text(json.dumps(rep), encoding="utf-8")
+    # Act / Assert
+    with pytest.raises(kl.LongRelayError, match="ne part pas du pack"):
+        kl.sync(out, runs_root, ck_root, record, apply=True, stamp="T", echo=lambda _: None)
+
+
+def test_pack_accepte_une_session_tuee_si_l_utilisateur_l_atteste(tmp_path: Path) -> None:
+    runs_root, ck_root, build = _make_run(tmp_path, segments=0)
+    record = kl.pack(runs_root, ck_root, build / "data", "alice", "c", 0.0, assume_stopped=True)
+    assert record["iteration"] == 200
+
+
+def test_config_d_essai_de_reprise_courte_et_plafonnee() -> None:
+    cfg = kl.kernel_config("https://github.com/o/r.git", "abc", False, "f" * 64, max_iterations=23_594)
+    assert cfg["max_iterations"] == 23_594 and cfg["session_s"] == 30 * 60 and cfg["margin_s"] == 5 * 60
+    day = kl.kernel_config("https://github.com/o/r.git", "abc", False, "f" * 64)
+    assert day["max_iterations"] is None and day["session_s"] == 12 * 3600 - 600

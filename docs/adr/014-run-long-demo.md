@@ -58,6 +58,20 @@ abandonne ADR-013 (2026-11-24) : « on n'en a plus du tout [de temps] », et dem
    - (d) : `scripts/kaggle_long.py` (`pack`, `start`, `status`, `fetch`, `sync`). Le pack fait 269 Mo à l'it. 23 544
      (mesuré, à blanc). `sync` refuse si le run local a changé depuis le pack, sauvegarde `runs/long_s0` avant d'écrire
      et ne supprime rien.
+   Revue `code-reviewer` (6df2b00, 8c8730f) : REQUEST CHANGES pour un bloquant, corrigé :
+   - B1 : au timeout, le kernel arrête tout le groupe de processus (SIGINT, puis SIGKILL) avant d'archiver.
+   Mineurs corrigés :
+   - générateur du collecteur ré-amorcé (graine, itération) sur changement de device ;
+   - `pack --assume-stopped` ;
+   - rapport protégé si le disque est plein ;
+   - `sync` exige que l'empreinte d'entrée de la sortie soit celle du pack ;
+   - temporaires exclus de l'archive.
+   Mineurs acceptés, sans perte possible :
+   - m1 : `auto` ↔ `xpu` jette la sim ;
+   - m5 : sortie bloquée si une session locale a tourné après le pack ;
+   - m6 : collision de nom si un checkpoint local non sain dépasse le dernier sain ;
+   - m8 : copie partielle refusée à la relance.
+   Essai avant la 1re journée : `start --trial N`, reprise réelle du pack sur T4 pour N itérations, session ≤ 30 min.
    Non vérifié avant le smoke T4 : torch 2.11+cu130 et Python 3.13 sur Kaggle, contre torch 2.15 et Python 3.12 en local ;
    chargement de l'état du générateur XPU sur CUDA ; débit.
 7. Chaque session se relance avec un nouveau H. Les tests RLBot dans le vrai jeu se font le jour, sans le run. Une session

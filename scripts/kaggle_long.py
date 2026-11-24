@@ -45,7 +45,8 @@ BUNDLE_TAR = "bundle.tar"
 BUNDLE_MANIFEST = "long-bundle.json"
 SESSION_S = 12 * 3600 - 10 * 60  # session GPU ≤ 12 h (docs/research/kaggle.md) moins 10 min de garde
 MARGIN_S = 45 * 60  # fin du run 45 min avant SESSION_S : dernière éval, archive, écriture des sorties
-SMOKE_SESSION_S = 30 * 60  # règle 5 de CLAUDE.md : smoke ≤ 30 min
+SMOKE_SESSION_S = 30 * 60  # règle 5 de CLAUDE.md : smoke ≤ 30 min (smoke T4 et essai de reprise)
+SMOKE_MARGIN_S = 5 * 60
 MACHINE = kr.ACCELERATORS["t4"].machine_shape
 
 
@@ -93,12 +94,19 @@ def latest_healthy(ck_dir: Path) -> tuple[Path, int]:
 # ------------------------------------------------------------------------------------------------------ pack
 
 
-def pack(runs_root: Path, ck_root: Path, out: Path, user: str, commit: str, now: float) -> dict[str, Any]:
+def pack(
+    runs_root: Path, ck_root: Path, out: Path, user: str, commit: str, now: float, assume_stopped: bool = False
+) -> dict[str, Any]:
+    """`assume_stopped` : l'utilisateur atteste qu'aucune session ne tourne (dernière session tuée sans segment de fin,
+    par exemple au timeout d'un kernel)."""
     runs_dir, ck_dir = run_dirs(runs_root, ck_root)
     if not runs_dir.is_dir() or not ck_dir.is_dir():
         raise LongRelayError(f"run {RUN} introuvable ({runs_dir}, {ck_dir})")
-    if session_running(runs_dir):
-        raise LongRelayError("une session du run semble en cours (start sans segment de fin) : l'arrêter d'abord")
+    if session_running(runs_dir) and not assume_stopped:
+        raise LongRelayError(
+            "une session du run semble en cours (start sans segment de fin) : l'arrêter d'abord, ou --assume-stopped "
+            "si elle a été tuée"
+        )
     ckpt, iteration = latest_healthy(ck_dir)
     kr.fresh_dir(out)
     tar = out / BUNDLE_TAR
@@ -162,20 +170,25 @@ def kernel_metadata(user: str, smoke: bool) -> dict[str, Any]:
     }
 
 
-def kernel_config(repo: str, commit: str, smoke: bool, bundle_sha256: str | None) -> dict[str, Any]:
+def kernel_config(
+    repo: str, commit: str, smoke: bool, bundle_sha256: str | None, max_iterations: int | None = None
+) -> dict[str, Any]:
+    """`max_iterations` : mode essai (plafond ABSOLU d'itérations, session courte) ; None : vraie session de jour."""
     if not repo.startswith("https://github.com/"):
         raise LongRelayError(f"dépôt {repo!r} : URL https GitHub publique attendue (le kernel la clone)")
     if not smoke and not bundle_sha256:
         raise LongRelayError("aucun pack à reprendre : lancer `pack --push` d'abord")
+    short = smoke or max_iterations is not None
     return {
         "repo": repo,
         "commit": commit,
         "run": RUN,
         "seed": SEED,
         "smoke": smoke,
-        "session_s": SMOKE_SESSION_S if smoke else SESSION_S,
-        "margin_s": MARGIN_S,
+        "session_s": SMOKE_SESSION_S if short else SESSION_S,
+        "margin_s": SMOKE_MARGIN_S if short else MARGIN_S,
         "bundle_sha256": bundle_sha256,
+        "max_iterations": max_iterations,
     }
 
 
@@ -214,6 +227,8 @@ def sync(
 ) -> dict[str, Any]:
     """Plan (et application si `apply`) de la réintégration d'une sortie Kaggle. Rend un résumé."""
     rep = check_output(out_dir)
+    if rep.get("start_sha256") != pack_record["sha256"]:
+        raise LongRelayError("cette sortie ne part pas du pack en attente (empreinte d'entrée différente) : refusée")
     runs_dir, ck_dir = run_dirs(runs_root, ck_root)
     if fingerprint(runs_dir, ck_dir) != pack_record["local_fingerprint"]:
         raise LongRelayError("l'état local du run a changé depuis `pack` (session locale ?) : sync refusée, à trancher")
@@ -296,8 +311,11 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--push", action="store_true", help="exécute réellement les commandes kaggle")
         if name in ("start", "status", "fetch"):
             p.add_argument("--smoke", action="store_true", help="kernel de smoke T4")
+        if name == "start":
+            p.add_argument("--trial", type=int, help="essai de reprise : N itérations depuis le pack, session ≤ 30 min")
         if name == "pack":
             p.add_argument("--create", action="store_true", help="1re publication : crée le dataset (privé)")
+            p.add_argument("--assume-stopped", action="store_true", help="aucune session ne tourne (dernière tuée)")
         if name == "sync":
             p.add_argument("--from", dest="src", type=Path, required=True, help="dossier écrit par `fetch`")
             p.add_argument("--apply", action="store_true", help="écrit dans runs/ et checkpoints/")
@@ -319,7 +337,9 @@ def main(argv: list[str] | None = None) -> int:
             if last_pack.exists():
                 raise LongRelayError("un pack attend déjà sa sync (build/kaggle/long/last_pack.json)")
             data = BUILD / "data"
-            record = pack(runs_root, ck_root, data, args.user, git("rev-parse", "HEAD"), time.time())
+            record = pack(
+                runs_root, ck_root, data, args.user, git("rev-parse", "HEAD"), time.time(), args.assume_stopped
+            )
             mo, sha = record["size"] / 1e6, record["sha256"][:12]
             print(f"bundle : itération {record['iteration']}, {mo:.0f} Mo, sha {sha}")
             if args.create:
@@ -332,7 +352,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "start":
             record = kr.read_json(last_pack)
             sha = None if args.smoke else (record or {}).get("sha256")
-            config = kernel_config(git("remote", "get-url", "origin"), pushed_commit(), args.smoke, sha)
+            cap = None if args.trial is None or record is None else int(record["iteration"]) + args.trial
+            config = kernel_config(git("remote", "get-url", "origin"), pushed_commit(), args.smoke, sha, cap)
             folder = build_kernel(
                 BUILD / ("kernel-smoke" if args.smoke else "kernel"), config, kernel_metadata(args.user, args.smoke)
             )

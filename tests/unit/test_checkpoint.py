@@ -397,6 +397,25 @@ def test_reprise_accepte_un_changement_de_device_seul_et_repart_sur_une_sim_neuv
     assert ck.device_change(state, moved) == ("xpu", "cuda")
 
 
+def test_changement_de_device_reamorce_le_generateur_du_collecteur() -> None:
+    # Arrange : état de générateur illisible ici (produit par un autre device, format non garanti identique)
+    state, tr, senv = _state_traj(TRAJ)
+    state["trainer"]["collector"]["generator"] = torch.zeros(3, dtype=torch.uint8)
+    moved = {**TRAJ, "device": "cuda"}
+    # Act
+    restore(state, tr, expected=IDENT, train_config=moved, env=senv)
+    # Assert : générateur ré-amorcé de façon déterministe (graine 0, itération 1)
+    ref = torch.Generator()
+    ref.manual_seed(0 * 1_000_003 + 1)
+    assert torch.equal(tr.collector.generator.get_state(), ref.get_state())
+
+
+def test_meme_device_recharge_l_etat_du_generateur_du_collecteur() -> None:
+    state, tr, senv = _state_traj(TRAJ)
+    restore(state, tr, expected=IDENT, train_config=TRAJ, env=senv)
+    assert torch.equal(tr.collector.generator.get_state(), state["trainer"]["collector"]["generator"])
+
+
 @pytest.mark.parametrize(
     "other",
     [

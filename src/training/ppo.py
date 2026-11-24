@@ -529,13 +529,13 @@ class OverlapTrainer:
             "actor_version": self._actor_version,
         }
 
-    def load_state_dict(self, state: Mapping[str, Any], obs: Any = None) -> None:
+    def load_state_dict(self, state: Mapping[str, Any], obs: Any = None, reseed: int | None = None) -> None:
         """Inverse de `state_dict`. `obs` : observation courante de l'env si elle diffère de celle sauvegardée (reprise
         « modulo reset des arènes »). L'acteur est resynchronisé sur π (copie de π à la frontière d'itération)."""
         if self._busy:
             raise RuntimeError("load_state_dict impossible : thread learner actif")
         self.learner.load_state_dict(state["learner"])
-        self.collector.load_state_dict(state["collector"], obs=obs)
+        self.collector.load_state_dict(state["collector"], obs=obs, reseed=reseed)
         self._pending = state["pending"]
         self.sync_actor()
         self._actor_version = int(state["actor_version"])

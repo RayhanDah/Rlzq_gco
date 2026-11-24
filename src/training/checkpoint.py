@@ -332,7 +332,12 @@ def restore(
         env_state = {**state["env"], "sim": None} if drop_sim else state["env"]
         obs = env.load_state_dict(env_state)
         exact = obs is None
-    trainer.load_state_dict(state["trainer"], obs=obs)
+    # changement de device : générateur du collecteur ré-amorcé, déterministe (graine du run, itération)
+    reseed = None
+    if moved is not None:
+        seed = (state.get("train_config") or {}).get("seed", 0)
+        reseed = int(seed) * 1_000_003 + int(state["iteration"])
+    trainer.load_state_dict(state["trainer"], obs=obs, reseed=reseed)
     _set_rng_state(state["rng"])
     return RestoreInfo(
         iteration=int(state["iteration"]),
