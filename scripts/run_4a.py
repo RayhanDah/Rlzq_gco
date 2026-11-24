@@ -378,7 +378,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--seed", type=int, nargs="+", required=True, help="0, 1 ou 2 (ADR-005 D3) ; plusieurs : enchaînés")
     ap.add_argument("--max-hours", type=float, default=7.5, help="durée murale par run (défaut 7,5 h ; 0 = aucune)")
-    ap.add_argument("--device", help="remplace `device` de la config (change le hash : même valeur à chaque session)")
+    ap.add_argument(
+        "--device",
+        help="remplace `device` de la config ; changer de device à la reprise est accepté, sans l'état du simulateur "
+        "(ADR-014 D6 a)",
+    )
     ap.add_argument("--max-iterations", type=int, help="plafond absolu du compteur d'itérations (essais)")
     ap.add_argument("--runs-root", type=Path, default=ROOT / "runs")
     ap.add_argument("--checkpoints-root", type=Path, default=ROOT / "checkpoints")

@@ -415,6 +415,18 @@ def test_reprise_acceptee_si_seule_une_section_operationnelle_change(tmp_path: P
     assert s.status == "completed"
 
 
+def test_reprise_acceptee_si_seul_le_device_change_sim_neuve_et_journalisee(tmp_path: Path) -> None:
+    # Arrange : session 1 en `cpu`, session 2 en `auto` (résolu en CPU ici) : seul `device` diffère (ADR-014 D6 a)
+    out = tmp_path / "run"
+    go(cfg_of(), out, max_iterations=3)
+    # Act
+    s = go(cfg_of(device="auto"), out, resume=True)
+    # Assert : budget fini, simulateur repris « modulo reset des arènes », changement de device dans le journal
+    assert s.status == "completed" and s.start_iteration == 3 and s.exact_env is False
+    notes = [e["note"] for e in events(out) if e.get("event") == "start" and e.get("resume")]
+    assert len(notes) == 1 and "device cpu -> auto" in notes[0] and "exact_env=False" in notes[0]
+
+
 def test_reprise_refusee_si_la_recompense_change(tmp_path: Path) -> None:
     out = tmp_path / "run"
     go(cfg_of(), out, max_iterations=2)

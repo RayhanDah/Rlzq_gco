@@ -23,6 +23,7 @@ import random
 import re
 import struct
 import subprocess
+import sys
 import time
 import uuid
 from collections.abc import Mapping
@@ -162,6 +163,8 @@ class RestoreInfo:
     exact_env: bool | None
     """True : l'env a été restauré bit à bit ; False : « modulo reset des arènes » ; None : aucun état d'env."""
     meta: dict[str, Any] = field(default_factory=dict)
+    device_change: tuple[str, str] | None = None
+    """(device du checkpoint, device courant) si la reprise change de device (ADR-014 D6 a) ; None sinon."""
 
 
 # ---------------------------------------------------------------------------------------------------- capture
@@ -183,6 +186,27 @@ def _set_rng_state(state: Mapping[str, Any]) -> None:
     n = state["numpy"]
     np.random.set_state((n[0], np.asarray(n[1], dtype=np.uint32), n[2], n[3], n[4]))  # noqa: NPY002
     torch.set_rng_state(state["torch"])
+
+
+def _as_json(cfg: Any) -> Any:
+    """Même normalisation que `capture` pour `train_config` (dataclasses en dictionnaires, aller-retour JSON)."""
+    return json.loads(json.dumps(cfg, default=lambda o: dataclasses.asdict(o)))
+
+
+def device_change(state: Mapping[str, Any], train_config: Any) -> tuple[str, str] | None:
+    """(ancien, nouveau) si `train_config` ne diffère de la config du checkpoint QUE par la clé `device` de premier
+    niveau : reprise d'un même run sur une autre machine (laptop XPU ↔ Kaggle CUDA, ADR-014 D6 a). None sinon (même
+    device, autre différence, ou config sans `device`)."""
+    saved, current = state.get("train_config"), _as_json(train_config)
+    if not isinstance(saved, dict) or not isinstance(current, dict) or "device" not in saved or "device" not in current:
+        return None
+    if saved["device"] == current["device"]:
+        return None
+    rest_saved = {k: v for k, v in saved.items() if k != "device"}
+    rest_current = {k: v for k, v in current.items() if k != "device"}
+    if rest_saved != rest_current:
+        return None
+    return str(saved["device"]), str(current["device"])
 
 
 def capture(
@@ -215,6 +239,7 @@ def capture(
             "numpy": str(np.__version__),
             "git_commit": git_commit_id,
             "rocketgpu_commit": rocketgpu_commit,
+            "platform": sys.platform,  # ADR-014 D6 b : l'état du simulateur n'est rechargé que sur la même plateforme
         },
         "rng": _rng_state(),
         "trainer": trainer.state_dict(),
@@ -273,7 +298,11 @@ def check_identity(
             f"checkpoint {HORS_SPEC_LABEL} (récompense {off_spec}) refusé pour initialiser ce run : "
             "hash de récompense différent (ADR-011 D2)"
         )
-    if train_config is not None and state["train_config_hash"] != hash_config(train_config):
+    if (
+        train_config is not None
+        and state["train_config_hash"] != hash_config(train_config)
+        and device_change(state, train_config) is None  # seul `device` change : accepté (ADR-014 D6 a)
+    ):
         diffs.append("train_config_hash: la configuration d'entraînement a changé")
     if diffs:
         raise CheckpointIncompatibleError("checkpoint incompatible : " + " ; ".join(diffs))
@@ -288,14 +317,20 @@ def restore(
     env: StatefulEnv | None = None,
 ) -> RestoreInfo:
     """Valide l'identité puis restaure RNG, env et trainer (objets neufs de même forme). `state` vient de
-    `CheckpointManager.load`. Si l'env ne se restaure pas exactement, le collecteur reçoit l'obs du nouveau tirage."""
+    `CheckpointManager.load`. Si l'env ne se restaure pas exactement, le collecteur reçoit l'obs du nouveau tirage.
+    Changement de device ou de plateforme (ADR-014 D6 a, b) : l'état du simulateur (blob propre au build) n'est pas
+    rechargé, l'env repart « modulo reset des arènes » (`exact_env=False`) ; le reste de l'état est restauré."""
     check_identity(state, expected, train_config)
     if (state["env"] is None) != (env is None):
         raise CheckpointIncompatibleError("état d'env présent dans le checkpoint XOR env fourni : incohérent")
+    moved = device_change(state, train_config) if train_config is not None else None
+    saved_platform = state["versions"].get("platform")
+    drop_sim = moved is not None or (saved_platform is not None and saved_platform != sys.platform)
     obs = None
     exact: bool | None = None
     if env is not None and state["env"] is not None:
-        obs = env.load_state_dict(state["env"])
+        env_state = {**state["env"], "sim": None} if drop_sim else state["env"]
+        obs = env.load_state_dict(env_state)
         exact = obs is None
     trainer.load_state_dict(state["trainer"], obs=obs)
     _set_rng_state(state["rng"])
@@ -305,6 +340,7 @@ def restore(
         extra=dict(state["extra"]),
         exact_env=exact,
         meta=dict(state["versions"]),
+        device_change=moved,
     )
 
 

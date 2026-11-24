@@ -336,6 +336,109 @@ def test_refus_si_config_d_entrainement_change() -> None:
         restore(state, tr, expected=IDENT, train_config=dataclasses.replace(cfg, clip=0.3))
 
 
+TRAJ = {"device": "xpu", "seed": 0, "ppo": {"clip": 0.2, "gamma": 0.995}}
+
+
+class _SimEnv:
+    """Env dont l'état contient un blob de simulateur ; enregistre l'état reçu. Sans blob : reprise « modulo reset des
+    arènes », rend l'obs `obs` (comme `BatchEnv.load_state_dict`)."""
+
+    def __init__(self, obs: Any) -> None:
+        self.obs = obs
+        self.received: Any = None
+
+    def state_dict(self) -> dict[str, Any]:
+        return {"counters": 3, "sim": {"internal": b"blob"}}
+
+    def load_state_dict(self, state: Any) -> Any:
+        self.received = state
+        return None if state["sim"] is not None else self.obs
+
+
+def _state_traj(traj: dict[str, Any], platform: str | None = None) -> tuple[dict[str, Any], OverlapTrainer, _SimEnv]:
+    _, tr, _ = _make(1, False)
+    tr.iterate()
+    senv = _SimEnv(tr.collector._obs.copy())
+    state = capture(tr, identity=IDENT, train_config=traj, iteration=1, env_state=senv.state_dict())
+    if platform is not None:
+        state["versions"]["platform"] = platform
+    _, tr2, _ = _make(2, False)
+    return state, tr2, senv
+
+
+def test_capture_enregistre_la_plateforme() -> None:
+    import sys
+
+    state, _, _ = _state_traj(TRAJ)
+    assert state["versions"]["platform"] == sys.platform
+
+
+def test_reprise_meme_device_meme_plateforme_recharge_la_sim() -> None:
+    # Arrange
+    state, tr, senv = _state_traj(TRAJ)
+    # Act
+    info = restore(state, tr, expected=IDENT, train_config=TRAJ, env=senv)
+    # Assert
+    assert info.device_change is None and info.exact_env is True
+    assert senv.received["sim"] == {"internal": b"blob"}
+
+
+def test_reprise_accepte_un_changement_de_device_seul_et_repart_sur_une_sim_neuve() -> None:
+    # Arrange : checkpoint du laptop (XPU), reprise sur Kaggle (CUDA), ADR-014 D6 a
+    state, tr, senv = _state_traj(TRAJ)
+    moved = {**TRAJ, "device": "cuda"}
+    # Act
+    info = restore(state, tr, expected=IDENT, train_config=moved, env=senv)
+    # Assert : poids et compteurs restaurés, blob du simulateur ignoré, le reste de l'état d'env transmis
+    assert info.device_change == ("xpu", "cuda")
+    assert info.exact_env is False
+    assert senv.received == {"counters": 3, "sim": None}
+    assert tr.learner.version == state["trainer"]["learner"]["version"]
+    assert ck.device_change(state, moved) == ("xpu", "cuda")
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        {**TRAJ, "device": "cuda", "seed": 1},
+        {**TRAJ, "device": "cuda", "ppo": {"clip": 0.3, "gamma": 0.995}},
+        {**TRAJ, "seed": 1},
+    ],
+    ids=["device+seed", "device+ppo", "seed seul"],
+)
+def test_refus_si_autre_chose_que_le_device_change(other: dict[str, Any]) -> None:
+    state, tr, senv = _state_traj(TRAJ)
+    with pytest.raises(CheckpointIncompatibleError, match="train_config_hash"):
+        restore(state, tr, expected=IDENT, train_config=other, env=senv)
+    assert senv.received is None  # rien n'est chargé avant le refus
+
+
+def test_device_change_sans_cle_device_rend_none() -> None:
+    state, _, _ = _state_traj({"seed": 0})
+    assert ck.device_change(state, {"seed": 0}) is None
+    assert ck.device_change(state, {"seed": 1}) is None
+
+
+def test_autre_plateforme_meme_device_repart_sur_une_sim_neuve() -> None:
+    # Arrange : checkpoint écrit sur une autre plateforme (ADR-014 D6 b : blob propre au build)
+    state, tr, senv = _state_traj(TRAJ, platform="autre-plateforme")
+    # Act
+    info = restore(state, tr, expected=IDENT, train_config=TRAJ, env=senv)
+    # Assert
+    assert info.device_change is None and info.exact_env is False
+    assert senv.received["sim"] is None
+
+
+def test_checkpoint_sans_plateforme_recharge_la_sim() -> None:
+    # Arrange : checkpoints d'avant ADR-014 (sans `platform`), dont la nuit 1 de long_s0
+    state, tr, senv = _state_traj(TRAJ)
+    del state["versions"]["platform"]
+    # Act
+    info = restore(state, tr, expected=IDENT, train_config=TRAJ, env=senv)
+    # Assert
+    assert info.exact_env is True and senv.received["sim"] is not None
+
+
 def test_refus_si_etat_d_env_incoherent() -> None:
     state = _state(1)
     env, tr, _ = _make(1, False)

@@ -527,7 +527,9 @@ def run(
         n_dropped = truncate_metrics(metrics_path, iteration, out / DROPPED_FILE)
         start_note = (
             f"reprise depuis {path.name} (itération {iteration}, exact_env={info.exact_env}, "
-            f"lignes retirées={n_dropped})"
+            f"lignes retirées={n_dropped}"
+            + (f", device {info.device_change[0]} -> {info.device_change[1]}" if info.device_change else "")
+            + ")"
         )
     meta_path = _write_new_json(
         out / "run_meta.json", _meta(cfg, device, reward_hash, iteration, command, resume, commit)
