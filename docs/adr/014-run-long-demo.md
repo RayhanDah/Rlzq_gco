@@ -74,6 +74,15 @@ abandonne ADR-013 (2026-11-24) : « on n'en a plus du tout [de temps] », et dem
    - m6 : collision de nom si un checkpoint local non sain dépasse le dernier sain ;
    - m8 : copie partielle refusée à la relance.
    Essai avant la 1re journée : `start --trial N`, reprise réelle du pack sur T4 pour N itérations, session ≤ 30 min.
+   **Essai T4 PASS** (2026-11-24 08 h 28, kernel `long_s0-t4` v1, commit 1f03f3b, `start --trial 50`) :
+   - Kaggle a décompressé `bundle.tar` à l'import : le kernel vérifie alors chaque fichier contre le manifest ;
+   - setup en 94 s (build RocketGPU CPU 86 s) ;
+   - reprise de `ckpt_000095_it00023544.pt` (`device xpu -> cuda`, `exact_env=False`), 50 itérations, checkpoint sain
+     écrit, 0 NaN ;
+   - Python 3.13.16, torch 2.11.0+cu130, 2 T4 vus, le learner sur un seul ;
+   - débit médian 70,1k pas agents/s sur 50 it., contre 62,6k pour le laptop sur la nuit 1 (même métrique
+     `perf/agent_steps_per_s`). Débit soutenu sur 11 h non mesuré.
+   La sortie de l'essai n'est pas réintégrée : la 1re journée repart du même pack.
    Non vérifié avant le smoke T4 : torch 2.11+cu130 et Python 3.13 sur Kaggle, contre torch 2.15 et Python 3.12 en local ;
    chargement de l'état du générateur XPU sur CUDA ; débit.
 7. Chaque session se relance avec un nouveau H. Les tests RLBot dans le vrai jeu se font le jour, sans le run. Une session
