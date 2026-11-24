@@ -115,31 +115,51 @@ def sha256_file(path: Path) -> str:
 
 
 def find_bundle() -> tuple[dict[str, object], Path]:
-    """Manifest et archive du dataset monté (chemin exact du montage non vérifié : on parcourt /kaggle/input)."""
+    """Manifest et contenu du dataset monté (chemin exact du montage non vérifié : on parcourt /kaggle/input). Le
+    contenu est `bundle.tar`, ou le dossier `bundle/` quand Kaggle a décompressé l'archive à l'import (mesuré)."""
     for manifest_path in sorted(INPUT.rglob(BUNDLE_MANIFEST)):
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         if manifest.get("run") != CONFIG["run"]:
             continue
         tar = manifest_path.parent / BUNDLE_TAR
-        if not tar.is_file():
-            raise SystemExit(f"{BUNDLE_TAR} absent à côté de {manifest_path} (archive décompressée par Kaggle ?)")
-        return manifest, tar
+        if tar.is_file():
+            return manifest, tar
+        folder = manifest_path.parent / Path(BUNDLE_TAR).stem
+        if folder.is_dir():
+            return manifest, folder
+        raise SystemExit(f"ni {BUNDLE_TAR} ni {folder.name}/ à côté de {manifest_path}")
     raise SystemExit(f"aucun {BUNDLE_MANIFEST} du run {CONFIG['run']} sous {INPUT}")
 
 
 def restore_bundle() -> dict[str, object]:
-    manifest, tar = find_bundle()
-    sha = sha256_file(tar)
-    if sha != manifest.get("sha256") or sha != CONFIG.get("bundle_sha256"):
+    manifest, src = find_bundle()
+    if manifest.get("sha256") != CONFIG.get("bundle_sha256"):
         raise SystemExit(
-            f"archive d'entrée inattendue : {sha} (manifest {manifest.get('sha256')}, attendu "
-            f"{CONFIG.get('bundle_sha256')}) : version du dataset périmée ?"
+            f"manifest inattendu : {manifest.get('sha256')} au lieu de {CONFIG.get('bundle_sha256')} : version du "
+            "dataset périmée ?"
         )
     RELAY.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(tar) as tf:
-        tf.extractall(RELAY, filter="data")  # refuse les chemins absolus et les liens sortants
-    REPORT["start_sha256"] = sha  # comparé par `kaggle_long.py sync` à l'empreinte du pack
-    log(f"run restauré depuis {tar} (itération {manifest.get('iteration')})")
+    if src.is_file():
+        sha = sha256_file(src)
+        if sha != manifest["sha256"]:
+            raise SystemExit(f"archive d'entrée {sha} différente du manifest {manifest['sha256']}")
+        with tarfile.open(src) as tf:
+            tf.extractall(RELAY, filter="data")  # refuse les chemins absolus et les liens sortants
+    else:
+        files = manifest.get("files")
+        if not isinstance(files, dict) or not files:
+            raise SystemExit("archive décompressée par Kaggle et manifest sans empreintes par fichier")
+        present = {p.relative_to(src).as_posix() for p in src.rglob("*") if p.is_file()}
+        if present != set(files):
+            raise SystemExit(f"fichiers du dataset différents du manifest : {sorted(present ^ set(files))[:5]}")
+        for rel, want in files.items():
+            if sha256_file(src / rel) != want:
+                raise SystemExit(f"{rel} : empreinte différente du manifest")
+            dst = RELAY / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src / rel, dst)
+    REPORT["start_sha256"] = manifest["sha256"]  # comparé par `kaggle_long.py sync` à l'empreinte du pack
+    log(f"run restauré depuis {src} (itération {manifest.get('iteration')})")
     return manifest
 
 

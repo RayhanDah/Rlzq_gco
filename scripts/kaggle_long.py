@@ -123,6 +123,7 @@ def pack(
         "checkpoint": ckpt.name,
         "sha256": kr.sha256_file(tar),
         "size": tar.stat().st_size,
+        "files": tar_file_hashes(tar),  # Kaggle décompresse l'archive téléversée (mesuré le 2026-11-24)
         "commit": commit,
         "created_at": kr.iso(now),
     }
@@ -131,6 +132,21 @@ def pack(
         out / kr.DATASET_META, {"id": f"{user}/{DATASET_SLUG}", "title": DATASET_SLUG, "licenses": [{"name": "other"}]}
     )
     return {**manifest, "local_fingerprint": fingerprint(runs_dir, ck_dir)}
+
+
+def tar_file_hashes(tar: Path) -> dict[str, str]:
+    """{chemin dans l'archive : sha256} des fichiers réguliers : le kernel vérifie chaque fichier quand Kaggle a
+    décompressé l'archive à l'import (dossier `bundle/` au lieu de `bundle.tar`)."""
+    import hashlib
+
+    out: dict[str, str] = {}
+    with tarfile.open(tar) as tf:
+        for m in tf.getmembers():
+            if m.isfile():
+                f = tf.extractfile(m)
+                assert f is not None
+                out[m.name] = hashlib.file_digest(f, "sha256").hexdigest()
+    return out
 
 
 # --------------------------------------------------------------------------------------------------- kernel

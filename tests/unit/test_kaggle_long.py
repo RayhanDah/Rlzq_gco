@@ -282,3 +282,69 @@ def test_config_d_essai_de_reprise_courte_et_plafonnee() -> None:
     assert cfg["max_iterations"] == 23_594 and cfg["session_s"] == 30 * 60 and cfg["margin_s"] == 5 * 60
     day = kl.kernel_config("https://github.com/o/r.git", "abc", False, "f" * 64)
     assert day["max_iterations"] is None and day["session_s"] == 12 * 3600 - 600
+
+
+# ------------------------------------------------------------------------------------- restauration (kernel)
+
+
+def _kernel(tmp_path: Path, record: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    k = _load(ROOT / "kaggle" / "train" / "long_kernel.py", "long_kernel_test")
+    monkeypatch.setattr(k, "INPUT", tmp_path / "input")
+    monkeypatch.setattr(k, "RELAY", tmp_path / "relay")
+    monkeypatch.setattr(k, "WORK", tmp_path / "work")
+    monkeypatch.setattr(k, "CONFIG", {"run": RUN, "bundle_sha256": record["sha256"]})
+    return k
+
+
+def _mount(build: Path, input_dir: Path, extracted: bool) -> Path:
+    """Dataset monté : tel quel (bundle.tar) ou décompressé par Kaggle (dossier bundle/)."""
+    ds = input_dir / "rlgco-long-s0"
+    ds.mkdir(parents=True)
+    (ds / kl.BUNDLE_MANIFEST).write_bytes((build / "data" / kl.BUNDLE_MANIFEST).read_bytes())
+    if extracted:
+        with tarfile.open(build / "data" / kl.BUNDLE_TAR) as tf:
+            tf.extractall(ds / "bundle", filter="data")
+    else:
+        (ds / kl.BUNDLE_TAR).write_bytes((build / "data" / kl.BUNDLE_TAR).read_bytes())
+    return ds
+
+
+@pytest.mark.parametrize("extracted", [False, True], ids=["archive", "decompressee"])
+def test_kernel_restaure_le_bundle_archive_ou_decompresse(
+    packed: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extracted: bool
+) -> None:
+    # Arrange
+    _, _, record, build = packed
+    k = _kernel(tmp_path, record, monkeypatch)
+    _mount(build, tmp_path / "input", extracted)
+    # Act
+    manifest = k.restore_bundle()
+    # Assert
+    assert manifest["iteration"] == 200 and k.REPORT["start_sha256"] == record["sha256"]
+    assert (tmp_path / "relay" / "checkpoints" / RUN / "ckpt_000001_it00000200.pt").is_file()
+    assert (tmp_path / "relay" / "runs" / RUN / "metrics.jsonl").is_file()
+    latest = CheckpointManager(tmp_path / "relay" / "checkpoints" / RUN).load_latest(healthy_only=True)
+    assert latest is not None and latest[1]["iteration"] == 200
+
+
+def test_kernel_refuse_un_fichier_decompresse_altere(
+    packed: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, _, record, build = packed
+    k = _kernel(tmp_path, record, monkeypatch)
+    ds = _mount(build, tmp_path / "input", True)
+    with (ds / "bundle" / "runs" / RUN / "metrics.jsonl").open("a", encoding="utf-8") as f:
+        f.write("x" + chr(10))
+    with pytest.raises(SystemExit, match="empreinte"):
+        k.restore_bundle()
+
+
+def test_kernel_refuse_un_manifest_d_un_autre_pack(
+    packed: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, _, record, build = packed
+    k = _kernel(tmp_path, record, monkeypatch)
+    _mount(build, tmp_path / "input", False)
+    monkeypatch.setattr(k, "CONFIG", {"run": RUN, "bundle_sha256": "0" * 64})
+    with pytest.raises(SystemExit, match="périmée"):
+        k.restore_bundle()
