@@ -50,20 +50,29 @@ def save_report() -> None:
 
 
 def step(
-    name: str, cmd: list[str], timeout_s: float, cwd: Path | None = None, env: dict[str, str] | None = None
+    name: str,
+    cmd: list[str],
+    timeout_s: float,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    grace_s: float = 300.0,
 ) -> bool:
-    """Lance une commande, journal complet dans /kaggle/working/logs/<name>.log ; rend True si code 0."""
+    """Lance une commande, journal complet dans /kaggle/working/logs/<name>.log ; rend True si code 0.
+    La commande a son propre groupe de processus. Au timeout, OU si le chef du groupe sort en laissant des descendants
+    (superviseur run_4a mort avant sa session enfant), tout le groupe est arrêté avant de rendre la main : rien n'écrit
+    plus dans /tmp/relay quand `archive_run` s'exécute."""
     logs = WORK / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     t = time.time()
     with (logs / f"{name}.log").open("w", encoding="utf-8") as f:
-        # groupe de processus à part : au timeout, on arrête TOUT le groupe (superviseur run_4a ET sa session enfant),
-        # d'abord par SIGINT (arrêt propre, checkpoint final), puis par SIGKILL ; on attend la fin avant d'archiver
         proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=f, stderr=subprocess.STDOUT, start_new_session=True)
         try:
             code = proc.wait(timeout=timeout_s)
         except subprocess.TimeoutExpired:
-            code = stop_group(proc)
+            code = -9
+        if group_alive(proc.pid):
+            stop_group(proc, grace_s)
+            code = code if code != 0 else -15  # descendants encore vivants : session non terminée proprement
     steps = REPORT["steps"]
     assert isinstance(steps, dict)
     steps[name] = {"code": code, "seconds": round(time.time() - t, 1)}
@@ -72,20 +81,29 @@ def step(
     return code == 0
 
 
-def stop_group(proc: subprocess.Popen[bytes]) -> int:
-    """Arrête le groupe de `proc` : SIGINT, 5 min de grâce, puis SIGKILL. Rend -9 (timeout)."""
-    for sig, grace_s in ((signal.SIGINT, 300.0), (signal.SIGKILL, 60.0)):
+def group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def stop_group(proc: subprocess.Popen[bytes], grace_s: float) -> None:
+    """SIGINT au groupe (arrêt propre : checkpoint final), `grace_s` de grâce, puis SIGKILL ; attend que le groupe
+    soit vide (au plus 60 s après SIGKILL)."""
+    for sig, wait_s in ((signal.SIGINT, grace_s), (signal.SIGKILL, 60.0)):
         with contextlib.suppress(ProcessLookupError):
             os.killpg(proc.pid, sig)
-        try:
-            proc.wait(timeout=grace_s)
-            break
-        except subprocess.TimeoutExpired:
-            continue
-    with contextlib.suppress(ProcessLookupError):
-        os.killpg(proc.pid, signal.SIGKILL)  # descendants restants éventuels
-    log(f"timeout : groupe {proc.pid} arrêté")
-    return -9
+        end = time.time() + wait_s
+        while time.time() < end:
+            if proc.poll() is not None and not group_alive(proc.pid):
+                log(f"groupe {proc.pid} arrêté ({sig.name})")
+                return
+            time.sleep(1.0)
+    log(f"groupe {proc.pid} : processus encore présents après SIGKILL")
 
 
 def sha256_file(path: Path) -> str:
@@ -135,7 +153,8 @@ def archive_run() -> None:
     tmp = WORK / f".{BUNDLE_TAR}.tmp"
 
     def no_temp(info: tarfile.TarInfo) -> tarfile.TarInfo | None:  # écritures interrompues : jamais archivées
-        return None if info.name.endswith((".tmp", ".part")) or "/." in info.name else info
+        base = info.name.rsplit("/", 1)[-1]
+        return None if base.endswith((".tmp", ".part", ".sync-tmp")) else info
 
     with tarfile.open(tmp, "w") as tf:
         tf.add(runs, arcname=f"runs/{run}", filter=no_temp)
@@ -254,7 +273,7 @@ def main() -> int:
         ]
         if CONFIG.get("max_iterations"):  # mode essai : reprise réelle, quelques itérations seulement
             cmd += ["--max-iterations", str(CONFIG["max_iterations"])]
-        ok = step("run_4a", cmd, hours * 3600.0 + margin_s / 2, cwd=APP, env=env)
+        ok = step("run_4a", cmd, hours * 3600.0 + margin_s / 2, cwd=APP, env=env, grace_s=min(300.0, margin_s / 4))
         REPORT["status"] = "paused" if ok else "run_failed"
         return 0
     except SystemExit as e:

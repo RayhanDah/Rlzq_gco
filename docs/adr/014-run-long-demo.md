@@ -59,7 +59,9 @@ abandonne ADR-013 (2026-11-24) : « on n'en a plus du tout [de temps] », et dem
      (mesuré, à blanc). `sync` refuse si le run local a changé depuis le pack, sauvegarde `runs/long_s0` avant d'écrire
      et ne supprime rien.
    Revue `code-reviewer` (6df2b00, 8c8730f) : REQUEST CHANGES pour un bloquant, corrigé :
-   - B1 : au timeout, le kernel arrête tout le groupe de processus (SIGINT, puis SIGKILL) avant d'archiver.
+   - B1 : au timeout, le kernel arrête tout le groupe de processus (SIGINT, puis SIGKILL) avant d'archiver. Re-revue
+     (92c2bb1), le cas du superviseur mort avant l'enfant est corrigé : groupe vérifié vide après chaque `wait`, grâce
+     ≤ marge / 4. Ce chemin ne s'exécute que sous Linux et n'est pas testé localement (pas de `killpg` sous Windows).
    Mineurs corrigés :
    - générateur du collecteur ré-amorcé (graine, itération) sur changement de device ;
    - `pack --assume-stopped` ;
