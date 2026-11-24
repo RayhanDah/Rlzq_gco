@@ -50,6 +50,16 @@ abandonne ADR-013 (2026-11-24) : « on n'en a plus du tout [de temps] », et dem
    - (d) aller-retour du checkpoint (≈ 225 Mo, mesuré) par dataset privé ;
    - (e) smoke T4 ≤ 30 min.
    La reprise n'est plus bit à bit entre machines. Le débit T4 du run complet n'est pas mesuré.
+   Implémentation (2026-11-24) :
+   - (a) et (b) : 6df2b00 (`checkpoint.device_change`, `versions.platform`) ;
+   - (c) : `kaggle/train/long_kernel.py`. Le kernel clone le commit, installe, compile RocketGPU CPU, restaure le run,
+     lance `run_4a.py --device cuda --max-hours H` (fin 45 min avant la session de 11 h 50), archive le run dans tous
+     les cas ;
+   - (d) : `scripts/kaggle_long.py` (`pack`, `start`, `status`, `fetch`, `sync`). Le pack fait 269 Mo à l'it. 23 544
+     (mesuré, à blanc). `sync` refuse si le run local a changé depuis le pack, sauvegarde `runs/long_s0` avant d'écrire
+     et ne supprime rien.
+   Non vérifié avant le smoke T4 : torch 2.11+cu130 et Python 3.13 sur Kaggle, contre torch 2.15 et Python 3.12 en local ;
+   chargement de l'état du générateur XPU sur CUDA ; débit.
 7. Chaque session se relance avec un nouveau H. Les tests RLBot dans le vrai jeu se font le jour, sans le run. Une session
    reprend du dernier checkpoint : au plus 250 it. rejouées, ≈ 4 min (ADR-001 M8).
 
