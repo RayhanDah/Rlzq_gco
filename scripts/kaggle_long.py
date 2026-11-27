@@ -47,6 +47,7 @@ SESSION_S = 12 * 3600 - 10 * 60  # session GPU ≤ 12 h (docs/research/kaggle.md
 MARGIN_S = 45 * 60  # fin du run 45 min avant SESSION_S : dernière éval, archive, écriture des sorties
 SMOKE_SESSION_S = 30 * 60  # règle 5 de CLAUDE.md : smoke ≤ 30 min (smoke T4 et essai de reprise)
 SMOKE_MARGIN_S = 5 * 60
+MIN_SESSION_S = 3600  # session de jour raccourcie (quota restant) : au moins setup + MARGIN_S + un vrai segment
 MACHINE = kr.ACCELERATORS["t4"].machine_shape
 
 
@@ -187,21 +188,32 @@ def kernel_metadata(user: str, smoke: bool) -> dict[str, Any]:
 
 
 def kernel_config(
-    repo: str, commit: str, smoke: bool, bundle_sha256: str | None, max_iterations: int | None = None
+    repo: str,
+    commit: str,
+    smoke: bool,
+    bundle_sha256: str | None,
+    max_iterations: int | None = None,
+    session_s: int | None = None,
 ) -> dict[str, Any]:
-    """`max_iterations` : mode essai (plafond ABSOLU d'itérations, session courte) ; None : vraie session de jour."""
+    """`max_iterations` : mode essai (plafond ABSOLU d'itérations, session courte) ; None : vraie session de jour.
+    `session_s` : session de jour raccourcie au quota GPU restant (None : SESSION_S)."""
     if not repo.startswith("https://github.com/"):
         raise LongRelayError(f"dépôt {repo!r} : URL https GitHub publique attendue (le kernel la clone)")
     if not smoke and not bundle_sha256:
         raise LongRelayError("aucun pack à reprendre : lancer `pack --push` d'abord")
     short = smoke or max_iterations is not None
+    if session_s is not None:
+        if short:
+            raise LongRelayError("durée de session : réservée à une vraie session de jour (ni smoke ni essai)")
+        if not MIN_SESSION_S <= session_s <= SESSION_S:
+            raise LongRelayError(f"durée de session {session_s} s hors de [{MIN_SESSION_S}, {SESSION_S}]")
     return {
         "repo": repo,
         "commit": commit,
         "run": RUN,
         "seed": SEED,
         "smoke": smoke,
-        "session_s": SMOKE_SESSION_S if short else SESSION_S,
+        "session_s": SMOKE_SESSION_S if short else (session_s or SESSION_S),
         "margin_s": SMOKE_MARGIN_S if short else MARGIN_S,
         "bundle_sha256": bundle_sha256,
         "max_iterations": max_iterations,
@@ -329,6 +341,9 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--smoke", action="store_true", help="kernel de smoke T4")
         if name == "start":
             p.add_argument("--trial", type=int, help="essai de reprise : N itérations depuis le pack, session ≤ 30 min")
+            p.add_argument(
+                "--session-hours", type=float, help="session de jour raccourcie (quota GPU restant moins une marge)"
+            )
         if name == "pack":
             p.add_argument("--create", action="store_true", help="1re publication : crée le dataset (privé)")
             p.add_argument("--assume-stopped", action="store_true", help="aucune session ne tourne (dernière tuée)")
@@ -369,7 +384,8 @@ def main(argv: list[str] | None = None) -> int:
             record = kr.read_json(last_pack)
             sha = None if args.smoke else (record or {}).get("sha256")
             cap = None if args.trial is None or record is None else int(record["iteration"]) + args.trial
-            config = kernel_config(git("remote", "get-url", "origin"), pushed_commit(), args.smoke, sha, cap)
+            session_s = None if args.session_hours is None else round(args.session_hours * 3600)
+            config = kernel_config(git("remote", "get-url", "origin"), pushed_commit(), args.smoke, sha, cap, session_s)
             folder = build_kernel(
                 BUILD / ("kernel-smoke" if args.smoke else "kernel"), config, kernel_metadata(args.user, args.smoke)
             )

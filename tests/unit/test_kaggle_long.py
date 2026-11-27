@@ -284,6 +284,23 @@ def test_config_d_essai_de_reprise_courte_et_plafonnee() -> None:
     assert day["max_iterations"] is None and day["session_s"] == 12 * 3600 - 600
 
 
+def test_session_de_jour_raccourcie_au_quota_restant() -> None:
+    # Arrange : quota GPU restant 7 h 45 → session de 7 h 30
+    repo, sha = "https://github.com/o/r.git", "f" * 64
+    # Act
+    cfg = kl.kernel_config(repo, "abc", False, sha, session_s=27_000)
+    # Assert : la durée vaut pour le kernel (max-hours) et le timeout Kaggle (session_s + 10 min)
+    assert cfg["session_s"] == 27_000 and cfg["margin_s"] == 45 * 60 and cfg["max_iterations"] is None
+    assert "27000" in kl.render_kernel(cfg)
+    for bad in (kl.SESSION_S + 1, 3599):
+        with pytest.raises(kl.LongRelayError):
+            kl.kernel_config(repo, "abc", False, sha, session_s=bad)
+    with pytest.raises(kl.LongRelayError):
+        kl.kernel_config(repo, "abc", False, sha, max_iterations=10, session_s=27_000)
+    with pytest.raises(kl.LongRelayError):
+        kl.kernel_config(repo, "abc", True, None, session_s=27_000)
+
+
 # ------------------------------------------------------------------------------------- restauration (kernel)
 
 
